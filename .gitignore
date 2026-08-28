@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.env
+
+# Insurer contract PDFs are their copyright, and the corpus is 1.1 GB.
+# Rebuild it with: uv run python -m policydesk.ingest
+data/cathay/
+data/clauses/*.pdf
+data/*.log
+data/index-report.json
