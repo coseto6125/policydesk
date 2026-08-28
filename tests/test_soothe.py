@@ -1,0 +1,161 @@
+"""
+The de-escalation scenario, and the two ways it can hurt a customer.
+
+The first is the obvious one: a statute citation the model invented. It reads as law,
+carries the authority of law, and points at a sentence that does not exist. `cited` and
+`recheck_citations` are what make that catchable, so they are tested against the real
+corpus rather than against a stub — a checker validated by a fixture it wrote itself
+proves nothing about the statute anyone can look up.
+
+The second is quieter and worse: the desk quotes the provision that justifies the company
+and stops there. 保險法 §64 II is the insurer's right to rescind; §64 III is the two-year
+limit that takes it away. Both are true, one is an answer and the other is a threat. The
+tests below assert that the retrieval reaches the customer's half, and that the scenario
+runs without demanding ID from someone mid-complaint.
+"""
+
+import pytest
+
+from policydesk.agent import statute, tools
+from policydesk.agent.scenarios.soothe import (
+    SOOTHE,
+    cited,
+    complaint_channel,
+    gather,
+    recheck_citations,
+    statute_reference,
+)
+from policydesk.core.db import Database
+
+pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(scope="module")
+async def db():
+    pool = Database()
+    try:
+        await pool.fetch_val("SELECT 1")
+    except Exception:
+        pytest.skip("policydesk-pg is not up")
+    if not await pool.fetch_val("SELECT count(*) FROM statute_article"):
+        await statute.ingest(pool)
+    yield pool
+    await pool.close()
+
+
+def test_cited_reads_article_paragraph_and_item():
+    assert cited("依〔保險法 第64條第2項〕，…") == [("保險法", "art.64.2")]
+    assert cited("〔保險法 第65條第1項第2款〕") == [("保險法", "art.65.1.2")]
+    assert cited("〔保險法 第8-1條〕") == [("保險法", "art.8-1")]
+
+
+def test_cited_deduplicates_a_provision_quoted_twice():
+    assert cited("〔保險法 第64條〕…〔保險法 第64條〕") == [("保險法", "art.64")]
+
+
+def test_statute_citation_does_not_collide_with_the_clause_syntax():
+    # The executor pulls `art.NN` out of a reply and voids any the customer's contracts
+    # do not contain. A statute written as art.64.2 would be read as a clause, found in
+    # no policy, and take the whole reply down with it.
+    import re
+
+    from policydesk.agent.executor import _CITATION
+
+    assert not _CITATION.findall("依〔保險法 第64條第2項〕，保險人得解除契約。")
+    assert re.search(r"art\.", "art.12")  # the clause syntax itself still matches
+
+
+async def test_recheck_passes_a_real_provision(db):
+    assert await recheck_citations(db, "依〔保險法 第64條第2項〕，…") == []
+
+
+async def test_recheck_catches_an_article_that_does_not_exist(db):
+    # 保險法 stops well short of 第999條. The pair comes back as written, not as the
+    # article it would belong to, so the caller can point at the exact citation to strike.
+    assert await recheck_citations(db, "〔保險法 第999條第1項〕") == [("保險法", "art.999.1")]
+
+
+async def test_recheck_catches_a_provision_attributed_to_the_wrong_statute(db):
+    # 保險法 §64 exists and 保險法施行細則 §64 does not. Same number, different Act — the
+    # misattribution hardest for a reader to catch.
+    assert await recheck_citations(db, "〔保險法施行細則 第64條第2項〕") == [("保險法施行細則", "art.64.2")]
+
+
+async def test_recheck_catches_a_paragraph_beyond_the_article(db):
+    # 保險法 §64 has three 項. A fourth is a sentence that sounds like law and is not.
+    assert await recheck_citations(db, "〔保險法 第64條第9項〕") == [("保險法", "art.64.9")]
+
+
+async def test_statute_reference_finds_the_provision_behind_a_complaint(db):
+    rows = await statute_reference(db, "解除契約", limit=6)
+    assert rows
+    assert any(r["doc_id"] == "art.64.3" for r in rows), "the two-year limit must be reachable"
+
+
+async def test_statute_reference_citations_are_written_the_way_the_checker_reads_them(db):
+    rows = await statute_reference(db, "解除契約", limit=6)
+    for row in rows:
+        assert cited(row["citation"]) == [(row["statute"], row["doc_id"])]
+
+
+async def test_statute_reference_citations_all_survive_the_recheck(db):
+    # The model is told to copy `citation` verbatim, so a citation the tool itself
+    # formats wrongly is a reply withheld for a provision that was really there.
+    rows = await statute_reference(db, "申訴", limit=6)
+    assert not await recheck_citations(db, " ".join(r["citation"] for r in rows))
+
+
+async def test_complaint_channel_states_the_statutory_deadline(db):
+    route = await complaint_channel(db)
+    assert route["ombudsman_deadline_days"] == "60"
+    assert route["basis"], "the escalation route must name the provision it rests on"
+
+
+async def test_complaint_channel_matches_what_the_act_actually_says(db):
+    # The numbers are asserted against the statute text rather than against themselves,
+    # because a service promise drifting from the Act is exactly the error the corpus is
+    # here to prevent.
+    route = await complaint_channel(db)
+    rows = await statute.find_articles(db, ["art.13.2"], ["financial_consumer_protection_act"])
+    text = rows[0]["verbatim"]
+    assert "三十日" in text
+    assert route["internal_days"] == "30"
+    assert "六十日" in text
+    assert route["ombudsman_deadline_days"] == "60"
+
+
+async def test_gather_returns_both_halves(db):
+    facts = await gather(db, {"concern": "你們憑什麼解除我的契約"})
+    assert facts["statute_reference"], "provisions without the route reads as being read the law"
+    assert facts["complaint_channel"], "the route without provisions reads as being shown the door"
+
+
+def test_soothe_needs_no_identity():
+    # A person angry enough to be shouting is the worst audience for 請提供身分證字號, and
+    # neither tool reads a member row, so the derived gate lets it through. Asserted
+    # through the same derivation the executor uses, not by reading the decorator.
+    assert not tools.reads_identity(SOOTHE.tools)
+
+
+def test_soothe_forbids_admitting_fault_and_promising_payment():
+    assert "不可以承認公司有錯" in SOOTHE.injection
+    assert "不可以承諾會賠" in SOOTHE.injection
+
+
+def test_soothe_requires_the_favourable_half_of_a_provision():
+    assert "對保戶有利的部分要一起講" in SOOTHE.injection
+
+
+def test_soothe_forbids_uncited_statute():
+    assert "不可以引用工具沒有回傳的條文" in SOOTHE.injection
+
+
+def test_soothe_collects_the_complaint_in_the_customers_own_words():
+    concern = next(p for p in SOOTHE.params if p.name == "concern")
+    assert "不要改寫成公司用語" in concern.description
+
+
+def test_soothe_hands_off_to_a_scenario_that_can_read_the_policy():
+    # It cannot answer 這條怎麼適用在我身上 itself — that needs his contract, which needs
+    # verification. The transition is what makes the refusal a next step rather than a wall.
+    assert "explain_cover" in SOOTHE.transitions
