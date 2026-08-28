@@ -32,6 +32,8 @@ dependencies = [
   # text layer destroys.
   "pypdf>=5.0",
   "pdfplumber>=0.11",
+  "tantivy>=0.26",
+  "jieba>=0.42.1",
 ]
 
 [project.optional-dependencies]

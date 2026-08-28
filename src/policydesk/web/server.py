@@ -32,6 +32,7 @@ from policydesk.core import commands as cmd
 from policydesk.core.db import Database
 from policydesk.gov.identity import Sex, verify
 from policydesk.llm.provider import build_provider
+from policydesk.retrieval.index import open_index
 from policydesk.synthetic.alias import mint
 from policydesk.synthetic.person import generate, insurance_age, occupation_catalogue
 from policydesk.synthetic.portfolio import DEFAULT_PRESET, enrol, preset_catalogue
@@ -100,6 +101,9 @@ async def _open_db(application: Sanic, _loop) -> None:
     # whose sweep is down still answers — with a shorter memory, which is a degradation
     # rather than an outage.
     application.ctx.sweep = asyncio.create_task(memory.sweep_loop(application.ctx.db, application.ctx.provider))
+    # Opened once. A directory walk and an analyzer registration do not belong on the
+    # path a customer is waiting on, and the first build takes twenty seconds.
+    application.ctx.clauses = await open_index(application.ctx.db)
     if not os.environ.get("POLICYDESK_DESK_TOKEN"):
         logger.warning("desk_token_generated", token=DESK_TOKEN, hint="set POLICYDESK_DESK_TOKEN to fix it across restarts")
 
@@ -537,6 +541,7 @@ async def _answer(
     turn = await run_turn(
         request.app.ctx.provider, db,
         case_id=case_id, member_id=member_id, text=text, confirmed=confirmed,
+        index=request.app.ctx.clauses,
     )
     await db.execute(
         """INSERT INTO conversation_message (case_id, speaker, text, turn_id)
