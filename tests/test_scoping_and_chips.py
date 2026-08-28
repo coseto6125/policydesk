@@ -80,8 +80,11 @@ def test_the_contract_route_serves_only_what_the_viewer_holds():
     ID and address, and a contract PDF renders neither. The member scope is what does
     the work.
     """
+    held = SERVER[SERVER.index("async def _held("):SERVER.index("def _viewer(")]
+    assert "EXISTS (SELECT 1 FROM policy po" in held
+    assert "po.member_id = $2::bigint" in held
     body = SERVER[SERVER.index("async def contract("):SERVER.index('@app.get("/api/llm-turns")')]
-    assert "EXISTS (SELECT 1 FROM policy po WHERE po.product_id = p.product_id AND po.member_id = $2::bigint)" in body
+    assert "_held(" in body, "every contract read goes through the ownership check"
     assert "contract_out_of_scope" in body
 
 
