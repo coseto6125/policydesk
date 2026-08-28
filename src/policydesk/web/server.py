@@ -21,10 +21,12 @@ from typing import Any
 from msgspec import json
 from sanic import Request, Sanic, Websocket, html, response
 
+from policydesk.agent.executor import run_turn
 from policydesk.bootloader import logger
 from policydesk.core import commands as cmd
 from policydesk.core.db import Database
 from policydesk.gov.identity import verify
+from policydesk.llm.provider import OpenAIProvider
 from policydesk.synthetic.person import generate
 from policydesk.synthetic.portfolio import enrol
 from policydesk.web.session import Registry
@@ -40,6 +42,10 @@ app.ctx.desk_sockets = set()
 async def _open_db(application: Sanic, _loop) -> None:
     """Open the pool once, before the first request."""
     application.ctx.db = Database()
+    # One seam. With no key the provider raises and the executor says so; it never
+    # answers anyway, because a desk that invents an answer about someone's policy is
+    # worse than one that admits it cannot reach its model.
+    application.ctx.provider = OpenAIProvider()
 
 
 @app.after_server_stop
@@ -194,6 +200,25 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                            WHERE member_id = (SELECT member_id FROM "case" WHERE case_id = $1::bigint)""",
                         [case_id],
                     )
+
+                    member_id = await db.fetch_val(
+                        'SELECT member_id FROM "case" WHERE case_id = $1::bigint', [case_id]
+                    )
+                    turn = await run_turn(
+                        request.app.ctx.provider, db, case_id=case_id, member_id=member_id, text=text
+                    )
+                    await db.execute(
+                        """INSERT INTO conversation_message (case_id, speaker, text, turn_id)
+                           VALUES ($1::bigint,'agent',$2::text,$3::text)""",
+                        [case_id, turn.reply, turn.turn_id],
+                    )
+                    await ws.send(json.encode({
+                        "type": "reply",
+                        "text": turn.reply,
+                        "scenario": turn.scenario,
+                        "citations": list(turn.citations),
+                        "faults": list(turn.faults),
+                    }).decode())
                     await _push_case(db, ws, request.app, case_id)
 
                 case "upload" if case_id is not None:
