@@ -221,6 +221,7 @@ const STAGES = [
   ["inquiry","詢問"],["proposed","提出方案"],["issued","交付文件"],
   ["signed","已簽署"],["verified","身分已驗"],["review","人工審核"],
 ];
+const DESK_TOKEN = "__DESK_TOKEN__";
 let caseId = null, customerWs = null, deskWs = null, currentCase = null;
 
 const $ = (id) => document.getElementById(id);
@@ -333,7 +334,7 @@ function connectCustomer(name) {
 }
 
 function connectDesk() {
-  deskWs = new WebSocket(`ws://${location.host}/ws/desk`);
+  deskWs = new WebSocket(`ws://${location.host}/ws/desk?token=${encodeURIComponent(DESK_TOKEN)}`);
   deskWs.onopen = () => { $("deskStatus").textContent = "已連線 · 即時同步"; };
   deskWs.onmessage = (ev) => {
     const m = JSON.parse(ev.data);

@@ -41,6 +41,23 @@ def _is_transport_failure(exc: Exception) -> bool:
     return isinstance(exc, BaseConnectionError | BaseConnectionPoolError)
 
 
+def _no_rows(exc: Exception) -> bool:
+    """
+    Say whether an exception means the query matched nothing.
+
+    Args:
+        exc: What psqlpy raised.
+
+    Returns:
+        True for the "unexpected number of rows" error, which psqlpy raises from
+        fetch_val when a query returns none. It is not a transport failure, and it was
+        being retried three times before surfacing — three identical round trips and a
+        slower answer to "there is no such row".
+
+    """
+    return "unexpected number of rows" in str(exc)
+
+
 class Database:
     """One pool, with the fetch helpers the rest of the code uses."""
 
@@ -94,11 +111,21 @@ class Database:
             params: Values for the placeholders.
 
         Returns:
-            The scalar, or None.
+            The scalar, or None when the query matched no row.
+
+        psqlpy raises on an empty result here rather than returning None, so a caller
+        looking up a row that may not exist would otherwise get an exception where it
+        expected a null — and stamina would retry it twice first, because the message
+        looks like a failure rather than an answer.
 
         """
         async with self._pool.acquire() as conn:
-            return await conn.fetch_val(sql, params or [])
+            try:
+                return await conn.fetch_val(sql, params or [])
+            except Exception as exc:
+                if _no_rows(exc):
+                    return None
+                raise
 
     @stamina.retry(on=_is_transport_failure, attempts=3, timeout=20)
     async def execute(self, sql: str, params: Sequence[Any] | None = None) -> None:

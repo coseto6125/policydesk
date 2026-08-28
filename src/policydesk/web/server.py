@@ -14,11 +14,12 @@ nothing, and cannot be reopened tomorrow.
 """
 
 import asyncio
+import os
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
-from msgspec import json
+from msgspec import DecodeError, json
 from sanic import Request, Sanic, Websocket, html, response
 
 from policydesk.agent.executor import run_turn
@@ -32,6 +33,17 @@ from policydesk.synthetic.portfolio import enrol
 from policydesk.web.session import Registry
 
 STATIC = Path(__file__).parent / "static"
+
+# The back office reads every member's national ID, occupation and address. Without a
+# token anyone who can reach the port reads all of it — an acceptance run connected
+# straight to /ws/desk and pulled 17 cases with full personal data. A shared secret is
+# the smallest thing that is still true; a real deployment puts staff behind SSO.
+DESK_TOKEN = os.environ.get("POLICYDESK_DESK_TOKEN", "desk-demo-token")
+
+# A display name is an identifier, not prose. An acceptance run created a case whose
+# customer name was several hundred characters, which no pane can render and no
+# caseworker can search for.
+MAX_NAME = 40
 
 app = Sanic("policydesk")
 app.ctx.registry = Registry()
@@ -57,7 +69,7 @@ async def _close_db(application: Sanic, _loop) -> None:
 @app.get("/")
 async def index(_request: Request):
     """Serve the two-pane page."""
-    return html((STATIC / "index.html").read_text())
+    return html((STATIC / "index.html").read_text().replace("__DESK_TOKEN__", DESK_TOKEN))
 
 
 @app.get("/doc/<document_id:int>")
@@ -155,12 +167,19 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
 
     try:
         async for raw in ws:
-            message = json.decode(raw.encode())
+            if (message := _decode(raw)) is None:
+                await ws.send(json.encode({"type": "notice", "text": "訊息格式不正確", "level": "warn"}).decode())
+                continue
             match message.get("type"):
                 case "hello":
                     name = (message.get("name") or "").strip()
                     if not name:
                         await ws.send(json.encode({"type": "notice", "text": "請輸入姓名", "level": "warn"}).decode())
+                        continue
+                    if len(name) > MAX_NAME:
+                        await ws.send(json.encode({
+                            "type": "notice", "text": f"姓名請勿超過 {MAX_NAME} 字", "level": "warn",
+                        }).decode())
                         continue
 
                     session = await registry.claim(name, ws.send, ws.close)
@@ -294,11 +313,20 @@ async def desk_socket(request: Request, ws: Websocket) -> None:
 
     """
     db: Database = request.app.ctx.db
+
+    # Authenticate before anything is sent. The queue alone names every customer.
+    if request.args.get("token", "") != DESK_TOKEN:
+        logger.warning("desk_socket_rejected", peer=str(request.ip))
+        await ws.send(json.encode({"type": "notice", "text": "後台需要授權", "level": "warn"}).decode())
+        await ws.close()
+        return
+
     request.app.ctx.desk_sockets.add(ws)
     try:
         await ws.send(json.encode({"type": "queue", "cases": _jsonable(await _queue(db))}).decode())
         async for raw in ws:
-            message = json.decode(raw.encode())
+            if (message := _decode(raw)) is None:
+                continue
             match message.get("type"):
                 case "decide":
                     outcome = await cmd.decide(
@@ -390,6 +418,26 @@ async def llm_conversations(request: Request):
            GROUP BY u.case_id, m.display_name ORDER BY max(u.created_at) DESC LIMIT 100"""
     )
     return response.json(_jsonable(rows))
+
+
+def _decode(raw: str | bytes) -> dict[str, Any] | None:
+    """
+    Read one socket frame.
+
+    Args:
+        raw: What arrived.
+
+    Returns:
+        The message, or None when it was not a JSON object. A malformed frame
+        previously raised out of the handler and closed the socket, so one bad client
+        ended a session that was otherwise fine.
+
+    """
+    try:
+        message = json.decode(raw.encode() if isinstance(raw, str) else raw)
+    except (DecodeError, ValueError, UnicodeDecodeError):
+        return None
+    return message if isinstance(message, dict) else None
 
 
 def _jsonable(value: Any) -> Any:
