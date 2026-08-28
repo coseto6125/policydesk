@@ -15,6 +15,7 @@ nothing, and cannot be reopened tomorrow.
 
 import asyncio
 import os
+import secrets
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -38,7 +39,13 @@ STATIC = Path(__file__).parent / "static"
 # token anyone who can reach the port reads all of it — an acceptance run connected
 # straight to /ws/desk and pulled 17 cases with full personal data. A shared secret is
 # the smallest thing that is still true; a real deployment puts staff behind SSO.
-DESK_TOKEN = os.environ.get("POLICYDESK_DESK_TOKEN", "desk-demo-token")
+#
+# A hardcoded fallback would be worse than none: a default that ships in the source is
+# a password everyone already has, and it makes an unconfigured deployment look
+# protected. When the variable is unset a fresh token is minted per boot and logged, so
+# the operator has to read it out of the log to open the pane, and nobody else can
+# guess it.
+DESK_TOKEN = os.environ.get("POLICYDESK_DESK_TOKEN") or secrets.token_urlsafe(16)
 
 # A display name is an identifier, not prose. An acceptance run created a case whose
 # customer name was several hundred characters, which no pane can render and no
@@ -58,6 +65,8 @@ async def _open_db(application: Sanic, _loop) -> None:
     # answers anyway, because a desk that invents an answer about someone's policy is
     # worse than one that admits it cannot reach its model.
     application.ctx.provider = OpenAIProvider()
+    if not os.environ.get("POLICYDESK_DESK_TOKEN"):
+        logger.warning("desk_token_generated", token=DESK_TOKEN, hint="set POLICYDESK_DESK_TOKEN to fix it across restarts")
 
 
 @app.after_server_stop
