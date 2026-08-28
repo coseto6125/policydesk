@@ -108,3 +108,27 @@ async def test_claim_accepts_any_name_shape(name: str):
     sock = FakeSocket()
     await registry.claim(name, sock.send, sock.close)
     assert name in registry
+
+
+async def test_one_socket_saying_hello_twice_releases_the_first_name():
+    """
+    A customer can rename mid-session, and the old name must become claimable again.
+
+    The handler holds one `name` and one `session`; a second hello overwrites both, so
+    without an explicit release the first name stays in the registry pointing at a
+    socket that has since renamed itself, and the disconnect handler only frees the
+    last one. The name is then held until the process restarts.
+    """
+    registry = Registry()
+    sock = FakeSocket()
+
+    first = await registry.claim("甲名字", sock.send, sock.close)
+    registry.release("甲名字", first)
+    await registry.claim("乙名字", sock.send, sock.close)
+
+    assert "甲名字" not in registry
+    assert "乙名字" in registry
+
+    other = FakeSocket()
+    await registry.claim("甲名字", other.send, other.close)
+    assert other.messages == [], "reclaiming a released name must not evict anyone"
