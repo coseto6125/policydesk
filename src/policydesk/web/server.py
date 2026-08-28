@@ -14,6 +14,7 @@ nothing, and cannot be reopened tomorrow.
 """
 
 import asyncio
+import contextlib
 import os
 import secrets
 from datetime import UTC, date, datetime
@@ -23,6 +24,7 @@ from typing import Any
 from msgspec import DecodeError, json
 from sanic import Request, Sanic, Websocket, html, response
 
+from policydesk.agent import memory
 from policydesk.agent.executor import run_turn
 from policydesk.bootloader import logger
 from policydesk.core import commands as cmd
@@ -67,6 +69,10 @@ async def _open_db(application: Sanic, _loop) -> None:
     # someone's policy is worse than one that admits it is down.
     application.ctx.provider = build_provider()
     logger.info("provider_ready", provider=application.ctx.provider.name)
+    # Memory is written off the reply path. A customer never waits on it, and a desk
+    # whose sweep is down still answers — with a shorter memory, which is a degradation
+    # rather than an outage.
+    application.ctx.sweep = asyncio.create_task(memory.sweep_loop(application.ctx.db, application.ctx.provider))
     if not os.environ.get("POLICYDESK_DESK_TOKEN"):
         logger.warning("desk_token_generated", token=DESK_TOKEN, hint="set POLICYDESK_DESK_TOKEN to fix it across restarts")
 
@@ -74,6 +80,9 @@ async def _open_db(application: Sanic, _loop) -> None:
 @app.after_server_stop
 async def _close_db(application: Sanic, _loop) -> None:
     """Close the pool and the model session on the way out."""
+    application.ctx.sweep.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await application.ctx.sweep
     await application.ctx.db.close()
     await application.ctx.provider.close()
 

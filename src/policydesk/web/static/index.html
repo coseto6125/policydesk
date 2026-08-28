@@ -381,7 +381,11 @@
 
   /* ═══════════════ customer room ═══════════════ */
 
-  .chat { display: flex; flex-direction: column; background: var(--room); min-width: 0; }
+  /* min-height: 0 on both, or the log grows to fit its content and pushes the composer
+     off the screen. A flex item's default min-height is auto, which refuses to shrink
+     below the content — so `overflow-y: auto` on the log never gets a bounded height to
+     scroll inside. */
+  .chat { display: flex; flex-direction: column; background: var(--room); min-width: 0; min-height: 0; }
   .chat-top {
     background: var(--room-bar); color: var(--room-ink); padding: 0 var(--s3);
     height: 46px; display: flex; justify-content: space-between; align-items: center; gap: var(--s2);
@@ -390,7 +394,7 @@
   .chat-top .who small { display: block; font-weight: 400; font-size: 11px; opacity: .65; font-family: var(--mono); }
   .chat-top button { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.22); color: var(--room-ink); font-size: 11.5px; padding: 5px 10px; }
   .chat-top button:hover { background: rgba(255,255,255,.2); border-color: rgba(255,255,255,.4); }
-  .chat-log { flex: 1; overflow-y: auto; padding: var(--s4) var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
+  .chat-log { flex: 1; min-height: 0; overflow-y: auto; padding: var(--s4) var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
   .msg {
     max-width: 80%; padding: 9px 12px; border-radius: 16px; font-size: 13.5px;
     line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; box-shadow: var(--shadow-1);

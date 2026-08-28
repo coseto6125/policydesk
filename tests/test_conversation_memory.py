@@ -11,17 +11,18 @@ from datetime import date
 
 import pytest
 
-from policydesk.agent.executor import _as_budget, _transcript
+from policydesk.agent.executor import _as_budget
+from policydesk.agent.memory import transcript
 from policydesk.agent.tools import LINES
 from policydesk.synthetic.person import insurance_age
 
 
 def test_transcript_is_empty_before_anything_is_said():
-    assert _transcript([]) == ""
+    assert transcript([]) == ""
 
 
 def test_transcript_labels_both_sides_in_order():
-    block = _transcript([
+    block = transcript([
         {"speaker": "customer", "text": "想加保壽險"},
         {"speaker": "agent", "text": "請問預算？"},
         {"speaker": "customer", "text": "一年兩萬內"},
@@ -32,7 +33,7 @@ def test_transcript_labels_both_sides_in_order():
 
 
 def test_the_transcript_is_labelled_so_the_router_can_tell_it_from_this_turn():
-    assert "# 先前對話" in _transcript([{"speaker": "customer", "text": "x"}])
+    assert "# 先前對話" in transcript([{"speaker": "customer", "text": "x"}])
 
 
 @pytest.mark.parametrize(("raw", "expected"), [("20000", 20000), (" 20,000 ", 20000), ("0", 0)])
@@ -71,7 +72,7 @@ def test_gather_selects_the_line_the_customer_asked_for():
     from pathlib import Path
 
     source = Path("src/policydesk/agent/tools.py").read_text()
-    body = source[source.index("async def suitable_products"):source.index("async def history")]
+    body = source[source.index("async def suitable_products"):source.index("async def required_documents")]
     assert "p.line = $5::text" in body
     assert "p.line = 'health'" not in body
 
