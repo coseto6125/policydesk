@@ -307,6 +307,12 @@ async def run_turn(
             "已保留該回覆並轉由專人與您確認。"
         )
         return turn
+    if not completion.text.strip():
+        # A model that answered with tool calls and no prose leaves the customer
+        # looking at an empty bubble. There is no second round here to fill it in.
+        logger.warning("answer_empty", case_id=case_id, scenario=scenario.name)
+        turn.reply = "本次查詢未能組出完整回覆，已保留紀錄並轉由專人與您聯繫。"
+        return turn
     turn.reply = completion.text
     return turn
 

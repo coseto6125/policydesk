@@ -17,14 +17,17 @@ visible in this file rather than assembled three layers down, which matters when
 body is what gets stored for audit.
 """
 
+import asyncio
 import os
+import shutil
+import tempfile
 import time
 from enum import StrEnum
 from typing import Any, Protocol
 
 import aiohttp
 import stamina
-from msgspec import Struct
+from msgspec import DecodeError, Struct, json
 
 from policydesk.bootloader import logger
 
@@ -291,3 +294,323 @@ def _output_text(payload: dict[str, Any]) -> str:
         if content.get("type") == "output_text"
     ]
     return "".join(parts)
+
+
+# ---------------------------------------------------------------- codex CLI provider
+
+CODEX_BIN = os.environ.get("POLICYDESK_CODEX_BIN", "codex")
+CODEX_EFFORT = os.environ.get("POLICYDESK_CODEX_EFFORT", "low")
+# One model name across both providers. The CLI runs with --ignore-user-config, so
+# without this it would answer on its own built-in default rather than the model this
+# deployment names — and llm_usage would record a model nobody chose.
+CODEX_MODEL = os.environ.get("POLICYDESK_CODEX_MODEL", DEFAULT_MODEL)
+CODEX_CONCURRENCY = int(os.environ.get("POLICYDESK_CODEX_CONCURRENCY", "4"))
+
+_TOOL_ENVELOPE: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "reply": {
+            "type": "string",
+            "description": "The prose the customer reads. Always written, including when tools are called.",
+        },
+        "tool_calls": {
+            "type": "array",
+            "description": "The tools to call. Empty when the reply needs none.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "arguments": {"type": "string", "description": "A JSON object, encoded as a string."},
+                },
+                "required": ["name", "arguments"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["reply", "tool_calls"],
+    "additionalProperties": False,
+}
+
+
+def _tool_brief(tools: list[dict[str, Any]]) -> str:
+    """
+    Describe the offered tools in the prompt, because the CLI takes no tool schemas.
+
+    Args:
+        tools: Function-tool schemas, in the shape the Responses API takes.
+
+    Returns:
+        A block naming each tool, its purpose and its parameters.
+
+    """
+    lines = ["# 可呼叫的工具"]
+    for tool in tools:
+        params = (tool.get("parameters") or {}).get("properties") or {}
+        argues = "、".join(f"{k}（{v.get('description', '')}）" for k, v in params.items()) or "無參數"
+        lines.append(f"- `{tool['name']}`：{tool.get('description', '')}\n  參數：{argues}")
+    lines.append(
+        "\n以 JSON 物件回覆，欄位為 reply 與 tool_calls。"
+        "reply 一律寫滿，那是保戶讀到的整段答覆。"
+        "要呼叫工具就把它放進 tool_calls，arguments 是把參數物件編碼成的 JSON 字串；"
+        "不呼叫任何工具時 tool_calls 為空陣列。"
+        "本櫃台一回合只呼叫一次工具，工具結果不會再回到你手上，"
+        "所以要說的話都寫進 reply，不要留待下一輪。"
+    )
+    return "\n".join(lines)
+
+
+class CodexCliProvider:
+    """
+    Runs the model through the locally authenticated `codex` CLI.
+
+    The seam exists so the desk can run with no API key: `codex` is already signed in
+    on this machine and billed by subscription, so a demo costs nothing to drive. The
+    trade is latency — every call is a process, about five seconds against about one
+    for the HTTP path — and no streaming.
+
+    Two shapes reach the CLI through `--output-schema`, which constrains the final
+    message to a JSON Schema:
+
+    - A caller that passes `schema` gets that schema through unchanged.
+    - A caller that passes `tools` gets `_TOOL_ENVELOPE`, and the tools themselves are
+      described in the prompt. The CLI has no tool-calling API of its own, so a tool
+      call here is the model naming the tool in its answer. The names and arguments
+      still land in `Completion.tool_calls`, so nothing above this module changes.
+
+    The subprocess runs in an empty directory with `--ignore-user-config` and
+    `--ignore-rules`, so it picks up no AGENTS.md, no MCP servers and no hooks from the
+    developer's own machine. What the desk asks is all the model reads.
+    """
+
+    name = "codex-cli"
+
+    def __init__(self, model: str = CODEX_MODEL, effort: str = CODEX_EFFORT) -> None:
+        self._model = model
+        self._effort = effort
+        self._workdir: str | None = None
+        self._gate = asyncio.Semaphore(CODEX_CONCURRENCY)
+
+    async def close(self) -> None:
+        """Remove the scratch directory the subprocesses ran in."""
+        if self._workdir is not None:
+            shutil.rmtree(self._workdir, ignore_errors=True)
+            self._workdir = None
+
+    def _root(self) -> str:
+        """
+        Return the empty directory the CLI runs in, creating it on first use.
+
+        Returns:
+            A path holding nothing. Running there is what keeps the developer's own
+            AGENTS.md out of a customer's turn.
+
+        """
+        if self._workdir is None:
+            self._workdir = tempfile.mkdtemp(prefix="policydesk-codex-")
+        return self._workdir
+
+    async def complete(
+        self,
+        *,
+        instructions: str,
+        user_input: str,
+        tools: list[dict[str, Any]] | None = None,
+        schema: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> Completion:
+        """
+        Ask the model once, through the CLI.
+
+        Args:
+            instructions: The system-level brief.
+            user_input: What this turn is about.
+            tools: Tool schemas the model may call, described into the prompt.
+            schema: A JSON Schema the reply must satisfy.
+            model: Overrides the configured model.
+
+        Returns:
+            The completion and its usage.
+
+        Raises:
+            ProviderError: The CLI failed, or its reply did not parse.
+
+        """
+        enforced = schema or (_TOOL_ENVELOPE if tools else None)
+        prompt = instructions
+        if tools and not schema:
+            prompt = f"{instructions}\n\n{_tool_brief(tools)}"
+        prompt = f"{prompt}\n\n# 本回合\n{user_input}"
+
+        started = time.perf_counter()
+        async with self._gate:
+            stdout = await self._run(prompt, enforced, model or self._model)
+        latency_ms = int((time.perf_counter() - started) * 1000)
+
+        text, usage = _read_events(stdout)
+        calls: tuple[dict[str, Any], ...] = ()
+        if tools and not schema:
+            text, calls = _split_envelope(text)
+
+        return Completion(
+            text=text,
+            tool_calls=calls,
+            model=model or self._model or "codex-default",
+            prompt_tokens=usage.get("input_tokens", 0),
+            completion_tokens=usage.get("output_tokens", 0),
+            cached_tokens=usage.get("cached_input_tokens", 0),
+            total_tokens=usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+            latency_ms=latency_ms,
+            provider=self.name,
+            raw={"usage": usage, "text": text[:4000]},
+        )
+
+    async def _run(self, prompt: str, schema: dict[str, Any] | None, model: str) -> str:
+        """
+        Run one `codex exec` and return its event stream.
+
+        Args:
+            prompt: The whole prompt, sent on stdin so no quoting rule applies to it.
+            schema: The schema to constrain the final message with, if any.
+            model: The model to pass with `-m`, if any.
+
+        Returns:
+            The JSONL the CLI printed.
+
+        Raises:
+            ProviderError: The CLI exited non-zero or could not be started.
+
+        """
+        args = [
+            CODEX_BIN, "exec", "-",
+            "--sandbox", "read-only",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "-C", self._root(),
+            "--json",
+            "-c", f"model_reasoning_effort={self._effort}",
+        ]
+        if model:
+            args += ["-m", model]
+
+        # The schema goes to a file because that is the only form the flag takes. It is
+        # written per call rather than cached: the router, the answering call and the
+        # validator each enforce a different one.
+        handle, path = tempfile.mkstemp(suffix=".json", dir=self._root())
+        try:
+            if schema is not None:
+                os.write(handle, json.encode(schema))
+                args += ["--output-schema", path]
+            os.close(handle)
+
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+            except OSError as exc:
+                raise ProviderError(f"codex cli not runnable: {exc}") from exc
+
+            try:
+                out, err = await asyncio.wait_for(process.communicate(prompt.encode()), timeout=180)
+            except TimeoutError as exc:
+                process.kill()
+                raise ProviderError("codex cli timed out after 180s") from exc
+
+            if process.returncode != 0:
+                tail = err.decode(errors="replace")[-400:]
+                logger.warning("codex_cli_failed", returncode=process.returncode, stderr=tail)
+                raise ProviderError(f"codex exec exited {process.returncode}: {tail}")
+            return out.decode(errors="replace")
+        finally:
+            os.unlink(path)
+
+
+def _read_events(stream: str) -> tuple[str, dict[str, int]]:
+    """
+    Read the final message and the usage out of a codex JSONL stream.
+
+    Args:
+        stream: What `codex exec --json` printed.
+
+    Returns:
+        The last agent message, and the turn's token counts.
+
+    Raises:
+        ProviderError: The stream carried no agent message.
+
+    """
+    text = ""
+    usage: dict[str, int] = {}
+    for line in stream.splitlines():
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.decode(line.encode())
+        except DecodeError:
+            continue
+        match event.get("type"):
+            case "item.completed" if (item := event.get("item", {})).get("type") == "agent_message":
+                text = item.get("text", "")
+            case "turn.completed":
+                usage = event.get("usage") or {}
+            case "turn.failed":
+                raise ProviderError(f"codex turn failed: {str(event.get('error'))[:200]}")
+    if not text:
+        raise ProviderError("codex produced no agent message")
+    return text, usage
+
+
+def _split_envelope(text: str) -> tuple[str, tuple[dict[str, Any], ...]]:
+    """
+    Read `_TOOL_ENVELOPE` back into a reply and a tuple of tool calls.
+
+    Args:
+        text: The model's final message, expected to be the envelope object.
+
+    Returns:
+        The prose reply, and the calls in the shape the Responses API returns them.
+
+    Raises:
+        ProviderError: The envelope did not parse. The caller says it could not answer
+            rather than treating a malformed reply as an empty one, which would look
+            to the executor like a model that simply chose no tool.
+
+    """
+    body = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    try:
+        parsed = json.decode(body.encode())
+    except DecodeError as exc:
+        raise ProviderError(f"codex reply was not the tool envelope: {body[:200]}") from exc
+    if not isinstance(parsed, dict):
+        raise ProviderError(f"codex reply was not an object: {body[:200]}")
+    calls = tuple(
+        {"type": "function_call", "name": call.get("name", ""), "arguments": call.get("arguments", "{}")}
+        for call in parsed.get("tool_calls") or []
+        if isinstance(call, dict)
+    )
+    return parsed.get("reply", ""), calls
+
+
+def build_provider() -> Provider:
+    """
+    Choose the provider this deployment runs on.
+
+    Returns:
+        The HTTP provider when an API key is set, and the CLI provider otherwise.
+        `POLICYDESK_PROVIDER` forces either one. The fallback is deliberate: a machine
+        with `codex` signed in can drive the whole desk with no key at all, and a
+        deployment that meant to use a key finds out at the first turn rather than
+        silently spending someone else's subscription.
+
+    """
+    match os.environ.get("POLICYDESK_PROVIDER", "").lower():
+        case "openai":
+            return OpenAIProvider()
+        case "codex":
+            return CodexCliProvider()
+        case _:
+            if os.environ.get("OPENAI_API_KEY"):
+                return OpenAIProvider()
+            logger.info("provider_selected", provider="codex-cli", reason="no OPENAI_API_KEY")
+            return CodexCliProvider()

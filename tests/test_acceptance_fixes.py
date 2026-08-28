@@ -166,7 +166,11 @@ def test_unverifiable_reply_is_withheld_rather_than_annotated():
     from pathlib import Path
 
     source = Path("src/policydesk/agent/executor.py").read_text()
-    block = source[source.index("if not checked.trustworthy:"):source.index("    turn.reply = completion.text\n    return turn")]
+    # The branch itself, up to its own return. Slicing to the function's last line
+    # instead swept in every guard added after it, and the test then failed on code
+    # that had nothing to do with the withholding it checks.
+    start = source.index("if not checked.trustworthy:")
+    block = source[start:source.index("return turn", start)]
     assert "completion.text" not in block, "the unverifiable text must not be forwarded"
     assert "轉由專人" in block
 
