@@ -204,3 +204,58 @@ def test_the_statutes_own_branch_notation_is_accepted():
     # 之十 is how the Act writes it in its own cross-references, and a model copying the
     # corpus will sometimes copy that.
     assert cited("〔保險法 第149之10條第3項〕") == [("保險法", "art.149-10.3")]
+
+
+def test_a_citation_written_in_prose_is_still_read():
+    # The model is told to copy the bracketed form, and mostly does. What matters is what
+    # happens when it does not: a citation the pattern misses is not one the checker
+    # rejects, it is one the checker never sees, so the reply ships uncheckable.
+    assert cited("依保險法第64條第2項，保險人得解除契約") == [("保險法", "art.64.2")]
+    assert cited("（保險法 第64條第2項）") == [("保險法", "art.64.2")]
+    assert cited("〔保險法 第 64 條 第 2 項〕") == [("保險法", "art.64.2")]
+
+
+def test_a_citation_in_chinese_numerals_is_read():
+    # The statute cross-references itself this way — 第六十四條第三項 appears verbatim
+    # inside 第68條 — so a model quoting the corpus reproduces it.
+    assert cited("根據保險法第六十四條第二項") == [("保險法", "art.64.2")]
+    assert cited("保險法第一百四十九條之十第三項") == [("保險法", "art.149-10.3")]
+
+
+def test_both_notations_for_a_branch_article_agree():
+    # Digits put 之N before 條 and words put it after. Both are in the corpus.
+    assert cited("〔保險法 第8-1條第1項〕") == cited("〔保險法 第八條之一第1項〕") == [("保險法", "art.8-1.1")]
+
+
+def test_a_leading_particle_does_not_become_part_of_the_statutes_name():
+    # The name is half the key the recheck looks up. 依保險法 matches no statute, so a real
+    # citation would be reported as invented and the reply withheld for nothing.
+    assert cited("依保險法第64條") == cited("參照保險法第64條") == [("保險法", "art.64")]
+
+
+def test_a_contract_article_is_not_read_as_a_statute():
+    # 本契約第3條 is the customer's own policy. Without the 法/細則/辦法 anchor the checker
+    # would look it up as a statute, find nothing, and void a reply nobody miscited in.
+    assert cited("本契約第3條約定的等待期") == []
+    assert cited("依第64條規定") == []
+
+
+async def test_every_provision_resolves_from_the_prose_form_too(db):
+    rows = await db.fetch(
+        """SELECT a.statute_id, s.name AS statute_name, a.doc_id, a.article, a.branch,
+                  a.paragraph, a.subparagraph
+           FROM statute_article a JOIN statute s USING (statute_id)"""
+    )
+    bad = []
+    for row in rows:
+        prose = "依" + row["statute_name"] + _readable(row).strip("〔〕").split(" ", 1)[1]
+        if cited(prose) != [(row["statute_name"], row["doc_id"])]:
+            bad.append(row["doc_id"])
+    assert not bad, bad[:10]
+
+
+async def test_the_looser_pattern_still_catches_an_invented_provision(db):
+    # Reading more forms must not mean rejecting fewer. Both directions asserted.
+    assert await recheck_citations(db, "依保險法第999條第1項") == [("保險法", "art.999.1")]
+    assert await recheck_citations(db, "依保險法施行細則第64條第2項") == [("保險法施行細則", "art.64.2")]
+    assert await recheck_citations(db, "依保險法第64條第2項") == []
