@@ -38,6 +38,7 @@ from policydesk.validation.validator import Verdict, recheck
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
+    from policydesk.retrieval.index import ClauseIndex
 
 # "art.17", "art.17.carve1", "waiting" — the ids the clause index actually mints.
 _CITATION = re.compile(r"\b(?:art\.\d{1,3}(?:\.carve\d)?|waiting)\b")
@@ -217,7 +218,14 @@ def _as_budget(raw: str) -> int | None:
 
 
 async def _gather(
-    db: Database, scenario: Scenario, turn: Turn, *, today: date, params: dict[str, str], confirmed: bool = True
+    db: Database,
+    scenario: Scenario,
+    turn: Turn,
+    *,
+    today: date,
+    params: dict[str, str],
+    confirmed: bool = True,
+    index: ClauseIndex | None = None,
 ) -> dict[str, Any]:
     """
     Run the scenario's tools, on what the model collected.
@@ -231,6 +239,8 @@ async def _gather(
         confirmed: Whether this session has passed 資料核對. Unconfirmed, every tool
             marked `requires_identity` is skipped — the query never runs, so there is
             nothing read and then withheld.
+        index: The BM25 clause index, when one is open. None falls back to the SQL
+            search, which ranks worse and still answers.
 
     Returns:
         Everything the tools returned, by tool name. Unconfirmed, only the public ones.
@@ -249,7 +259,7 @@ async def _gather(
     # trip each, on the path a customer is waiting on.
     pending: dict[str, Any] = {"_allowed_clauses": tools.clause_ids_for(db, product_ids)}
     if "find_clause" in scenario.tools:
-        pending["find_clause"] = tools.find_clause(db, product_ids, params.get("topic", ""))
+        pending["find_clause"] = tools.find_clause(db, product_ids, params.get("topic", ""), index=index)
     if "find_multiplier" in scenario.tools:
         pending["find_multiplier"] = tools.find_multiplier(db, product_ids, params.get("event", turn.procedure_hint))
     if "catalogue_sample" in scenario.tools:
@@ -360,6 +370,7 @@ async def run_turn(
     member_id: int,
     text: str,
     confirmed: bool = False,
+    index: ClauseIndex | None = None,
     today: date | None = None,
 ) -> Turn:
     """
@@ -404,6 +415,11 @@ async def run_turn(
     # router can only ask 想了解哪一項保障主題, which makes the customer do a lookup the
     # desk could have done; holding it, the same question arrives with the answers in it.
     known = f"# 這位保戶的現況\n{etoon.dumps(brief)}\n\n" if brief else ""
+    if confirmed:
+        # Stated, because the summary the sweep wrote during the unverified half of the
+        # conversation says the opposite, and the model believed it — answering a
+        # verified customer with 目前尚無法執行身分核對 one turn after the check passed.
+        known = f"# 本次連線已完成身分核對，可以查詢這位保戶的資料\n\n{known}"
     if not confirmed:
         # Told to the model, so the ask arrives in the conversation rather than as a
         # system refusal, and enforced below, so a model that ignores it still reads
@@ -448,7 +464,7 @@ async def run_turn(
     turn.quick_replies = scenario.quick_replies or OPENERS
     turn.procedure_hint = text
     turn.params = params
-    facts = await _gather(db, scenario, turn, today=today, params=params, confirmed=confirmed)
+    facts = await _gather(db, scenario, turn, today=today, params=params, confirmed=confirmed, index=index)
     allowed: frozenset[str] = facts.pop("_allowed_clauses")
 
     if scenario.emit is Emit.TEMPLATE:

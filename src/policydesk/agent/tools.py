@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from datetime import date
 
     from policydesk.core.db import Database
+    from policydesk.retrieval.index import ClauseIndex
 
 
 def requires_identity(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -92,8 +93,43 @@ async def list_policies(db: Database, member_id: int, *, today: date) -> list[di
     )
 
 
+async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """
+    Read the clauses the index named, in the order it ranked them.
+
+    Args:
+        db: The database.
+        keys: (product_id, clause_id) pairs, best first.
+
+    Returns:
+        The full rows, still in rank order. Postgres returns a set, so the ordering is
+        reimposed here rather than trusted — a search whose ranking is discarded on the
+        way back is a search that did nothing.
+
+    """
+    if not keys:
+        return []
+    # Two parallel arrays joined through unnest, not a record[]. psqlpy binds a Python
+    # tuple list to record[] by panicking in its Rust layer — `entered unreachable
+    # code`, no SQL error, no column named.
+    products, clauses = [k[0] for k in keys], [k[1] for k in keys]
+    rows = await db.fetch(
+        """SELECT c.product_id, c.clause_id, c.kind, c.heading, c.verbatim, c.page, p.name AS product_name
+           FROM clause c
+           JOIN product p USING (product_id)
+           JOIN unnest($1::text[], $2::text[]) AS want(product_id, clause_id)
+             ON want.product_id = c.product_id AND want.clause_id = c.clause_id""",
+        [products, clauses],
+    )
+    rank = {key: position for position, key in enumerate(keys)}
+    rows.sort(key=lambda r: rank.get((r["product_id"], r["clause_id"]), len(rank)))
+    return rows
+
+
 @requires_identity
-async def find_clause(db: Database, product_ids: list[str], topic: str, limit: int = 6) -> list[dict[str, Any]]:
+async def find_clause(
+    db: Database, product_ids: list[str], topic: str, limit: int = 6, index: ClauseIndex | None = None
+) -> list[dict[str, Any]]:
     """
     Find clauses of given products that bear on a topic.
 
@@ -110,9 +146,16 @@ async def find_clause(db: Database, product_ids: list[str], topic: str, limit: i
     match the words. A customer asking what their policy covers is answered wrongly by
     a grant clause alone, and those three are exactly what a keyword search buries.
 
+    Ranked by BM25 when the index is open, by ILIKE when it is not. The difference is
+    not subtle on this corpus: 換工作會不會影響保險 shares no substring with 職業變更,
+    so a LIKE finds nothing and BM25 finds the clause. The fallback exists because a
+    desk whose ranking is worse still answers, and one that will not start does not.
+
     """
     if not product_ids:
         return []
+    if index is not None and (hits := index.search(topic, product_ids, limit=limit)):
+        return await _clauses_by_id(db, [(h["product_id"], h["clause_id"]) for h in hits])
     return await db.fetch(
         """SELECT c.product_id, c.clause_id, c.kind, c.heading, c.verbatim, c.page, p.name AS product_name
            FROM clause c JOIN product p USING (product_id)
