@@ -81,3 +81,52 @@ def test_json_decode_error_is_the_type_the_server_catches():
     """Guards the import: catching the wrong exception type puts the bug straight back."""
     with pytest.raises(DecodeError):
         json.decode(b"{not json")
+
+
+def test_document_route_requires_the_same_token_as_the_desk():
+    """
+    /doc/<id> renders an applicant's national ID, birth date and address.
+
+    document_id is a sequential bigserial, so an unguarded route lets a loop over the
+    integers walk every member's personal data — which a code review demonstrated by
+    curling /doc/1 and reading 陳大文's ID off the page.
+    """
+    from pathlib import Path
+
+    source = Path("src/policydesk/web/server.py").read_text()
+    doc_route = source[source.index('@app.get("/doc/'):source.index('@app.get("/health")')]
+    assert "DESK_TOKEN" in doc_route, "the document route must be gated like the desk socket"
+    assert "403" in doc_route
+
+
+def test_both_signing_parties_are_required():
+    """要保人 and 被保險人 must each sign personally, or the contract may be void."""
+    from policydesk.core.commands import SIGNING_PARTIES
+
+    assert len(SIGNING_PARTIES) == 2
+
+
+def test_identity_check_is_gated_before_it_is_recorded():
+    """
+    A verified row on a case still at INQUIRY satisfied submit_for_review forever.
+
+    submit_for_review reads bool_or(verified), so a check taken before any document
+    existed permanently cleared the identity leg of the completeness test. The stage
+    gate has to run before the insert, not after it.
+    """
+    from pathlib import Path
+
+    source = Path("src/policydesk/core/commands.py").read_text()
+    body = source[source.index("async def verify_identity"):source.index("async def submit_for_review")]
+    gate = body.index("may_advance")
+    insert = body.index("INSERT INTO identity_check")
+    assert gate < insert, "the stage gate must precede the insert"
+
+
+def test_identity_check_compares_against_the_case_owner():
+    """A well-formed number is not the case owner's number."""
+    from pathlib import Path
+
+    source = Path("src/policydesk/core/commands.py").read_text()
+    body = source[source.index("async def verify_identity"):source.index("async def submit_for_review")]
+    assert "member_national_id" in body, "the check must compare against the case's member"

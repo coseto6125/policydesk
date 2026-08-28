@@ -381,7 +381,7 @@ $("modalDocs").addEventListener("click", (e) => {
   const id = e.target.dataset.doc;
   if (!id) return;
   if (e.target.classList.contains("dl")) {
-    window.open(`/doc/${id}`, "_blank");
+    window.open(`/doc/${id}?token=${encodeURIComponent(DESK_TOKEN)}`, "_blank");
   } else if (e.target.classList.contains("up")) {
     const input = document.createElement("input");
     input.type = "file";
