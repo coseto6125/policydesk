@@ -3,11 +3,11 @@ Scenarios: what the desk can do, and what it may say while doing it.
 
 Follows enoract's shape, because the problem is the same one vertical over. A scenario
 names itself, states what the model is told when it is entered, lists the tools it may
-call, declares the parameters that must be collected before it runs, and carries a
-`skip_llm` switch.
+call, declares the parameters that must be collected before it runs, and declares how it
+emits its answer.
 
-`skip_llm` is the important one here. When it is set the executor emits the scenario's
-own template verbatim and never reaches a model. Everything that states a figure, a
+`emit` is the important one here. Set to `Emit.TEMPLATE` the executor renders the
+scenario's own template from the tool rows and never reaches a model. Everything that states a figure, a
 clause or a document requirement runs that way, so the sentence a customer reads about
 their own policy is assembled from database rows rather than generated. The model's
 job is the conversation around those sentences, not the sentences themselves.
@@ -165,8 +165,9 @@ CLAIM_CHECKLIST = Scenario(
         "你不判斷賠不賠，也不承諾任何金額——核保理賠人員才有權決定。"
         "你要做的是列出這次申請需要哪些文件、每份文件必須載明什麼，"
         "以及目前還缺什麼。條款依據以工具回傳的條號為準。"
+        "若需說明給付倍數，一律呼叫 calculate 工具計算，不要自行心算或估計。"
     ),
-    tools=("required_documents", "list_policies"),
+    tools=("required_documents", "list_policies", "find_multiplier"),
     params=(
         Param(name="event", description="事故或就醫情形", example="住院四天接受手術"),
         Param(name="event_date", description="事故或就醫日期", example="2026-08-01"),
