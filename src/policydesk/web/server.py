@@ -142,14 +142,19 @@ async def _broadcast_desk(application: Sanic, payload: dict[str, Any]) -> None:
     would show them a version behind, which is exactly the drift that makes two panes
     into two stories.
     """
-    dead = set()
     body = json.encode(payload).decode()
-    for socket in application.ctx.desk_sockets:
-        try:
-            await socket.send(body)
-        except (ConnectionError, asyncio.CancelledError):
-            dead.add(socket)
-    application.ctx.desk_sockets -= dead
+    sockets = list(application.ctx.desk_sockets)
+    if not sockets:
+        return
+
+    # Sent together, not in turn. This runs inline on every customer message, so a
+    # sequential loop lets one slow-but-alive desk pane stall both the panes behind it
+    # and the customer's own turn — the except clause anticipated dead sockets, not
+    # slow ones.
+    results = await asyncio.gather(*(socket.send(body) for socket in sockets), return_exceptions=True)
+    application.ctx.desk_sockets -= {
+        socket for socket, outcome in zip(sockets, results, strict=True) if isinstance(outcome, BaseException)
+    }
 
 
 async def _next_serial(db: Database) -> int:
