@@ -19,6 +19,7 @@ import pytest
 from policydesk.agent import statute, tools
 from policydesk.agent.scenarios.soothe import (
     SOOTHE,
+    _readable,
     cited,
     complaint_channel,
     gather,
@@ -130,11 +131,28 @@ async def test_gather_returns_both_halves(db):
     assert facts["complaint_channel"], "the route without provisions reads as being shown the door"
 
 
-def test_soothe_needs_no_identity():
-    # A person angry enough to be shouting is the worst audience for 請提供身分證字號, and
-    # neither tool reads a member row, so the derived gate lets it through. Asserted
-    # through the same derivation the executor uses, not by reading the decorator.
+def test_soothe_tools_read_no_member_record():
+    # The property that matters, asserted on the function objects themselves: neither tool
+    # is marked, so neither may read one named customer's record. A person angry enough to
+    # be shouting is the worst audience for 請提供身分證字號.
+    from policydesk.agent.scenarios.soothe import TOOLS
+
+    assert not [name for name, fn in TOOLS.items() if getattr(fn, "requires_identity", False)]
+
+
+def test_soothe_passes_the_executors_gate():
     assert not tools.reads_identity(SOOTHE.tools)
+
+
+def test_the_gate_cannot_see_tools_outside_the_tools_module():
+    # Recorded rather than worked around, because it belongs to `tools.py` which the
+    # retrieval session owns. `reads_identity` resolves names through that module's
+    # globals, so ANY name it does not define reads as unmarked — including a decorated
+    # tool living in a scenario package like this one. SOOTHE is safe because its tools
+    # genuinely read nothing, not because the derivation checked them; a later scenario
+    # module that adds a @requires_identity tool would be waved through.
+    assert not tools.reads_identity(("no_such_tool_at_all",))
+    assert set(SOOTHE.tools).isdisjoint(dir(tools)), "if these ever land in tools.py, this note is stale"
 
 
 def test_soothe_forbids_admitting_fault_and_promising_payment():
@@ -159,3 +177,30 @@ def test_soothe_hands_off_to_a_scenario_that_can_read_the_policy():
     # It cannot answer 這條怎麼適用在我身上 itself — that needs his contract, which needs
     # verification. The transition is what makes the refusal a next step rather than a wall.
     assert "explain_cover" in SOOTHE.transitions
+
+
+async def test_every_provision_in_the_corpus_round_trips_through_the_citation_format(db):
+    # The property the whole check rests on: a citation the tool formats must be one the
+    # reader reads back as the same provision. Asserted over all 1,212 rather than on
+    # examples, because that is how 第149-10條 was found — a single-digit branch pattern
+    # read it as no citation at all, and an unreadable citation is not one the checker
+    # rejects, it is one the checker never sees.
+    rows = await db.fetch(
+        """SELECT a.statute_id, s.name AS statute_name, a.doc_id, a.article, a.branch,
+                  a.paragraph, a.subparagraph
+           FROM statute_article a JOIN statute s USING (statute_id)"""
+    )
+    bad = [r["doc_id"] for r in rows if cited(_readable(r)) != [(r["statute_name"], r["doc_id"])]]
+    assert not bad, bad[:10]
+
+
+async def test_a_two_digit_branch_article_is_readable_and_checkable(db):
+    assert cited("〔保險法 第149-10條第3項〕") == [("保險法", "art.149-10.3")]
+    assert await recheck_citations(db, "〔保險法 第149-10條第3項〕") == []
+    assert await recheck_citations(db, "〔保險法 第149-99條〕") == [("保險法", "art.149-99")]
+
+
+def test_the_statutes_own_branch_notation_is_accepted():
+    # 之十 is how the Act writes it in its own cross-references, and a model copying the
+    # corpus will sometimes copy that.
+    assert cited("〔保險法 第149之10條第3項〕") == [("保險法", "art.149-10.3")]
