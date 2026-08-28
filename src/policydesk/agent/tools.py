@@ -12,6 +12,7 @@ this same store before anything renders, so a citation the model invents fails a
 lookup rather than reaching a customer.
 """
 
+import asyncio
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -140,30 +141,90 @@ async def suitable_products(
     )
 
 
-async def history(db: Database, case_id: int, limit: int = 10) -> list[dict[str, Any]]:
+_RELAXED = """\
+SELECT p.product_id, p.name, p.line, ce.unit_premium, ce.unit_label,
+       ce.issue_age_min, ce.issue_age_max, ce.max_occupation
+FROM catalog_entry ce JOIN product p USING (product_id)
+WHERE ce.on_sale
+  AND p.line = $5::text
+  AND ($1::int BETWEEN ce.issue_age_min AND ce.issue_age_max OR NOT $6::bool)
+  AND ($2::int <= ce.max_occupation OR NOT $7::bool)
+  AND (ce.unit_premium <= $3::numeric OR NOT $8::bool)
+ORDER BY ce.unit_premium ASC
+LIMIT $4::int"""
+
+
+_CEILINGS = """\
+SELECT max(ce.issue_age_max) AS age_max, min(ce.issue_age_min) AS age_min,
+       max(ce.max_occupation) AS occupation_max, min(ce.unit_premium) AS cheapest,
+       count(*) AS on_sale
+FROM catalog_entry ce JOIN product p USING (product_id)
+WHERE ce.on_sale AND ($1::text = '' OR p.line = $1::text)"""
+
+
+async def alternatives(
+    db: Database, *, insurance_age: int, occupation_class: int, budget: int, line: str, limit: int = 3
+) -> dict[str, Any]:
     """
-    Read back what has already been said on this case.
+    Say why nothing qualified, and what would.
 
     Args:
         db: The database.
-        case_id: Which case.
-        limit: How many of the most recent messages to carry.
+        insurance_age: 保險年齡.
+        occupation_class: 1 to 7.
+        budget: Annual premium the customer said they can carry.
+        line: The line they asked about.
+        limit: Products to name per opening.
 
     Returns:
-        Messages oldest-first, so the model reads them in the order they happened.
+        `binding` — the criteria the customer sits outside, each with their value and
+        the catalogue's actual ceiling. `openings` — one entry per single relaxation
+        that reaches something, naming the condition it drops and the products behind
+        it. Either may be empty.
 
-    Every turn was already being written here and none was ever read, so the desk
-    asked a customer for a budget they had stated two turns earlier. The window is
-    bounded because a case runs long and the router only needs what is still open.
+    A customer told 沒有符合的商品 learns nothing and has nowhere to go. An adviser in
+    that position names the binding condition and says what happens if it moves. Both
+    halves come from the catalogue, so neither is the model's opinion: `binding` is a
+    comparison against a stored ceiling, and each opening is a query with exactly one
+    predicate removed, which is what makes it attributable.
+
+    The probes go out together. They are independent, and a customer waiting on a
+    refusal should not wait on it six times over.
 
     """
-    rows = await db.fetch(
-        """SELECT speaker, text FROM conversation_message
-           WHERE case_id = $1::bigint ORDER BY message_id DESC LIMIT $2::int""",
-        [case_id, limit],
+    others = sorted(LINES - {line})
+    probes: dict[str, Any] = {
+        "放寬職業等級": db.fetch(_RELAXED, [insurance_age, occupation_class, Decimal(budget), limit, line, True, False, True]),
+        "放寬投保年齡": db.fetch(_RELAXED, [insurance_age, occupation_class, Decimal(budget), limit, line, False, True, True]),
+        "提高預算": db.fetch(_RELAXED, [insurance_age, occupation_class, Decimal(budget), limit, line, True, True, False]),
+        **{
+            f"改看{other}": db.fetch(_RELAXED, [insurance_age, occupation_class, Decimal(budget), limit, other, True, True, True])
+            for other in others
+        },
+    }
+    this_line, every_line, *results = await asyncio.gather(
+        db.fetch_one(_CEILINGS, [line if line in LINES else ""]),
+        db.fetch_one(_CEILINGS, [""]),
+        *probes.values(),
     )
-    rows.reverse()
-    return rows
+
+    binding: list[dict[str, Any]] = []
+    if this_line and this_line["on_sale"]:
+        if insurance_age > this_line["age_max"]:
+            binding.append({"條件": "投保年齡", "保戶": insurance_age, "上限": this_line["age_max"], "範圍": line})
+        elif insurance_age < this_line["age_min"]:
+            binding.append({"條件": "投保年齡", "保戶": insurance_age, "下限": this_line["age_min"], "範圍": line})
+        if occupation_class > this_line["occupation_max"]:
+            scope = "全線" if every_line and occupation_class > every_line["occupation_max"] else line
+            ceiling = (every_line if scope == "全線" else this_line)["occupation_max"]
+            binding.append({"條件": "職業等級", "保戶": occupation_class, "上限": ceiling, "範圍": scope})
+        if budget < this_line["cheapest"]:
+            binding.append({"條件": "年繳預算", "保戶": budget, "最低": int(this_line["cheapest"]), "範圍": line})
+
+    return {
+        "binding": binding,
+        "openings": [{"relaxes": name, "products": rows} for name, rows in zip(probes, results, strict=True) if rows],
+    }
 
 
 async def required_documents(db: Database, product_ids: list[str]) -> list[dict[str, Any]]:
