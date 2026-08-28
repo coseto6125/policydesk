@@ -254,6 +254,9 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
     # because the next connection is a different person until it proves otherwise.
     confirmed = False
     attempts = 0
+    pending_question: str | None = None
+    """What they asked before the check interrupted them. Captured once, so a wrong
+    number typed after it does not become the question the desk comes back to."""
 
     try:
         async for raw in ws:
@@ -343,7 +346,9 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         age=chosen_age or None,
                         occupation=str(message.get("occupation") or ""),
                     )
-                    member_id = await enrol(person, db, preset=str(message.get("preset") or DEFAULT_PRESET))
+                    member_id, written = await enrol(
+                        person, db, preset=str(message.get("preset") or DEFAULT_PRESET)
+                    )
                     case_id = (await cmd.open_case(db, member_id)).case_id
 
                     await ws.send(json.encode({
@@ -359,110 +364,80 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         "address": str(person.address),
                         "phone": person.phone,
                         "email": person.email,
+                        "policies": written,
                     }).decode())
                     await _push_case(db, ws, request.app, case_id)
+
+                case "say" if case_id is not None and not confirmed:
+                    text = (message.get("text") or "").strip()
+                    if not text:
+                        continue
+
+                    # No routing while unconfirmed. The desk's only job here is to take
+                    # the number or ask for it, so this costs no model call — and the
+                    # failed attempts never reach a scenario. A near-miss national ID
+                    # was being routed to the enrolment-stage 身分驗證 scenario, which
+                    # answered with its own template and made the customer think the
+                    # check had moved on.
+                    held = await db.fetch_val(
+                        'SELECT national_id FROM member WHERE member_id = ('
+                        'SELECT member_id FROM "case" WHERE case_id = $1::bigint)',
+                        [case_id],
+                    )
+                    attempts += 1
+                    if text.upper() != held:
+                        # Not stored in conversation_message. A wrong number is auth
+                        # traffic, not conversation, and a near-miss national ID in the
+                        # transcript is one the next prompt carries.
+                        await db.execute(
+                            """INSERT INTO audit_event (case_id, actor, action, detail, case_version)
+                               VALUES ($1::bigint,'customer','identity_attempt',$2::jsonb,
+                                       (SELECT case_version FROM "case" WHERE case_id = $1::bigint))""",
+                            [case_id, {"attempts": attempts}],
+                        )
+                        # The first thing they asked is the thing to come back to, so it
+                        # is captured once and never overwritten by a later attempt.
+                        pending_question = pending_question or text
+                        await ws.send(json.encode({
+                            "type": "reply",
+                            "text": (
+                                "您好，為了確保您的個人資料安全，我們需要先協助核對您的身分，"
+                                "請提供您的身分證字號。核對完成後我會立刻為您查詢。"
+                            ),
+                            "scenario": None, "citations": [], "faults": [], "params": {}, "quick": [],
+                        }).decode())
+                        continue
+
+                    confirmed = True
+                    await db.execute(
+                        """INSERT INTO audit_event (case_id, actor, action, detail, case_version)
+                           VALUES ($1::bigint,'customer','identity_confirmed',$2::jsonb,
+                                   (SELECT case_version FROM "case" WHERE case_id = $1::bigint))""",
+                        [case_id, {"attempts": attempts, "channel": "chat"}],
+                    )
+                    logger.info("identity_confirmed", case_id=case_id, attempts=attempts)
+                    await ws.send(json.encode({"type": "confirmed"}).decode())
+                    await _push_case(db, ws, request.app, case_id)
+
+                    if not pending_question:
+                        await ws.send(json.encode({
+                            "type": "reply",
+                            "text": "感謝您的耐心核對，身分已確認。請問需要什麼協助？",
+                            "scenario": None, "citations": [], "faults": [],
+                            "params": {}, "quick": list(OPENERS),
+                        }).decode())
+                        continue
+
+                    # Answer what they actually asked, before the check interrupted them.
+                    text = pending_question
+                    pending_question = None
+                    await _answer(request, ws, db, case_id=case_id, text=text, confirmed=True)
 
                 case "say" if case_id is not None:
                     text = (message.get("text") or "").strip()
                     if not text:
                         continue
-                    await db.execute(
-                        """INSERT INTO conversation_message (case_id, speaker, text)
-                           VALUES ($1::bigint,'customer',$2::text)""",
-                        [case_id, text],
-                    )
-                    # 資料核對, taken in the conversation rather than in a form. The
-                    # comparison is an equality test against the member's own number —
-                    # the one deliberate exception to this desk's no-regex rule, because
-                    # an identity check is exactly the case where a fuzzy match is worse
-                    # than no match. Nothing is read until it passes.
-                    if not confirmed:
-                        held = await db.fetch_val(
-                            'SELECT national_id FROM member WHERE member_id = ('
-                            'SELECT member_id FROM "case" WHERE case_id = $1::bigint)',
-                            [case_id],
-                        )
-                        if text.strip().upper() == held:
-                            confirmed = True
-                            attempts += 1
-                            await db.execute(
-                                """INSERT INTO audit_event (case_id, actor, action, detail, case_version)
-                                   VALUES ($1::bigint,'customer','identity_confirmed',$2::jsonb,
-                                           (SELECT case_version FROM "case" WHERE case_id = $1::bigint))""",
-                                [case_id, {"attempts": attempts, "channel": "chat"}],
-                            )
-                            logger.info("identity_confirmed", case_id=case_id, attempts=attempts)
-                            # The number itself never enters the transcript. It would sit
-                            # in the history block of every later prompt, and a national
-                            # ID in a model's context is a national ID that leaves.
-                            await db.execute(
-                                """INSERT INTO conversation_message (case_id, speaker, text)
-                                   VALUES ($1::bigint,'customer','（已提供身分證字號完成核對）')""",
-                                [case_id],
-                            )
-                            await ws.send(json.encode({"type": "confirmed"}).decode())
-                            await _push_case(db, ws, request.app, case_id)
-
-                            # Answer what they actually asked. They asked it before the
-                            # check interrupted them, and making them type it again is
-                            # the desk forgetting the thing it just asked them to wait for.
-                            pending_question = await db.fetch_val(
-                                """SELECT text FROM conversation_message
-                                   WHERE case_id = $1::bigint AND speaker = 'customer'
-                                     AND text <> '（已提供身分證字號完成核對）'
-                                   ORDER BY message_id DESC LIMIT 1""",
-                                [case_id],
-                            )
-                            if not pending_question:
-                                await ws.send(json.encode({
-                                    "type": "reply",
-                                    "text": "感謝您的耐心核對，身分已確認。請問需要什麼協助？",
-                                    "scenario": None, "citations": [], "faults": [],
-                                    "params": {}, "quick": list(OPENERS),
-                                }).decode())
-                                continue
-                            text = pending_question
-                        else:
-                            attempts += 1
-                            await db.execute(
-                                """INSERT INTO audit_event (case_id, actor, action, detail, case_version)
-                                   VALUES ($1::bigint,'customer','identity_attempt',$2::jsonb,
-                                           (SELECT case_version FROM "case" WHERE case_id = $1::bigint))""",
-                                [case_id, {"attempts": attempts}],
-                            )
-
-                    # The profile freezes on the first message, as specified.
-                    await db.execute(
-                        """UPDATE member SET profile_frozen_at = coalesce(profile_frozen_at, now())
-                           WHERE member_id = (SELECT member_id FROM "case" WHERE case_id = $1::bigint)""",
-                        [case_id],
-                    )
-
-                    member_id = await db.fetch_val(
-                        'SELECT member_id FROM "case" WHERE case_id = $1::bigint', [case_id]
-                    )
-                    turn = await run_turn(
-                        request.app.ctx.provider, db,
-                        case_id=case_id, member_id=member_id, text=text, confirmed=confirmed,
-                    )
-                    await db.execute(
-                        """INSERT INTO conversation_message (case_id, speaker, text, turn_id)
-                           VALUES ($1::bigint,'agent',$2::text,$3::text)""",
-                        [case_id, turn.reply, turn.turn_id],
-                    )
-                    await ws.send(json.encode({
-                        "type": "reply",
-                        "text": turn.reply,
-                        "scenario": turn.scenario,
-                        # What the router carried over from earlier turns. Shown in the
-                        # chat so a reader can see the desk answered from the whole
-                        # conversation rather than from the last sentence.
-                        "params": turn.params,
-                        "quick": list(turn.quick_replies),
-                        "citations": list(turn.citations),
-                        "faults": list(turn.faults),
-                    }).decode())
-                    await _push_case(db, ws, request.app, case_id)
+                    await _answer(request, ws, db, case_id=case_id, text=text, confirmed=True)
 
                 case "upload" if case_id is not None:
                     document_id = int(message.get("document_id") or 0)
@@ -524,6 +499,52 @@ async def _push_case(db: Database, ws: Websocket, application: Sanic, case_id: i
     body = json.encode(payload).decode()
     await ws.send(body)
     await _broadcast_desk(application, payload)
+
+
+async def _answer(request: Request, ws: Websocket, db: Database, *, case_id: int, text: str, confirmed: bool) -> None:
+    """
+    Run one turn and send it, recording both halves of the exchange.
+
+    Args:
+        request: The upgrade request, for the app context.
+        ws: The customer's socket.
+        db: The database.
+        case_id: Which case.
+        text: What the customer said.
+        confirmed: Whether this session has passed 資料核對.
+
+    """
+    await db.execute(
+        """INSERT INTO conversation_message (case_id, speaker, text)
+           VALUES ($1::bigint,'customer',$2::text)""",
+        [case_id, text],
+    )
+    # The profile freezes on the first message, as specified.
+    await db.execute(
+        """UPDATE member SET profile_frozen_at = coalesce(profile_frozen_at, now())
+           WHERE member_id = (SELECT member_id FROM "case" WHERE case_id = $1::bigint)""",
+        [case_id],
+    )
+    member_id = await db.fetch_val('SELECT member_id FROM "case" WHERE case_id = $1::bigint', [case_id])
+    turn = await run_turn(
+        request.app.ctx.provider, db,
+        case_id=case_id, member_id=member_id, text=text, confirmed=confirmed,
+    )
+    await db.execute(
+        """INSERT INTO conversation_message (case_id, speaker, text, turn_id)
+           VALUES ($1::bigint,'agent',$2::text,$3::text)""",
+        [case_id, turn.reply, turn.turn_id],
+    )
+    await ws.send(json.encode({
+        "type": "reply",
+        "text": turn.reply,
+        "scenario": turn.scenario,
+        "params": turn.params,
+        "quick": list(turn.quick_replies),
+        "citations": list(turn.citations),
+        "faults": list(turn.faults),
+    }).decode())
+    await _push_case(db, ws, request.app, case_id)
 
 
 @app.websocket("/ws/desk")

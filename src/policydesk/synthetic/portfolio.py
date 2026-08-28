@@ -181,17 +181,21 @@ async def plan(
     rng = rng_for(person.name, _SEED_SALT)
     age = person.insurance_age_on(today)
 
-    # Only products this person could actually have been sold. A portfolio holding a
-    # contract whose issue-age band excludes its owner is a bug that looks like a
-    # situation.
+    # Only products this person could actually have been sold — but sold *then*, not
+    # today. Filtering on their current age against the issue-age band silently emptied
+    # the portfolio of anyone past the ceiling: a 82-year-old got 尚無保單 whatever
+    # preset the operator picked, with a log line and nothing on screen. What has to
+    # hold is that they were inside the band on the day they bought it, so the band
+    # decides the effective date rather than excluding the product.
     rows = await db.fetch(
-        """SELECT p.product_id, p.name, p.line, ce.requires_main
+        """SELECT p.product_id, p.name, p.line, ce.requires_main,
+                  ce.issue_age_min, ce.issue_age_max
            FROM catalog_entry ce JOIN product p USING (product_id)
            WHERE ce.on_sale
-             AND $1::int BETWEEN ce.issue_age_min AND ce.issue_age_max
+             AND ce.issue_age_min <= $1::int
              AND $2::int <= ce.max_occupation
            ORDER BY p.product_id""",
-        [max(0, age - 5), int(person.occupation_class)],
+        [age, int(person.occupation_class)],
     )
     pool: dict[tuple[str, bool], list[dict]] = {}
     for row in rows:
@@ -208,15 +212,22 @@ async def plan(
             logger.warning("rider_without_main", preset=chosen.key, line=holding.line)
             continue
 
-        product = available[rng.randrange(len(available))]
-        match holding.situation:
-            case "waiting":
-                effective, lapsed = today - timedelta(days=rng.randint(8, 25)), None
-            case "lapsed":
-                effective = today - timedelta(days=rng.randint(700, 1800))
-                lapsed = today - timedelta(days=rng.randint(30, 200))
-            case _:
-                effective, lapsed = today - timedelta(days=rng.randint(400, 2600)), None
+        # A policy still inside its waiting period was bought this month, so its owner
+        # has to be inside the issue-age band *now*. Everything else was bought at
+        # whatever age the band allows, and the date follows from that.
+        if holding.situation == "waiting":
+            current = [p for p in available if p["issue_age_min"] <= age <= p["issue_age_max"]]
+            if not current:
+                logger.warning("preset_holding_unavailable", preset=chosen.key, line=holding.line, reason="age")
+                continue
+            product = current[rng.randrange(len(current))]
+            effective, lapsed = today - timedelta(days=rng.randint(8, 25)), None
+        else:
+            product = available[rng.randrange(len(available))]
+            bought_at = rng.randint(product["issue_age_min"], min(age, product["issue_age_max"]))
+            held_days = (age - bought_at) * 365 + rng.randint(30, 364)
+            effective = today - timedelta(days=max(400, held_days))
+            lapsed = today - timedelta(days=rng.randint(30, 200)) if holding.situation == "lapsed" else None
 
         note = _SITUATIONS.get(holding.situation)
         planned.append(
@@ -233,10 +244,17 @@ async def plan(
         if not holding.rider:
             mains[holding.line] = len(planned) - 1
 
+    if len(planned) < len(chosen.holdings):
+        logger.warning(
+            "preset_incomplete", preset=chosen.key,
+            wanted=len(chosen.holdings), written=len(planned), insurance_age=age,
+        )
     return planned
 
 
-async def enrol(person: Person, db: Database, *, preset: str = DEFAULT_PRESET, today: date | None = None) -> int:
+async def enrol(
+    person: Person, db: Database, *, preset: str = DEFAULT_PRESET, today: date | None = None
+) -> tuple[int, int]:
     """
     Write the member and the portfolio the operator chose.
 
@@ -247,7 +265,10 @@ async def enrol(person: Person, db: Database, *, preset: str = DEFAULT_PRESET, t
         today: The date to plan against.
 
     Returns:
-        The member id.
+        The member id and how many policies were written. The count is not always the
+        preset's length — 剛投保 needs a product that will issue at the customer's age
+        today, and past the ceiling there is none. The caller says so rather than
+        leaving an empty 保單清單 to be read as a bug.
 
     Every visitor becomes a real row. A demo whose users exist only in a session cannot
     show a caseworker anything, and cannot be reopened tomorrow.
@@ -309,4 +330,4 @@ async def enrol(person: Person, db: Database, *, preset: str = DEFAULT_PRESET, t
         policies=len(policies),
         situations=[p.fault.kind for p in policies if p.fault],
     )
-    return member_id
+    return member_id, len(policies)

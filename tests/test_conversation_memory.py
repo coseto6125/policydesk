@@ -127,3 +127,43 @@ def test_the_collected_parameters_reach_the_screen():
 
     assert '"params": turn.params' in Path("src/policydesk/web/server.py").read_text()
     assert "取得 ${carried}" in Path("src/policydesk/web/static/index.html").read_text()
+
+
+def test_a_portfolio_is_dated_from_the_issue_age_band_not_filtered_by_it():
+    """
+    Filtering on today's age emptied the book of anyone past the ceiling.
+
+    An 82-year-old got 尚無保單 whatever preset the operator picked, with a log line and
+    nothing on screen — because no health product issues at 77. What has to hold is that
+    they were inside the band on the day they bought it, so the band picks the effective
+    date rather than excluding the product.
+    """
+    from pathlib import Path
+
+    source = Path("src/policydesk/synthetic/portfolio.py").read_text()
+    body = source[source.index("async def plan("):source.index("async def enrol(")]
+    assert "ce.issue_age_min <= $1::int" in body
+    assert "BETWEEN ce.issue_age_min AND ce.issue_age_max" not in body
+    assert "bought_at = rng.randint(" in body
+
+
+def test_a_policy_inside_its_waiting_period_needs_a_product_that_issues_today():
+    """It was bought this month, so its owner has to be inside the band now."""
+    from pathlib import Path
+
+    source = Path("src/policydesk/synthetic/portfolio.py").read_text()
+    body = source[source.index("async def plan("):source.index("async def enrol(")]
+    waiting = body[body.index('if holding.situation == "waiting":'):]
+    assert 'p["issue_age_min"] <= age <= p["issue_age_max"]' in waiting[:400]
+
+
+def test_enrol_reports_what_it_actually_wrote():
+    """An empty 保單清單 with no explanation reads as a bug, because sometimes it is one."""
+    from pathlib import Path
+
+    source = Path("src/policydesk/synthetic/portfolio.py").read_text()
+    assert ") -> tuple[int, int]:" in source
+    assert "return member_id, len(policies)" in source
+    page = Path("src/policydesk/web/static/index.html").read_text()
+    assert "已為您帶入既有保單" in page
+    assert "所選組合中的商品目前無法投保" in page

@@ -472,6 +472,16 @@
   .combo-item .cls { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
   .combo-item.none { color: var(--ink-3); cursor: default; }
 
+  /* A finished form is a record, not a form. It folds to one line so the conversation
+     below it stays the thing on screen. */
+  .setup.done { padding: 9px var(--s3); gap: 0; }
+  .setup.done > :not(.folded) { display: none; }
+  .folded { display: none; align-items: center; gap: var(--s2); font-size: 12.5px; }
+  .setup.done .folded { display: flex; }
+  .folded svg { width: 13px; height: 13px; color: var(--good); flex: none; }
+  .folded b { font-weight: 600; }
+  .folded span { color: var(--ink-3); }
+
   .chips { display: flex; flex-wrap: wrap; gap: 6px; align-self: flex-start; max-width: 92%; }
   .chip {
     background: var(--paper); color: var(--accent); border: 1px solid var(--accent);
@@ -711,7 +721,7 @@ const STAGES = [
 ];
 const STAGE_NAMES = Object.fromEntries(STAGES.concat([["approved","已核准"],["rejected","已退件"]]));
 const DESK_TOKEN = "__DESK_TOKEN__";
-let caseId = null, customerWs = null, deskWs = null, pending = null, memberId = null;
+let caseId = null, customerWs = null, deskWs = null, pending = null, memberId = null, setupCard = null;
 
 /** Openers for a visitor who does not yet know what to ask. Questions, like every chip. */
 const OPENERS = ["我想了解目前的保單保什麼", "想確認一年繳多少保費", "理賠要準備哪些文件？", "我想了解有沒有適合的方案"];
@@ -730,12 +740,18 @@ const PILLS = {
   flag: (t) => `<span class="pill flag">${icon("alert")}${t}</span>`,
 };
 
+/** One scroller. Every path that adds to the log ends here, so nothing lands off-screen. */
+function toBottom() {
+  const log = $("chatLog");
+  requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
+}
+
 function bubble(kind, text) {
   const el = document.createElement("div");
   el.className = `msg ${kind}`;
   el.textContent = text;
   $("chatLog").append(el);
-  $("chatLog").scrollTop = $("chatLog").scrollHeight;
+  toBottom();
   return el;
 }
 
@@ -746,7 +762,7 @@ function waiting(on) {
   pending.className = "msg them pending";
   pending.innerHTML = "<i></i><i></i><i></i>";
   $("chatLog").append(pending);
-  $("chatLog").scrollTop = $("chatLog").scrollHeight;
+  toBottom();
 }
 
 function renderSteps(stage) {
@@ -920,7 +936,7 @@ function renderChips(items) {
     send();
   });
   $("chatLog").append(box);
-  $("chatLog").scrollTop = $("chatLog").scrollHeight;
+  toBottom();
 }
 
 /**
@@ -959,9 +975,10 @@ function renderSetup(draft) {
           <b>${esc(p.label)}</b><small>${esc(p.detail)}</small>
         </button>`).join("")}</div>
     </div>
-    <button class="primary" id="enrolBtn" style="justify-content:center">完成建檔</button>`;
+    <button class="primary" id="enrolBtn" style="justify-content:center">完成建檔</button>
+    <div class="folded" id="setupFolded"></div>`;
   $("chatLog").append(card);
-  $("chatLog").scrollTop = $("chatLog").scrollHeight;
+  toBottom();
 
   let sex = draft.sex;
   let occupation = draft.occupation;
@@ -1007,6 +1024,16 @@ function renderSetup(draft) {
   });
   $("occPick").addEventListener("blur", () => setTimeout(() => { list.hidden = true; }, 120));
 
+  // Folded by the profile that comes back, not here: the card stays open and editable
+  // until the server has actually written the member.
+  card.fold = (profile) => {
+    $("setupFolded").innerHTML =
+      `${icon("check", 3)}<b>資料已建檔</b><span>${profile.sex === "male" ? "男" : "女"} · `
+      + `保險年齡 ${profile.insurance_age} · ${esc(profile.occupation)}（第 ${profile.occupation_class} 類）</span>`;
+    card.classList.add("done");
+    toBottom();
+  };
+
   $("enrolBtn").onclick = () => {
     // The typed text only counts when it names a real occupation. Anything else keeps
     // the drawn one rather than inventing a class the catalogue does not price.
@@ -1021,6 +1048,7 @@ function renderSetup(draft) {
       preset,
     }));
   };
+  return card;
 }
 
 function connectCustomer(name) {
@@ -1032,14 +1060,20 @@ function connectCustomer(name) {
     switch (m.type) {
       case "draft":
         bubble("them", `${m.name} 您好，我是保險櫃台。\n開始之前，先麻煩您確認幾項基本資料。`);
-        renderSetup(m);
+        setupCard = renderSetup(m);
         break;
       case "profile":
         memberId = m.member_id;
+        setupCard?.fold(m);
+        setupCard = null;
         $("chatWho").innerHTML = `${esc(m.name)}<small>保險年齡 ${m.insurance_age} · ${m.sex === "male" ? "男" : "女"} · 第 ${m.occupation_class} 類</small>`;
         bubble("them", m.returning
           ? `${m.name} 您好，歡迎回來。\n您的保戶資料為：${m.sex === "male" ? "男" : "女"}性、保險年齡 ${m.insurance_age} 歲、職業 ${m.occupation}（第 ${m.occupation_class} 類）。`
-          : `建檔完成。\n${m.sex === "male" ? "男" : "女"}性、保險年齡 ${m.insurance_age} 歲、職業 ${m.occupation}（第 ${m.occupation_class} 類）。\n身分證字號 ${m.national_id}。\n資料已固定，請問需要什麼協助？`);
+          : `建檔完成。\n${m.sex === "male" ? "男" : "女"}性、保險年齡 ${m.insurance_age} 歲、職業 ${m.occupation}（第 ${m.occupation_class} 類）。\n身分證字號 ${m.national_id}。\n`
+            + (m.policies
+              ? `已為您帶入既有保單 ${m.policies} 張。\n`
+              : `依您的年齡與職業等級，所選組合中的商品目前無法投保，名下暫無既有保單。\n`)
+            + `資料已固定，請問需要什麼協助？`);
         $("chatInput").disabled = false;
         $("sendBtn").disabled = false;
         $("chatInput").focus();
