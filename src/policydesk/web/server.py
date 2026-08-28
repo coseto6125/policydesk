@@ -542,3 +542,7 @@ def _render_document(row: dict[str, Any]) -> str:
   簽署後請以「上傳簽署本」回傳，系統將以本文件雜湊 {row["sha"]} 綁定該次簽署。
 </div>
 </body></html>"""
+
+
+if __name__ == "__main__":
+    main()
