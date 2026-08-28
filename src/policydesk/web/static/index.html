@@ -321,6 +321,11 @@ function connectCustomer(name) {
         bubble("them", `${m.name} 您好，我是保險櫃台。\n已為您建檔：${m.sex === "male" ? "男" : "女"}性、保險年齡 ${m.insurance_age} 歲、職業 ${m.occupation}（第 ${m.occupation_class} 類）。\n身分證字號 ${m.national_id}。\n送出第一則訊息後資料即固定。`);
         break;
       case "case": renderCase(m); break;
+      case "reply":
+        bubble("them", m.text);
+        if (m.scenario) bubble("sys", `情境：${m.scenario}${m.citations?.length ? " · 引用 " + m.citations.join("、") : ""}`);
+        if (m.faults?.length) bubble("sys", `引用查核未過：${m.faults.join("；")}`);
+        break;
       case "notice": bubble("sys", m.text); break;
     }
   };
