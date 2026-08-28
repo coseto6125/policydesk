@@ -130,3 +130,50 @@ def test_identity_check_compares_against_the_case_owner():
     source = Path("src/policydesk/core/commands.py").read_text()
     body = source[source.index("async def verify_identity"):source.index("async def submit_for_review")]
     assert "member_national_id" in body, "the check must compare against the case's member"
+
+
+def test_calculator_is_offered_to_the_model_not_merely_described():
+    """
+    The scenario text tells the model 金額由計算工具產生; the tool has to be reachable.
+
+    A review found `calculate` had zero callers outside its own tests: the answering
+    call passed no `tools=`, so the model wrote figures into prose from the material it
+    had been handed and nothing checked them. A tool the model cannot reach is a claim.
+    """
+    from pathlib import Path
+
+    source = Path("src/policydesk/agent/executor.py").read_text()
+    assert "TOOL_SCHEMA" in source
+    assert "tools=[TOOL_SCHEMA]" in source
+
+
+def test_surgery_multipliers_are_reachable_from_a_scenario():
+    """17,866 rows extracted from 附表1 were queried by nothing."""
+    from policydesk.agent import tools
+    from policydesk.agent.scenario import CLAIM_CHECKLIST
+
+    assert hasattr(tools, "find_multiplier")
+    assert "find_multiplier" in CLAIM_CHECKLIST.tools
+
+
+def test_unverifiable_reply_is_withheld_rather_than_annotated():
+    """
+    Appending a caveat still put the invented clause number in front of the customer.
+
+    tools.py claims a fabricated citation "fails a lookup rather than reaching a
+    customer". That is only true if the text carrying it is withheld.
+    """
+    from pathlib import Path
+
+    source = Path("src/policydesk/agent/executor.py").read_text()
+    block = source[source.index("if not checked.trustworthy:"):source.index("    turn.reply = completion.text\n    return turn")]
+    assert "completion.text" not in block, "the unverifiable text must not be forwarded"
+    assert "轉由專人" in block
+
+
+def test_the_model_session_is_reused_and_closed():
+    """A session per call is a TLS handshake per call on the customer's own turn."""
+    from policydesk.llm.provider import OpenAIProvider
+
+    assert hasattr(OpenAIProvider, "close")
+    assert hasattr(OpenAIProvider, "_open_session")

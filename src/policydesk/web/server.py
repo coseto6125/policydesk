@@ -71,8 +71,9 @@ async def _open_db(application: Sanic, _loop) -> None:
 
 @app.after_server_stop
 async def _close_db(application: Sanic, _loop) -> None:
-    """Close the pool on the way out."""
+    """Close the pool and the model session on the way out."""
     await application.ctx.db.close()
+    await application.ctx.provider.close()
 
 
 @app.get("/")

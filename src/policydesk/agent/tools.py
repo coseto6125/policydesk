@@ -218,3 +218,34 @@ async def coverage_summary(db: Database, member_id: int, *, today: date) -> list
            ORDER BY po.sum_insured DESC""",
         [member_id, today],
     )
+
+
+async def find_multiplier(db: Database, product_ids: list[str], procedure: str, limit: int = 5) -> list[dict[str, Any]]:
+    """
+    Look up what a procedure pays, as a multiple of the daily benefit.
+
+    Args:
+        db: The database.
+        product_ids: Which contracts to search.
+        procedure: The procedure as the diagnosis certificate names it.
+        limit: Most rows to return.
+
+    Returns:
+        Matching entries from 附表1 and 附表2 with their multipliers.
+
+    This is where a benefit formula gets its number. The clause says 手術給付倍數 ╳
+    住院醫療保險金日額 and stops there; without this table the formula has a shape and
+    no value, and the calculator has nothing to evaluate.
+
+    """
+    if not product_ids or not procedure.strip():
+        return []
+    return await db.fetch(
+        """SELECT sm.product_id, sm.schedule, sm.code, sm.procedure, sm.multiplier, sm.page,
+                  p.name AS product_name
+           FROM surgery_multiplier sm JOIN product p USING (product_id)
+           WHERE sm.product_id = ANY($1::text[]) AND sm.procedure ILIKE '%' || $2::text || '%'
+           ORDER BY sm.multiplier DESC
+           LIMIT $3::int""",
+        [product_ids, procedure.strip(), limit],
+    )

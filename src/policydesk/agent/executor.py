@@ -31,6 +31,7 @@ from policydesk.agent import tools
 from policydesk.agent.scenario import BY_NAME, CATALOGUE, ROUTER_INSTRUCTIONS, Emit, Scenario, tool_schema
 from policydesk.bootloader import logger
 from policydesk.llm.provider import Completion, Phase, Provider, ProviderError
+from policydesk.skills.calculator import TOOL_SCHEMA, CalculationError, calculate
 from policydesk.validation.validator import Verdict, recheck
 
 if TYPE_CHECKING:
@@ -51,6 +52,11 @@ class Turn:
         self.scenario: str | None = None
         self.citations: tuple[str, ...] = ()
         self.faults: tuple[str, ...] = ()
+        self.procedure_hint: str = ""
+        """What the customer called the procedure, used to look up its multiplier."""
+        self.computations: tuple[tuple[str, int], ...] = ()
+        """Expressions the model asked the calculator to evaluate, and their results.
+        Empty means the reply states no computed figure, or states one it should not."""
 
 
 async def _record_failure(db: Database, turn: Turn, phase: Phase, scenario: str | None, error: str, latency_ms: int) -> None:
@@ -153,6 +159,8 @@ async def _gather(db: Database, scenario: Scenario, turn: Turn, *, today: date) 
 
     if "find_clause" in scenario.tools:
         facts["find_clause"] = await tools.find_clause(db, product_ids, "住院")
+    if "find_multiplier" in scenario.tools:
+        facts["find_multiplier"] = await tools.find_multiplier(db, product_ids, turn.procedure_hint)
     if "required_documents" in scenario.tools:
         facts["required_documents"] = await tools.required_documents(db, product_ids)
     if "billing_summary" in scenario.tools:
@@ -237,6 +245,7 @@ async def run_turn(
         return turn
 
     turn.scenario = scenario.name
+    turn.procedure_hint = text
     facts = await _gather(db, scenario, turn, today=today)
     allowed: frozenset[str] = facts.pop("_allowed_clauses")
 
@@ -247,9 +256,14 @@ async def run_turn(
     material = json.encode({k: _short(v) for k, v in facts.items()}).decode()
     answering = time.perf_counter()
     try:
+        # The calculator is offered here, not merely described. Without it the
+        # instruction "金額由計算工具產生" had no mechanism behind it: the model wrote
+        # figures into prose from the material it had been handed, and nothing checked
+        # them. A tool the model cannot reach is a claim, not a guarantee.
         completion = await provider.complete(
             instructions=f"{ROUTER_INSTRUCTIONS}\n\n{scenario.injection}",
             user_input=f"# 保戶說\n{text}\n\n# 工具回傳\n{material}",
+            tools=[TOOL_SCHEMA],
         )
     except ProviderError as exc:
         latency = int((time.perf_counter() - answering) * 1000)
@@ -259,6 +273,7 @@ async def run_turn(
         return turn
 
     await _record(db, turn, Phase.ANSWER, completion, scenario.name)
+    turn.computations = _run_calculations(completion)
 
     # Read the citations OUT of the reply, then check them against what the tools
     # returned. Intersecting `allowed` with the text instead would only ever find ids
@@ -274,13 +289,41 @@ async def run_turn(
     turn.faults = checked.faults
     if not checked.trustworthy:
         logger.warning("citation_unresolved", case_id=case_id, faults=list(checked.faults))
+        # The unverifiable text is withheld, not annotated. Appending a caveat to it
+        # still put the invented clause number in front of the customer, which is the
+        # opposite of what this check exists to prevent.
         turn.reply = (
-            f"{completion.text}\n\n"
-            "（本次回覆引用的部分條號無法在您的保單中查得，該部分請以專人確認為準。）"
+            "本次查詢的回覆引用了無法在您保單中查得的條款，為避免提供錯誤資訊，"
+            "已保留該回覆並轉由專人與您確認。"
         )
         return turn
     turn.reply = completion.text
     return turn
+
+
+def _run_calculations(completion: Completion) -> tuple[tuple[str, int], ...]:
+    """
+    Evaluate every calculator call the model made.
+
+    Args:
+        completion: What the model returned.
+
+    Returns:
+        Each expression paired with its amount. A call whose expression steps outside
+        the allow-list is dropped and logged rather than guessed at, so a figure either
+        came from the calculator or does not exist.
+
+    """
+    results: list[tuple[str, int]] = []
+    for call in completion.tool_calls:
+        if call.get("name") != "calculate":
+            continue
+        try:
+            expression = json.decode((call.get("arguments") or "{}").encode())["expression"]
+            results.append((expression, calculate(expression).amount))
+        except (CalculationError, KeyError, ValueError) as exc:
+            logger.warning("calculation_rejected", call=str(call)[:200], error=str(exc))
+    return tuple(results)
 
 
 def _short(value: Any, limit: int = 12) -> Any:

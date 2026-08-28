@@ -103,6 +103,30 @@ class OpenAIProvider:
     def __init__(self, api_key: str | None = None, model: str = DEFAULT_MODEL) -> None:
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self._model = model
+        self._session: aiohttp.ClientSession | None = None
+
+    async def close(self) -> None:
+        """Close the shared session."""
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+        self._session = None
+
+    def _open_session(self) -> aiohttp.ClientSession:
+        """
+        Return the shared session, opening it on first use.
+
+        Returns:
+            One session reused across calls. A session per call means a TCP connection
+            and a TLS handshake per call, discarded immediately — on a websocket turn
+            that reaches a MODEL scenario that is two avoidable handshakes on the path
+            the customer is waiting on, and every retry adds another. The rest of this
+            codebase already reuses connections: the corpus fetcher holds one session
+            across 660 downloads, and the database holds one pool.
+
+        """
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90))
+        return self._session
 
     async def complete(
         self,
@@ -178,10 +202,8 @@ class OpenAIProvider:
 
         """
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
-        async with (
-            aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90)) as session,
-            session.post(RESPONSES_URL, json=body, headers=headers) as resp,
-        ):
+        session = self._open_session()
+        async with session.post(RESPONSES_URL, json=body, headers=headers) as resp:
             payload = await resp.json()
             if resp.status >= 400:
                 message = (payload.get("error") or {}).get("message", resp.reason)
