@@ -28,7 +28,7 @@ from policydesk.bootloader import logger
 from policydesk.core import commands as cmd
 from policydesk.core.db import Database
 from policydesk.gov.identity import verify
-from policydesk.llm.provider import OpenAIProvider
+from policydesk.llm.provider import build_provider
 from policydesk.synthetic.person import generate
 from policydesk.synthetic.portfolio import enrol
 from policydesk.web.session import Registry
@@ -61,10 +61,12 @@ app.ctx.desk_sockets = set()
 async def _open_db(application: Sanic, _loop) -> None:
     """Open the pool once, before the first request."""
     application.ctx.db = Database()
-    # One seam. With no key the provider raises and the executor says so; it never
-    # answers anyway, because a desk that invents an answer about someone's policy is
-    # worse than one that admits it cannot reach its model.
-    application.ctx.provider = OpenAIProvider()
+    # One seam, and which implementation sits behind it is a deployment choice: the
+    # HTTP API when a key is set, the locally signed-in codex CLI otherwise. Neither
+    # one answers when it cannot reach a model — a desk that invents an answer about
+    # someone's policy is worse than one that admits it is down.
+    application.ctx.provider = build_provider()
+    logger.info("provider_ready", provider=application.ctx.provider.name)
     if not os.environ.get("POLICYDESK_DESK_TOKEN"):
         logger.warning("desk_token_generated", token=DESK_TOKEN, hint="set POLICYDESK_DESK_TOKEN to fix it across restarts")
 
