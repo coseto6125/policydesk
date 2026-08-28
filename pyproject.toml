@@ -4,22 +4,34 @@ version = "0.1.0"
 description = "An insurance desk agent: quote, enrol, bill, cover, claim — every figure it states carries a citation back to the contract clause that produced it."
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 authors = [{ name = "coseto6125", email = "cosetoenor@gmail.com" }]
 keywords = ["insurance", "ai-agent", "claims", "taiwan", "fsc", "audit-trail"]
 classifiers = [
   "Development Status :: 3 - Alpha",
-  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Office/Business :: Financial",
 ]
 
+# The stack mirrors enoract, which solves the same shape of problem one vertical over:
+# a Taiwanese customer-service-plus-sales agent. Deviating needs a reason per line.
 dependencies = [
-  "sanic>=24.6",
-  "msgspec>=0.18",
-  "loguru>=0.7",
+  "sanic>=25.12",
+  "msgspec>=0.21.1",
+  "uvloop>=0.22.1; sys_platform != 'win32'",
+  "stamina>=26.1.0",
+  "aiohttp[speedups]>=3.14.3",
+  "cachebox>=6.2.0",
+  "psqlpy>=0.12.1",
+  "python-dotenv>=1.2.2",
+  "etoon>=0.6",
+  "logxide>=0.2.2",
+  "structlog>=26.1.0",
+  # Contract ingestion. Absent from enoract because it has no PDF corpus: pypdf reads
+  # the text layer; pdfplumber recovers the benefit tables whose column boundaries the
+  # text layer destroys.
   "pypdf>=5.0",
-  "uvloop>=0.20",
-  "aiohttp>=3.10",
+  "pdfplumber>=0.11",
 ]
 
 [project.optional-dependencies]
@@ -39,11 +51,39 @@ package = true
 packages = ["src/policydesk"]
 
 [tool.ruff]
-line-length = 120
-target-version = "py313"
+target-version = "py314"
+line-length = 130
+preview = false
+fix = true
+unsafe-fixes = true
+respect-gitignore = true
+force-exclude = true
+src = ["src", "tests"]
+exclude = [".git", ".venv", ".claude", "build", "dist"]
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C901"]
+select = ["ALL"]
+# Mirrors enoract's ignore list. Same house style, same reasons; a project-specific
+# addition here would need its own note.
+ignore = [
+  "ANN001", "ANN002", "ANN003", "ANN401", "ANN201", "ANN202", "ANN204", "ANN205",
+  "BLE001", "TRY003", "TRY300", "TRY301", "EM101", "EM102",
+  "C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004", "PLR0917",
+  "CPY001", "PLW0602", "PLW0603", "PLW2901",
+  "D100", "D101", "D102", "D103", "D105", "D107", "D200", "D205", "D203", "D212",
+  "D400", "D407", "D410", "D413", "D415", "D417",
+  "DTZ005", "DTZ006", "COM812", "E501", "E731", "E402", "ISC004", "G004",
+  "FIX002", "TD002", "TD003", "ERA001", "INP001",
+  "FBT001", "FBT002", "FBT003",
+  "RUF001", "RUF002", "RUF003", "RUF018",
+  "S324", "S311", "SLF001", "T201", "UP035", "UP017", "W292", "PLC0415",
+  "EXE001", "EXE002", "PTH",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]                                                 # re-exports
+"tests/**" = ["D100", "D101", "D104", "ARG", "S101", "S608", "ASYNC109"] # tests use assert + unused fixture args
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

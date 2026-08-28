@@ -1,4 +1,5 @@
-"""Turn a policy PDF into an enumerated clause index.
+"""
+Turn a policy PDF into an enumerated clause index.
 
 Deterministic on purpose. The index is the only thing allowed to produce a `Citation`,
 so no model ever authors contract text — it may select a `clause_id` that exists here
@@ -20,12 +21,15 @@ Two traps this parser exists to catch, both found in the first real contract we 
 import bisect
 import re
 from hashlib import blake2b
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from msgspec import Struct
 from pypdf import PdfReader
 
 from policydesk.core.models import Citation, Clause, ClauseKind
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _CN_DIGITS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
@@ -48,8 +52,18 @@ _CARVE_BACK = re.compile(r"但[^。；]{4,80}?(?:不在此限|除外|不適用)"
 _WAITING = re.compile(r"(?:生效日|復效日)起持續有效([一二三四五六七八九十百]+)日")
 
 # Page furniture that sits above the product name on page one: "第1頁，共31頁",
-# "Since2023", a core-approval reference number, a service hotline.
-_FURNITURE = re.compile(r"^(?:第\s*\d+\s*頁|共\s*\d+\s*頁|Since\s*\d{4}|[\W\d_]+)$|頁，共|核准文號|免費申訴")
+# "第 1 頁， 共 17 頁", "Since2023", an approval reference, a complaints hotline. The
+# spacing varies per document because it comes from the PDF's glyph positions, not
+# from the text, so every gap here tolerates whitespace.
+_FURNITURE = re.compile(
+    r"^(?:第\s*\d+\s*頁|共\s*\d+\s*頁|Since\s*\d{4}|[\W\d_]+)$|頁\s*，\s*(?:共|第)|核准文號|免費申訴"
+)
+
+# Justified CJK lines come out of extraction with a space between every glyph:
+# "國 泰 人 壽新憶樂活認 知 功 能 障 礙終身健 康 保 險". Token matching then fails on every
+# term, which is how 80 real contracts ended up classified as "other". Latin runs keep
+# their spaces, so "真大心 PLUS 住院醫療" survives intact.
+_CJK_GAP = re.compile(r"(?<=[㐀-鿿])[ \t　]+(?=[㐀-鿿])")
 
 _HEADING_KIND = (
     ("名詞定義", ClauseKind.DEFINITION),
@@ -64,13 +78,15 @@ _HEADING_KIND = (
 
 
 def cn_to_int(text: str) -> int:
-    """Read an article number written either way the contracts write them.
+    """
+    Read an article number written either way the contracts write them.
 
     Args:
         text: A numeral such as "十七", "二十三", or "19".
 
     Returns:
         Its integer value.
+
     """
     if text.isdigit():
         return int(text)
@@ -82,7 +98,8 @@ def cn_to_int(text: str) -> int:
 
 
 def _title_of(first_page: str) -> str:
-    """Read the product name off page one.
+    """
+    Read the product name off page one.
 
     The name is rarely the first line. Above it sit a page counter, a "Since2023"
     watermark, an approval reference, a complaints hotline — furniture that a naive
@@ -95,9 +112,10 @@ def _title_of(first_page: str) -> str:
     Returns:
         The product name, or an empty string when the page has no line that reads
         like one.
+
     """
     for raw in first_page.splitlines():
-        if len(line := raw.strip()) < 8 or _FURNITURE.search(line):
+        if len(line := _CJK_GAP.sub("", raw.strip())) < 8 or _FURNITURE.search(line):
             continue
         return line
     return ""
@@ -119,7 +137,8 @@ class ClauseIndex(Struct):
     clauses: dict[str, Clause]
 
     def cite(self, clause_id: str) -> Citation:
-        """Build a citation for a clause that exists.
+        """
+        Build a citation for a clause that exists.
 
         Args:
             clause_id: An id from this index.
@@ -130,13 +149,15 @@ class ClauseIndex(Struct):
         Raises:
             KeyError: The id is not in this contract. This is the guard that turns a
                 fabricated citation into a crash instead of a plausible-looking figure.
+
         """
         clause = self.clauses[clause_id]
         return Citation(doc_id=self.doc_id, clause_id=clause_id, page=clause.page, verbatim=clause.verbatim)
 
 
 def _page_of(offset: int, page_ends: list[int]) -> int:
-    """Map a character offset in the joined text back to its 1-based page.
+    """
+    Map a character offset in the joined text back to its 1-based page.
 
     Args:
         offset: Character position within the joined document text.
@@ -144,12 +165,14 @@ def _page_of(offset: int, page_ends: list[int]) -> int:
 
     Returns:
         The page number as a reader would cite it, counting from 1.
+
     """
     return bisect.bisect_right(page_ends, offset) + 1
 
 
 def build_index(pdf_path: Path) -> ClauseIndex:
-    """Index one policy contract.
+    """
+    Index one policy contract.
 
     Args:
         pdf_path: A text-layer PDF. Taiwanese insurers publish these directly, so no OCR
@@ -160,6 +183,7 @@ def build_index(pdf_path: Path) -> ClauseIndex:
         The contract's clause index, including the two synthetic clauses this parser
         derives: a `waiting` clause lifted out of a definition, and a `carve_back` for
         each exclusion that restores cover mid-sentence.
+
     """
     reader = PdfReader(pdf_path)
     pages = [p.extract_text() or "" for p in reader.pages]
