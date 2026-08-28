@@ -287,3 +287,78 @@ async def test_search_does_not_reward_a_rare_word_that_merely_appears(loaded):
         loaded, "公司說要解除我的契約，但我已經繳了五年", ["insurance_act"], limit=4, siblings=False
     )
     assert "art.166-1.1" not in {r["doc_id"] for r in rows}
+
+
+class _FakeRetriever:
+    """A retriever that returns exactly what it is told to, to prove the wiring."""
+
+    name = "fake"
+
+    def __init__(self, hits):
+        self.hits = hits
+        self.calls = []
+
+    def search(self, query, *, corpus, scope, limit):
+        self.calls.append((query, corpus, tuple(scope), limit))
+        return self.hits
+
+
+def _hit(scope_id, doc_id, score):
+    from policydesk.retrieval.base import STATUTE, Hit
+
+    return Hit(corpus=STATUTE, doc_id=doc_id, scope_id=scope_id, score=score)
+
+
+async def test_a_retriever_decides_the_order_and_the_sql_ranking_is_not_used(loaded):
+    # Reversed against what the SQL fallback returns, so passing would be impossible if
+    # the retriever's order were being discarded.
+    ranked = _FakeRetriever([_hit("insurance_act", "art.64.3", 9.0), _hit("insurance_act", "art.64.1", 8.0)])
+    rows = await statute.search_statute(
+        loaded, "解除契約", ["insurance_act"], limit=2, siblings=False, retriever=ranked
+    )
+    assert [r["doc_id"] for r in rows] == ["art.64.3", "art.64.1"]
+
+
+async def test_the_retriever_is_asked_for_the_statute_corpus_only(loaded):
+    # One index, two corpora. Without the corpus filter a question about the law would be
+    # answered with clauses out of some product's contract.
+    from policydesk.retrieval.base import STATUTE
+
+    ranked = _FakeRetriever([_hit("insurance_act", "art.64.2", 1.0)])
+    await statute.search_statute(loaded, "解除契約", ["insurance_act"], limit=3, retriever=ranked)
+    query, corpus, scope, _ = ranked.calls[0]
+    assert corpus == STATUTE
+    assert scope == ("insurance_act",)
+    assert query == "解除契約", "the retriever cuts the query with the corpus dictionary; do not pre-cut it"
+
+
+async def test_an_empty_scope_reaches_the_retriever_as_no_restriction(loaded):
+    ranked = _FakeRetriever([_hit("insurance_act", "art.64.2", 1.0)])
+    await statute.search_statute(loaded, "解除契約", None, limit=3, retriever=ranked)
+    assert ranked.calls[0][2] == ()
+
+
+async def test_a_retriever_that_finds_nothing_falls_back_rather_than_answering_empty(loaded):
+    # An empty reply reads to the customer as the law having nothing to say about what
+    # happened to him. A worse ranking does not.
+    rows = await statute.search_statute(
+        loaded, "你們憑什麼解除我的契約", ["insurance_act"], limit=4, retriever=_FakeRetriever([])
+    )
+    assert "art.64.3" in {r["doc_id"] for r in rows}
+
+
+async def test_a_retriever_naming_a_whole_article_row_is_dropped_not_duplicated(loaded):
+    # art.64 is its paragraphs concatenated; returning it beside them is the passage twice.
+    ranked = _FakeRetriever([_hit("insurance_act", "art.64", 9.0), _hit("insurance_act", "art.64.2", 8.0)])
+    rows = await statute.search_statute(
+        loaded, "解除契約", ["insurance_act"], limit=4, siblings=False, retriever=ranked
+    )
+    assert [r["doc_id"] for r in rows] == ["art.64.2"]
+
+
+async def test_siblings_still_apply_when_a_retriever_ranked(loaded):
+    # The reason siblings exist does not go away because the ranking got better: BM25
+    # scores 第64條第2項 on 解除契約 too, and alone it is the company's half.
+    ranked = _FakeRetriever([_hit("insurance_act", "art.64.2", 9.0)])
+    rows = await statute.search_statute(loaded, "解除契約", ["insurance_act"], limit=1, retriever=ranked)
+    assert "art.64.3" in {r["doc_id"] for r in rows}

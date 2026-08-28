@@ -130,7 +130,9 @@ async def recheck_citations(db: Database, text: str) -> list[tuple[str, str]]:
     return [pair for pair in pairs if pair not in real]
 
 
-async def statute_reference(db: Database, concern: str, limit: int = 4) -> list[dict[str, Any]]:
+async def statute_reference(
+    db: Database, concern: str, limit: int = 4, *, retriever: Any | None = None
+) -> list[dict[str, Any]]:
     """
     Find the provisions that bear on what the customer raised.
 
@@ -138,6 +140,8 @@ async def statute_reference(db: Database, concern: str, limit: int = 4) -> list[
         db: The database.
         concern: The complaint, in the customer's own words.
         limit: Most provisions to return.
+        retriever: The shared BM25 index, when one is open. None ranks by SQL, which is
+            worse and still answers.
 
     Returns:
         Provision rows with their verbatim text, ready to be quoted.
@@ -147,7 +151,7 @@ async def statute_reference(db: Database, concern: str, limit: int = 4) -> list[
     scenario answer someone who has not verified — and a customer mid-complaint being
     asked for his ID reads as the counter refusing to engage.
     """
-    rows = await statute.search_statute(db, concern, STATUTE_SCOPE, limit=limit)
+    rows = await statute.search_statute(db, concern, STATUTE_SCOPE, limit=limit, retriever=retriever)
     return [
         {
             "citation": _readable(row),
@@ -230,7 +234,7 @@ than an exception to it: these tools genuinely read no member row.
 """
 
 
-async def gather(db: Database, params: dict[str, str]) -> dict[str, Any]:
+async def gather(db: Database, params: dict[str, str], *, retriever: Any | None = None) -> dict[str, Any]:
     """
     Run this scenario's tools.
 
@@ -238,6 +242,8 @@ async def gather(db: Database, params: dict[str, str]) -> dict[str, Any]:
         db: The database.
         params: What the router collected. `concern` is the complaint in the customer's
             words.
+        retriever: The shared index, passed straight through. The executor holds one on
+            `app.ctx`; `_gather` can hand it over in the same line that calls this.
 
     Returns:
         Material for the injection, by tool name.
@@ -247,7 +253,7 @@ async def gather(db: Database, params: dict[str, str]) -> dict[str, Any]:
     and the provisions without the route as being read the law.
     """
     return {
-        "statute_reference": await statute_reference(db, params.get("concern", "")),
+        "statute_reference": await statute_reference(db, params.get("concern", ""), retriever=retriever),
         "complaint_channel": await complaint_channel(db),
     }
 
