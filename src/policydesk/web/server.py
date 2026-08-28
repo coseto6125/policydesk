@@ -29,9 +29,10 @@ from policydesk.agent.executor import run_turn
 from policydesk.bootloader import logger
 from policydesk.core import commands as cmd
 from policydesk.core.db import Database
-from policydesk.gov.identity import verify
+from policydesk.gov.identity import Sex, verify
 from policydesk.llm.provider import build_provider
-from policydesk.synthetic.person import generate
+from policydesk.synthetic.alias import mint
+from policydesk.synthetic.person import generate, insurance_age, occupation_catalogue
 from policydesk.synthetic.portfolio import enrol
 from policydesk.web.session import Registry
 
@@ -53,6 +54,10 @@ DESK_TOKEN = os.environ.get("POLICYDESK_DESK_TOKEN") or secrets.token_urlsafe(16
 # customer name was several hundred characters, which no pane can render and no
 # caseworker can search for.
 MAX_NAME = 40
+
+CORPUS = Path(os.environ.get("POLICYDESK_CORPUS", "data/cathay"))
+"""Where the insurer's own PDFs live, named by digest. The desk serves a contract from
+here so a figure quoted in the chat can be checked against the page it came from."""
 
 app = Sanic("policydesk")
 app.ctx.registry = Registry()
@@ -132,6 +137,28 @@ async def download_document(request: Request, document_id: int):
     if row is None:
         return response.text("查無此文件", status=404)
     return html(_render_document(row))
+
+
+@app.get("/api/alias")
+async def alias(request: Request):
+    """
+    Mint a display name nobody holds.
+
+    Args:
+        request: The request.
+
+    Returns:
+        One alias, checked against the members already enrolled and the names currently
+        connected.
+
+    The name is the account, so it has to be unique, and a demo audience typing their
+    own collides on the third 陳. Minting it also keeps the room anonymous: nobody has
+    to put a real name into a page that renders national IDs.
+
+    """
+    rows = await request.app.ctx.db.fetch("SELECT display_name FROM member")
+    taken = {r["display_name"] for r in rows} | set(request.app.ctx.registry.names)
+    return response.json({"alias": mint(taken)})
 
 
 @app.get("/health")
@@ -225,10 +252,66 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         registry.release(previous_name, session)
                     session = await registry.claim(name, ws.send, ws.close)
                     previous_name = name
-                    person = generate(name, await _next_serial(db))
+
+                    # Nothing is written yet. The visitor picks their own sex, age and
+                    # occupation first, because those three decide what can be sold to
+                    # them — a profile assigned behind their back is a demo where the
+                    # underwriting result was chosen by a random seed.
+                    #
+                    # A member who already exists skips the picker: their profile froze
+                    # on their first message and re-enrolling would silently rewrite the
+                    # person their existing policies belong to.
+                    existing = await db.fetch_one(
+                        """SELECT member_id, national_id, sex, birth_date, occupation, occupation_class
+                           FROM member WHERE display_name = $1::text""",
+                        [name],
+                    )
+                    if existing is not None:
+                        member_id = existing["member_id"]
+                        case_id = (await cmd.open_case(db, member_id)).case_id
+                        await ws.send(json.encode({
+                            "type": "profile",
+                            "name": name,
+                            "national_id": existing["national_id"],
+                            "sex": existing["sex"],
+                            "birth_date": existing["birth_date"].isoformat(),
+                            "insurance_age": insurance_age(existing["birth_date"], datetime.now(UTC).date()),
+                            "member_id": member_id,
+                            "occupation": existing["occupation"],
+                            "occupation_class": existing["occupation_class"],
+                            "returning": True,
+                        }).decode())
+                        await _push_case(db, ws, request.app, case_id)
+                        continue
+
+                    draft = generate(name, await _next_serial(db))
+                    await ws.send(json.encode({
+                        "type": "draft",
+                        "name": name,
+                        "sex": draft.sex.value,
+                        "age": draft.age_on(datetime.now(UTC).date()),
+                        "occupation": draft.occupation,
+                        "occupations": occupation_catalogue(),
+                    }).decode())
+
+                case "enrol" if name is not None and case_id is None:
+                    # The class is looked up from the occupation server-side, so a client
+                    # cannot name its own 職業等級 and sell itself a product it is barred
+                    # from. An age outside 18–85 is clamped rather than refused: the band
+                    # is the insurable range, not a form-validation rule.
+                    try:
+                        chosen_age = int(message.get("age") or 0)
+                    except (TypeError, ValueError):
+                        chosen_age = 0
+                    person = generate(
+                        name,
+                        await _next_serial(db),
+                        sex=Sex.MALE if message.get("sex") == "male" else Sex.FEMALE,
+                        age=chosen_age or None,
+                        occupation=str(message.get("occupation") or ""),
+                    )
                     member_id = await enrol(person, db)
-                    opened = await cmd.open_case(db, member_id)
-                    case_id = opened.case_id
+                    case_id = (await cmd.open_case(db, member_id)).case_id
 
                     await ws.send(json.encode({
                         "type": "profile",
@@ -237,12 +320,12 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         "sex": person.sex.value,
                         "birth_date": person.birth_date.isoformat(),
                         "insurance_age": person.insurance_age_on(datetime.now(UTC).date()),
+                        "member_id": member_id,
                         "occupation": person.occupation,
                         "occupation_class": int(person.occupation_class),
                         "address": str(person.address),
                         "phone": person.phone,
                         "email": person.email,
-                        "editable": True,
                     }).decode())
                     await _push_case(db, ws, request.app, case_id)
 
@@ -281,6 +364,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         # chat so a reader can see the desk answered from the whole
                         # conversation rather than from the last sentence.
                         "params": turn.params,
+                        "quick": list(turn.quick_replies),
                         "citations": list(turn.citations),
                         "faults": list(turn.faults),
                     }).decode())
@@ -367,9 +451,21 @@ async def desk_socket(request: Request, ws: Websocket) -> None:
         await ws.close()
         return
 
+    # And scope it. This window is one visitor: the right pane is their conversation and
+    # the left is the back office view *of their case*. A queue listing every member's
+    # name, national ID and policies to whoever opened the page is a different product
+    # with a different audience, and the token is not what separates them — the member is.
+    try:
+        viewer = int(request.args.get("member", ""))
+    except (TypeError, ValueError):
+        logger.warning("desk_socket_unscoped", peer=str(request.ip))
+        await ws.send(json.encode({"type": "notice", "text": "後台需指定保戶", "level": "warn"}).decode())
+        await ws.close()
+        return
+
     request.app.ctx.desk_sockets.add(ws)
     try:
-        await ws.send(json.encode({"type": "queue", "cases": _jsonable(await _queue(db))}).decode())
+        await ws.send(json.encode({"type": "queue", "cases": _jsonable(await _queue(db, viewer))}).decode())
         async for raw in ws:
             if (message := _decode(raw)) is None:
                 continue
@@ -387,32 +483,84 @@ async def desk_socket(request: Request, ws: Websocket) -> None:
                         snap = await cmd.snapshot(db, outcome.case_id)
                         await _broadcast_desk(request.app, {"type": "case", **_jsonable(snap or {})})
                 case "queue":
-                    await ws.send(json.encode({"type": "queue", "cases": _jsonable(await _queue(db))}).decode())
+                    await ws.send(json.encode({"type": "queue", "cases": _jsonable(await _queue(db, viewer))}).decode())
                 case "open":
+                    # The case id comes off the wire, so ownership is checked here and
+                    # not inferred from the queue the client was handed.
                     snap = await cmd.snapshot(db, int(message["case_id"]))
-                    if snap:
+                    if snap and snap["member_id"] == viewer:
                         await ws.send(json.encode({"type": "case", **_jsonable(snap)}).decode())
+                    else:
+                        logger.warning("case_out_of_scope", case_id=message.get("case_id"), viewer=viewer)
     except (ConnectionError, asyncio.CancelledError):
         pass
     finally:
         request.app.ctx.desk_sockets.discard(ws)
 
 
-async def _queue(db: Database) -> list[dict[str, Any]]:
+async def _queue(db: Database, member_id: int) -> list[dict[str, Any]]:
     """
-    List cases a caseworker can act on, most recent first.
+    List one customer's cases, most recent first.
 
     Args:
         db: The database.
+        member_id: Whose cases. Never optional — an unscoped read here is every
+            customer's name and stage handed to whoever opened the page.
 
     Returns:
-        Case rows with their member's name.
+        Case rows for that member.
 
     """
     return await db.fetch(
         """SELECT c.case_id, c.kind, c.stage, c.case_version, c.updated_at, m.display_name
            FROM "case" c JOIN member m USING (member_id)
-           ORDER BY c.updated_at DESC LIMIT 50"""
+           WHERE c.member_id = $1::bigint
+           ORDER BY c.updated_at DESC LIMIT 50""",
+        [member_id],
+    )
+
+
+@app.get("/contract/<product_id:str>")
+async def contract(request: Request, product_id: str):
+    """
+    Serve the contract behind a policy the customer holds.
+
+    Args:
+        request: The request, carrying the desk token and the viewing member.
+        product_id: Which product's contract.
+
+    Returns:
+        The insurer's own PDF, or a refusal.
+
+    The file is the one the corpus was built from, named by its digest. Serving it means
+    a figure quoted in the chat can be checked against the page it came from, which is
+    the difference between a citation and a claim.
+
+    """
+    if request.args.get("token", "") != DESK_TOKEN:
+        return response.text("需要授權", status=403)
+    try:
+        viewer = int(request.args.get("member", ""))
+    except (TypeError, ValueError):
+        return response.text("需指定保戶", status=403)
+
+    # Held, not merely known: the product catalogue is public, but which contract this
+    # visitor may open is decided by the policies in their own name.
+    row = await request.app.ctx.db.fetch_one(
+        """SELECT p.doc_sha, p.name FROM product p
+           WHERE p.product_id = $1::text
+             AND EXISTS (SELECT 1 FROM policy po WHERE po.product_id = p.product_id AND po.member_id = $2::bigint)""",
+        [product_id, viewer],
+    )
+    if row is None:
+        logger.warning("contract_out_of_scope", product_id=product_id, viewer=viewer)
+        return response.text("查無您名下的這張契約", status=404)
+
+    path = CORPUS / f"{row['doc_sha']}.pdf"
+    if not path.is_file():
+        return response.text("契約條款檔案不在本機語料庫中", status=404)
+    return await response.file(
+        path, mime_type="application/pdf", headers={"Content-Disposition": f'inline; filename="{row["doc_sha"]}.pdf"'}
     )
 
 

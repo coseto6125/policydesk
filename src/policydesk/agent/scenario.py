@@ -63,6 +63,13 @@ class Scenario(Struct, frozen=True):
     """Scenarios reachable from this one."""
     requires_stage: str | None = None
     """The case stage this scenario needs. Refused with an explanation otherwise."""
+    quick_replies: tuple[str, ...] = ()
+    """Offered to the customer as one-tap follow-ups after this scenario answers.
+
+    Every one is a question. None of them commits the customer to anything — a tap is
+    one pixel away from a mis-tap, and a mis-tap that reads as 我要買這張 is an
+    expression of intent the customer never made. Buying is typed, never tapped.
+    """
 
 
 def tool_schema(scenario: Scenario) -> dict:
@@ -111,6 +118,7 @@ EXPLAIN_COVER = Scenario(
     tools=("find_clause", "list_policies"),
     params=(Param(name="topic", description="保戶想了解的保障主題", example="住院日額"),),
     transitions=("recommend", "claim_checklist"),
+    quick_replies=("這張有哪些不賠的情況？", "等待期是多久？", "我想了解目前的保障夠不夠"),
 )
 
 RECOMMEND = Scenario(
@@ -127,6 +135,7 @@ RECOMMEND = Scenario(
         "openings 為空就直說目前沒有可行的調整方向，不要自己想辦法。"
         "結尾必須載明：本推介由登錄業務員具名負責。"
     ),
+    quick_replies=("這幾張的等待期差在哪？", "我想了解各張的除外責任", "想確認保費怎麼算出來的"),
     tools=("suitable_products",),
     params=(
         Param(name="need", description="保戶自己說的保障需求，照原話填", example="想加保壽險"),
@@ -182,6 +191,7 @@ CLAIM_CHECKLIST = Scenario(
         "例如 [art.12]、[art.6.carve1]，寫在該句句末。"
         "若需說明給付倍數，一律呼叫 calculate 工具計算，不要自行心算或估計。"
     ),
+    quick_replies=("診斷證明書要寫到什麼程度？", "我想了解手術給付倍數怎麼算", "送出後大概多久會有結果？"),
     tools=("required_documents", "list_policies", "find_multiplier"),
     params=(
         Param(name="event", description="事故或就醫情形", example="住院四天接受手術"),
@@ -196,6 +206,7 @@ BILLING = Scenario(
     description="保戶詢問保費、繳費紀錄、下期應繳時使用。",
     emit=Emit.TEMPLATE,
     template="您名下有效保單共 {active} 張，年繳保費合計 {premium} 元。\n各張保單明細請見左側後台的保單清單。",
+    quick_replies=("我想了解可以改成月繳嗎？", "沒繳到會怎麼樣？", "想確認下一期的繳費日"),
     tools=("billing_summary",),
     transitions=(),
 )
@@ -210,6 +221,7 @@ COVERAGE = Scenario(
         "以上為契約所載保險金額（給付上限）。實際可用餘額須扣除已給付部分，"
         "並以核保理賠人員核定為準。"
     ),
+    quick_replies=("我想了解這些保額夠不夠", "已經理賠過的會扣掉嗎？", "想確認有沒有重複投保"),
     tools=("coverage_summary",),
     transitions=(),
 )
@@ -240,3 +252,13 @@ ROUTER_INSTRUCTIONS = """\
 
 若保戶的訴求不屬於任何情境，直接以繁體中文回答，並說明本櫃台可以協助的範圍。\
 """
+
+
+OPENERS: tuple[str, ...] = (
+    "我想了解目前的保單保什麼",
+    "想確認一年繳多少保費",
+    "理賠要準備哪些文件？",
+    "我想了解有沒有適合的方案",
+)
+"""Offered when no scenario ran, so a customer who does not know what to ask has
+somewhere to start. Questions, like every other quick reply here."""
