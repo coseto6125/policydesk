@@ -33,7 +33,11 @@ dependencies = [
   "pypdf>=5.0",
   "pdfplumber>=0.11",
   "tantivy>=0.26",
-  "jieba>=0.42.1",
+  "jieba-next>=1.0.0rc1",
+  "numpy>=2.5.2",
+  "onnxruntime>=1.29.0",
+  "tokenizers>=0.23.1",
+  "pillow>=12.3.0",
 ]
 
 [project.optional-dependencies]

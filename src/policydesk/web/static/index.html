@@ -482,6 +482,26 @@
   .folded b { font-weight: 600; }
   .folded span { color: var(--ink-3); }
 
+  /* Citations sit under the reply they came from, as links rather than as text — the
+     clause id is where the reader goes to check the claim. */
+  .cites {
+    align-self: flex-start; max-width: 92%; display: flex; flex-wrap: wrap;
+    gap: 5px; align-items: center;
+  }
+  .cites .label {
+    font-size: 10px; letter-spacing: .12em; color: var(--room-ink); opacity: .7;
+    font-weight: 700; margin-right: 2px;
+  }
+  a.cite {
+    display: inline-flex; align-items: baseline; gap: 5px; text-decoration: none;
+    background: var(--flag-wash); color: var(--flag); border: 1px solid transparent;
+    border-radius: 6px; padding: 4px 9px; font-size: 11.5px; max-width: 100%;
+    transition: border-color 180ms ease, background 180ms ease;
+  }
+  a.cite:hover { border-color: var(--flag); background: var(--paper); }
+  a.cite code { font-family: var(--mono); font-size: 11px; font-weight: 600; flex: none; }
+  a.cite span { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
   .chips { display: flex; flex-wrap: wrap; gap: 6px; align-self: flex-start; max-width: 92%; }
   .chip {
     background: var(--paper); color: var(--accent); border: 1px solid var(--accent);
@@ -921,6 +941,30 @@ function setLink(state, text) {
   $("deskStatus").textContent = text;
 }
 
+/**
+ * The clauses a reply cited, each one a way into the page it came from.
+ *
+ * A clause id is a promise that the sentence came from that contract on that page. A
+ * promise nobody can check is a decoration, so each one opens the insurer's own page
+ * with the clause under a marker. The same `art.6` exists in every contract in the
+ * corpus, which is why the server resolves the id against this member's own book before
+ * it reaches here — a bare id is not a link.
+ */
+function renderCitations(cited) {
+  document.querySelectorAll(".cites").forEach(el => el.remove());
+  if (!cited?.length) return;
+  const box = document.createElement("div");
+  box.className = "cites";
+  box.innerHTML = `<span class="label">引用條款</span>` + cited.map(c => `
+    <a class="cite" target="_blank"
+       href="/clause/${encodeURIComponent(c.product_id)}/${encodeURIComponent(c.clause_id)}?member=${memberId}"
+       title="${esc(c.product_name)} 第 ${c.page} 頁">
+      <code>${esc(c.clause_id)}</code><span>${esc(c.heading)}</span>
+    </a>`).join("");
+  $("chatLog").append(box);
+  toBottom();
+}
+
 /** A chip is a question, never a purchase. See renderChips. */
 function renderChips(items) {
   document.querySelectorAll(".chips").forEach(el => el.remove());
@@ -1089,10 +1133,9 @@ function connectCustomer(name) {
         renderChips(m.quick);
         if (m.scenario) {
           const carried = Object.entries(m.params ?? {}).map(([k, v]) => `${k}=${v}`).join(" ");
-          bubble("sys", `情境：${m.scenario}`
-            + (carried ? ` · 取得 ${carried}` : "")
-            + (m.citations?.length ? ` · 引用 ${m.citations.join("、")}` : ""));
+          bubble("sys", `情境：${m.scenario}` + (carried ? ` · 取得 ${carried}` : ""));
         }
+        renderCitations(m.citations);
         if (m.faults?.length) bubble("sys", `引用查核未過：${m.faults.join("；")}`);
         break;
       case "notice": waiting(false); bubble("sys", m.text); break;

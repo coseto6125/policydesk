@@ -14,10 +14,12 @@ nothing, and cannot be reopened tomorrow.
 """
 
 import asyncio
+import base64
 import contextlib
 import os
 import secrets
 from datetime import UTC, date, datetime
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,7 @@ from policydesk.retrieval.index import open_index
 from policydesk.synthetic.alias import mint
 from policydesk.synthetic.person import generate, insurance_age, occupation_catalogue
 from policydesk.synthetic.portfolio import DEFAULT_PRESET, enrol, preset_catalogue
+from policydesk.web.highlight import page_count, page_image
 from policydesk.web.session import Registry
 
 STATIC = Path(__file__).parent / "static"
@@ -508,6 +511,38 @@ async def _push_case(db: Database, ws: Websocket, application: Sanic, case_id: i
     await _broadcast_desk(application, payload)
 
 
+async def _cited(db: Database, case_id: int, clause_ids: tuple[str, ...]) -> list[dict[str, Any]]:
+    """
+    Resolve the clause ids in a reply to contracts the customer actually holds.
+
+    Args:
+        db: The database.
+        case_id: Whose case, and through it whose policies.
+        clause_ids: The ids the reply cited.
+
+    Returns:
+        One entry per contract each id resolves to, with its heading and page. A bare id
+        is not a link: the same `art.6` exists in every contract in the corpus, and which
+        one the reply meant is decided by the member's own book.
+
+    """
+    if not clause_ids:
+        return []
+    rows = await db.fetch(
+        """SELECT DISTINCT c.product_id, c.clause_id, c.heading, c.page, p.name AS product_name
+           FROM clause c
+           JOIN product p USING (product_id)
+           JOIN policy po ON po.product_id = c.product_id
+           JOIN "case" k ON k.member_id = po.member_id
+           WHERE k.case_id = $1::bigint AND c.clause_id = ANY($2::text[])
+           ORDER BY c.clause_id""",
+        [case_id, list(clause_ids)],
+    )
+    order = {clause_id: position for position, clause_id in enumerate(clause_ids)}
+    rows.sort(key=lambda r: order.get(r["clause_id"], len(order)))
+    return rows
+
+
 async def _answer(
     request: Request, ws: Websocket, db: Database, *, case_id: int, text: str, confirmed: bool
 ) -> Turn:
@@ -554,7 +589,7 @@ async def _answer(
         "scenario": turn.scenario,
         "params": turn.params,
         "quick": list(turn.quick_replies),
-        "citations": list(turn.citations),
+        "citations": _jsonable(await _cited(db, case_id, turn.citations)),
         "faults": list(turn.faults),
     }).decode())
     await _push_case(db, ws, request.app, case_id)
@@ -649,26 +684,23 @@ async def _queue(db: Database, member_id: int) -> list[dict[str, Any]]:
     )
 
 
-@app.get("/contract/<product_id:str>")
-async def contract(request: Request, product_id: str):
+@app.get("/clause/<product_id:str>/<clause_id:str>")
+async def clause_page(request: Request, product_id: str, clause_id: str):
     """
-    Serve the contract behind a policy the customer holds.
+    Show the contract page a citation points at, with the clause marked.
 
     Args:
-        request: The request, carrying the desk token and the viewing member.
-        product_id: Which product's contract.
+        request: The request, carrying the viewing member.
+        product_id: Which contract.
+        clause_id: Which clause, as the reply cited it.
 
     Returns:
-        The insurer's own PDF, or a refusal.
+        A page holding the rendered image and the clause text, or a refusal.
 
-    The file is the one the corpus was built from, named by its digest. Serving it means
-    a figure quoted in the chat can be checked against the page it came from, which is
-    the difference between a citation and a claim.
-
-    No desk token. A contract is the insurer's own published document — /doc/<id> is
-    gated because it renders an applicant's national ID and address, and this route
-    renders neither. The member scope stays: which contract this visitor may open is
-    still decided by the policies in their own name.
+    A clause id in a reply is a promise that the sentence came from that contract on that
+    page. This is where the promise is redeemed: the insurer's own page, the lines the
+    clause occupies under a marker, and the stored text below it so the two can be read
+    against each other.
 
     """
     try:
@@ -676,14 +708,88 @@ async def contract(request: Request, product_id: str):
     except (TypeError, ValueError):
         return response.text("需指定保戶", status=403)
 
-    # Held, not merely known: the product catalogue is public, but which contract this
-    # visitor may open is decided by the policies in their own name.
     row = await request.app.ctx.db.fetch_one(
-        """SELECT p.doc_sha, p.name FROM product p
+        """SELECT c.heading, c.verbatim, c.page, c.kind, p.name AS product_name, p.doc_sha
+           FROM clause c JOIN product p USING (product_id)
+           WHERE c.product_id = $1::text AND c.clause_id = $2::text
+             AND EXISTS (SELECT 1 FROM policy po
+                         WHERE po.product_id = c.product_id AND po.member_id = $3::bigint)""",
+        [product_id, clause_id, viewer],
+    )
+    if row is None:
+        logger.warning("clause_out_of_scope", product_id=product_id, clause_id=clause_id, viewer=viewer)
+        return response.text("查無您名下保單的這條條款", status=404)
+
+    # Off the event loop: a render is about 250 ms of CPU, and Sanic serves every other
+    # socket from the same thread.
+    png = await asyncio.to_thread(
+        page_image, CORPUS / f"{row['doc_sha']}.pdf", row["page"], row["verbatim"]
+    )
+    return html(_render_clause(row, clause_id, png))
+
+
+async def _held(db: Database, product_id: str, viewer: int) -> dict[str, Any] | None:
+    """
+    Read a contract, but only for someone holding a policy on it.
+
+    Args:
+        db: The database.
+        product_id: Which contract.
+        viewer: The member asking.
+
+    Returns:
+        The product row, or None. The catalogue is public; which contract this visitor
+        may open is decided by the policies in their own name.
+
+    """
+    return await db.fetch_one(
+        """SELECT p.product_id, p.name, p.doc_sha FROM product p
            WHERE p.product_id = $1::text
-             AND EXISTS (SELECT 1 FROM policy po WHERE po.product_id = p.product_id AND po.member_id = $2::bigint)""",
+             AND EXISTS (SELECT 1 FROM policy po
+                         WHERE po.product_id = p.product_id AND po.member_id = $2::bigint)""",
         [product_id, viewer],
     )
+
+
+def _viewer(request: Request) -> int | None:
+    """
+    Read the member this request is scoped to.
+
+    Args:
+        request: The request.
+
+    Returns:
+        The member id, or None when it is absent or not a number.
+
+    """
+    try:
+        return int(request.args.get("member", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+@app.get("/contract/<product_id:str>")
+async def contract(request: Request, product_id: str):
+    """
+    Show a contract as pages, or hand over the file itself.
+
+    Args:
+        request: The request, carrying the viewing member and an optional `download`.
+        product_id: Which contract.
+
+    Returns:
+        A viewer page, the PDF when `download=1`, or a refusal.
+
+    Serving the PDF straight into a tab looked right and was not: a browser with no PDF
+    plugin aborts the navigation — `net::ERR_ABORTED` in headless Chromium, a spinner
+    that never stops in an embedded webview — and the reader is left with nothing. So the
+    default is a page of rendered images, which every browser can draw, and the file
+    stays one click away for anyone who wants it.
+
+    """
+    if (viewer := _viewer(request)) is None:
+        return response.text("需指定保戶", status=403)
+    row = await _held(request.app.ctx.db, product_id, viewer)
     if row is None:
         logger.warning("contract_out_of_scope", product_id=product_id, viewer=viewer)
         return response.text("查無您名下的這張契約", status=404)
@@ -691,9 +797,47 @@ async def contract(request: Request, product_id: str):
     path = CORPUS / f"{row['doc_sha']}.pdf"
     if not path.is_file():
         return response.text("契約條款檔案不在本機語料庫中", status=404)
-    return await response.file(
-        path, mime_type="application/pdf", headers={"Content-Disposition": f'inline; filename="{row["doc_sha"]}.pdf"'}
-    )
+
+    if request.args.get("download") == "1":
+        return await response.file(
+            path,
+            mime_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{row["doc_sha"]}.pdf"'},
+        )
+    pages = await asyncio.to_thread(page_count, path)
+    return html(_render_contract(row, pages, viewer))
+
+
+@app.get("/contract/<product_id:str>/page/<page:int>")
+async def contract_page(request: Request, product_id: str, page: int):
+    """
+    Render one page of a contract.
+
+    Args:
+        request: The request, carrying the viewing member.
+        product_id: Which contract.
+        page: Which page, 1-based.
+
+    Returns:
+        A PNG, or a refusal.
+
+    Requested lazily by the viewer, one image per page, so opening a 31-page contract
+    costs one render rather than thirty-one.
+
+    No `.png` on the path: Sanic's router rejects a parameter followed by a literal
+    extension outright — `Invalid declaration: <page:int>.png`, raised at import.
+
+    """
+    if (viewer := _viewer(request)) is None:
+        return response.text("需指定保戶", status=403)
+    row = await _held(request.app.ctx.db, product_id, viewer)
+    if row is None:
+        return response.text("查無您名下的這張契約", status=404)
+
+    png = await asyncio.to_thread(page_image, CORPUS / f"{row['doc_sha']}.pdf", page, "")
+    if png is None:
+        return response.text("這一頁無法還原", status=404)
+    return response.raw(png, content_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
 
 
 @app.get("/api/llm-turns")
@@ -824,6 +968,145 @@ _DOC_BODY: dict[str, str] = {
 }
 
 
+def _esc(value: object) -> str:
+    """
+    Escape a value for HTML.
+
+    Args:
+        value: Anything renderable.
+
+    Returns:
+        The text with the five markup characters replaced.
+
+    The display name is chosen by the visitor and the document renderer interpolated it
+    raw, so a name containing a tag became markup in a page an operator opens.
+
+    """
+    return escape(str(value if value is not None else ""), quote=True)
+
+
+def _render_contract(row: dict[str, Any], pages: int, viewer: int) -> str:
+    """
+    Lay out a whole contract as pages the browser can draw.
+
+    Args:
+        row: The product with its digest.
+        pages: How many pages it has.
+        viewer: The member, carried into each image request.
+
+    Returns:
+        A standalone HTML page. Images load lazily, so opening a 31-page contract costs
+        one render rather than thirty-one, and the reader can jump by page number.
+
+    """
+    numbers = "".join(
+        f'<a href="#p{n}">{n}</a>' for n in range(1, pages + 1)
+    )
+    images = "".join(
+        f'<figure id="p{n}"><img loading="lazy" alt="第 {n} 頁"'
+        f' src="/contract/{_esc(row["product_id"])}/page/{n}?member={viewer}">'
+        f"<figcaption>第 {n} 頁 · 共 {pages} 頁</figcaption></figure>"
+        for n in range(1, pages + 1)
+    )
+    return f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{_esc(row["name"])}</title>
+<style>
+ :root {{ color-scheme: light dark; --ink:#0f1a16; --ink-2:#46554f; --ink-3:#5d6e68;
+          --paper:#fff; --ground:#eceff0; --rule:#dbe2df; --accent:#0b6b46; }}
+ @media (prefers-color-scheme: dark) {{ :root {{ --ink:#e8efeb; --ink-2:#a6b5af; --ink-3:#7d8d87;
+          --paper:#151d1a; --ground:#0e1513; --rule:#2a3531; --accent:#3fbd85; }} }}
+ * {{ box-sizing:border-box }}
+ body {{ margin:0; background:var(--ground); color:var(--ink); font-size:14px; line-height:1.7;
+         font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif }}
+ header {{ position:sticky; top:0; z-index:5; background:var(--paper);
+           border-bottom:1px solid var(--rule); padding:12px 16px }}
+ h1 {{ margin:0 0 6px; font-size:16px; font-weight:600 }}
+ .meta {{ font-size:12px; color:var(--ink-3) }}
+ .meta a {{ color:var(--accent) }}
+ nav {{ display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; max-height:64px; overflow-y:auto }}
+ nav a {{ font-family:ui-monospace,Menlo,monospace; font-size:11px; text-decoration:none;
+          color:var(--ink-2); border:1px solid var(--rule); border-radius:4px; padding:1px 7px }}
+ nav a:hover {{ border-color:var(--accent); color:var(--accent) }}
+ main {{ max-width:1000px; margin:0 auto; padding:16px }}
+ figure {{ margin:0 0 16px; background:var(--paper); border:1px solid var(--rule);
+           border-radius:8px; overflow:hidden; scroll-margin-top:110px }}
+ img {{ display:block; width:100%; height:auto; background:var(--paper) }}
+ figcaption {{ padding:6px 12px; font-size:11.5px; color:var(--ink-3);
+               border-top:1px solid var(--rule); font-variant-numeric:tabular-nums }}
+</style></head><body>
+<header>
+  <h1>{_esc(row["name"])}</h1>
+  <div class="meta">共 {pages} 頁 · 保險公司公開條款 ·
+    <a href="/contract/{_esc(row["product_id"])}?member={viewer}&amp;download=1">下載 PDF</a></div>
+  <nav>{numbers}</nav>
+</header>
+<main>{images}</main>
+</body></html>"""
+
+
+def _render_clause(row: dict[str, Any], clause_id: str, png: bytes | None) -> str:
+    """
+    Lay out one clause: the page it sits on, and the text as stored.
+
+    Args:
+        row: The clause with its product and page.
+        clause_id: The id the reply cited.
+        png: The rendered page, or None when it could not be produced.
+
+    Returns:
+        A standalone HTML page. Self-contained, image inlined as a data URI, because it
+        opens in its own tab and a second request for one picture is a second thing that
+        can fail.
+
+    """
+    kinds = {
+        "grant": "給付", "exclusion": "除外責任", "carve_back": "但書",
+        "waiting": "等待期", "definition": "定義", "procedure": "程序", "endorsement": "批註",
+    }
+    picture = (
+        f'<img alt="契約第 {row["page"]} 頁，已標示本條" src="data:image/png;base64,{base64.b64encode(png).decode()}">'
+        if png
+        else '<p class="none">這一頁無法從語料庫的 PDF 還原，以下為資料庫中保存的條文原文。</p>'
+    )
+    return f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{_esc(clause_id)} · {_esc(row["heading"])}</title>
+<style>
+ :root {{ color-scheme: light dark; --ink:#0f1a16; --ink-2:#46554f; --ink-3:#5d6e68;
+          --paper:#fff; --ground:#eceff0; --rule:#dbe2df; --mark:#8a5300; --mark-bg:#fbf1e0; }}
+ @media (prefers-color-scheme: dark) {{ :root {{ --ink:#e8efeb; --ink-2:#a6b5af; --ink-3:#7d8d87;
+          --paper:#151d1a; --ground:#0e1513; --rule:#2a3531; --mark:#d5a45a; --mark-bg:#33291a; }} }}
+ * {{ box-sizing:border-box }}
+ body {{ margin:0; background:var(--ground); color:var(--ink); font-size:14px; line-height:1.7;
+         font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif; }}
+ main {{ max-width:900px; margin:0 auto; padding:24px 16px 64px; }}
+ header {{ margin-bottom:16px }}
+ h1 {{ margin:0 0 4px; font-size:20px; font-weight:600 }}
+ .id {{ font-family:ui-monospace,Menlo,monospace; font-size:12px; color:var(--ink-3) }}
+ .meta {{ font-size:12.5px; color:var(--ink-2) }}
+ .tag {{ display:inline-block; background:var(--mark-bg); color:var(--mark); border-radius:999px;
+         padding:2px 9px; font-size:11px; font-weight:600; margin-left:6px }}
+ figure {{ margin:0 0 20px; background:var(--paper); border:1px solid var(--rule); border-radius:8px;
+           overflow:hidden }}
+ img {{ display:block; width:100%; height:auto }}
+ figcaption {{ padding:8px 12px; font-size:12px; color:var(--ink-3); border-top:1px solid var(--rule) }}
+ .body {{ background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:16px 18px;
+          white-space:pre-wrap; overflow-wrap:anywhere }}
+ .body h2 {{ margin:0 0 8px; font-size:11px; letter-spacing:.13em; text-transform:uppercase;
+             color:var(--ink-3); font-weight:700 }}
+ .none {{ color:var(--ink-3); padding:16px }}
+</style></head><body><main>
+<header>
+  <h1>{_esc(row["heading"])}<span class="tag">{kinds.get(row["kind"], _esc(row["kind"]))}</span></h1>
+  <div class="id">{_esc(clause_id)}</div>
+  <div class="meta">{_esc(row["product_name"])} · 第 {row["page"]} 頁</div>
+</header>
+<figure>{picture}<figcaption>黃色標示為本條在契約頁面上的位置，取自保險公司公開的條款 PDF。</figcaption></figure>
+<div class="body"><h2>條文原文</h2>{_esc(row["verbatim"])}</div>
+</main></body></html>"""
+
+
 def _render_document(row: dict[str, Any]) -> str:
     """
     Render one signing document.
@@ -836,24 +1119,24 @@ def _render_document(row: dict[str, Any]) -> str:
 
     """
     kind = row["kind"]
-    address = f"{row['address_city']}{row['address_district']}{row['address_rest']}"
+    address = f"{_esc(row['address_city'])}{_esc(row['address_district'])}{_esc(row['address_rest'])}"
     history = "、".join(row["medical_history"] or []) or "無"
     return f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
 <title>{kind}</title><style>{_DOC_STYLE}</style></head><body>
 <h1>{kind}</h1>
-<div class="meta">案號 #{row["case_id"]} · 文件編號 {row["document_id"]} · 文件雜湊 {row["sha"]}</div>
+<div class="meta">案號 #{_esc(row["case_id"])} · 文件編號 {_esc(row["document_id"])} · 文件雜湊 {_esc(row["sha"])}</div>
 <p>{_DOC_BODY.get(kind, "")}</p>
 <dl>
-  <dt>要保人／被保險人</dt><dd>{row["display_name"]}</dd>
-  <dt>身分證字號</dt><dd>{row["national_id"]}</dd>
-  <dt>出生年月日</dt><dd>{row["birth_date"]}</dd>
-  <dt>職業</dt><dd>{row["occupation"]}（第 {row["occupation_class"]} 類）</dd>
-  <dt>通訊地址</dt><dd>{address}</dd>
-  <dt>聯絡電話</dt><dd>{row["phone"]}</dd>
-  <dt>電子郵件</dt><dd>{row["email"]}</dd>
-  <dt>婚姻狀況</dt><dd>{row["marital_status"]}</dd>
-  <dt>既往症告知</dt><dd>{history}</dd>
-  <dt>受益人關係</dt><dd>{row["beneficiary_relation"]}</dd>
+  <dt>要保人／被保險人</dt><dd>{_esc(row["display_name"])}</dd>
+  <dt>身分證字號</dt><dd>{_esc(row["national_id"])}</dd>
+  <dt>出生年月日</dt><dd>{_esc(row["birth_date"])}</dd>
+  <dt>職業</dt><dd>{_esc(row["occupation"])}（第 {_esc(row["occupation_class"])} 類）</dd>
+  <dt>通訊地址</dt><dd>{_esc(address)}</dd>
+  <dt>聯絡電話</dt><dd>{_esc(row["phone"])}</dd>
+  <dt>電子郵件</dt><dd>{_esc(row["email"])}</dd>
+  <dt>婚姻狀況</dt><dd>{_esc(row["marital_status"])}</dd>
+  <dt>既往症告知</dt><dd>{_esc(history)}</dd>
+  <dt>受益人關係</dt><dd>{_esc(row["beneficiary_relation"])}</dd>
   <dt>招攬業務員</dt><dd>{row["adviser_name"] or "—"}（登錄字號 {row["adviser_licence"] or "—"}）</dd>
 </dl>
 <div class="sign">
@@ -865,7 +1148,7 @@ def _render_document(row: dict[str, Any]) -> str:
 </div>
 <div class="note">
   本文件為 policydesk 示範系統產生，非真實保險文件，不具法律效力。
-  簽署後請以「上傳簽署本」回傳，系統將以本文件雜湊 {row["sha"]} 綁定該次簽署。
+  簽署後請以「上傳簽署本」回傳，系統將以本文件雜湊 {_esc(row["sha"])} 綁定該次簽署。
 </div>
 </body></html>"""
 
