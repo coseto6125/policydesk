@@ -65,6 +65,18 @@ def test_desk_token_exists_and_is_not_empty():
     assert DESK_TOKEN
 
 
+def test_desk_token_is_not_a_value_that_ships_in_the_repo():
+    """A default in the source is a password everyone already has."""
+    import os
+
+    from policydesk.web.server import DESK_TOKEN
+
+    if os.environ.get("POLICYDESK_DESK_TOKEN"):
+        pytest.skip("token is configured, so the generated-value rule does not apply")
+    assert DESK_TOKEN != "desk-demo-token"  # noqa: S105  - asserting a value is refused, not setting one
+    assert len(DESK_TOKEN) >= 16, "a per-boot token must be long enough to resist guessing"
+
+
 def test_json_decode_error_is_the_type_the_server_catches():
     """Guards the import: catching the wrong exception type puts the bug straight back."""
     with pytest.raises(DecodeError):
