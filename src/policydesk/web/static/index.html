@@ -838,7 +838,12 @@ function connectCustomer(name) {
       case "reply":
         waiting(false);
         bubble("them", m.text);
-        if (m.scenario) bubble("sys", `情境：${m.scenario}${m.citations?.length ? " · 引用 " + m.citations.join("、") : ""}`);
+        if (m.scenario) {
+          const carried = Object.entries(m.params ?? {}).map(([k, v]) => `${k}=${v}`).join(" ");
+          bubble("sys", `情境：${m.scenario}`
+            + (carried ? ` · 取得 ${carried}` : "")
+            + (m.citations?.length ? ` · 引用 ${m.citations.join("、")}` : ""));
+        }
         if (m.faults?.length) bubble("sys", `引用查核未過：${m.faults.join("；")}`);
         break;
       case "notice": waiting(false); bubble("sys", m.text); break;

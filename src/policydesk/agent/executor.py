@@ -26,13 +26,14 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from msgspec import json
+from msgspec import DecodeError, json
 
 from policydesk.agent import tools
 from policydesk.agent.scenario import BY_NAME, CATALOGUE, ROUTER_INSTRUCTIONS, Emit, Scenario, tool_schema
 from policydesk.bootloader import logger
 from policydesk.llm.provider import Completion, Phase, Provider, ProviderError
 from policydesk.skills.calculator import TOOL_SCHEMA, CalculationError, calculate
+from policydesk.synthetic.person import insurance_age
 from policydesk.validation.validator import Verdict, recheck
 
 if TYPE_CHECKING:
@@ -55,6 +56,8 @@ class Turn:
         self.faults: tuple[str, ...] = ()
         self.procedure_hint: str = ""
         """What the customer called the procedure, used to look up its multiplier."""
+        self.params: dict[str, str] = {}
+        """What the router filled from the conversation. Empty before a scenario runs."""
         self.computations: tuple[tuple[str, int], ...] = ()
         """Expressions the model asked the calculator to evaluate, and their results.
         Empty means the reply states no computed figure, or states one it should not."""
@@ -112,43 +115,97 @@ async def _record(db: Database, turn: Turn, phase: Phase, completion: Completion
     )
 
 
-async def _route(provider: Provider, db: Database, turn: Turn, text: str) -> Scenario | None:
+def _transcript(messages: list[dict[str, Any]]) -> str:
     """
-    Ask the model which scenario this turn belongs to.
+    Render the case so far for the model.
+
+    Args:
+        messages: Rows from `history`, oldest first.
+
+    Returns:
+        A labelled block, empty when nothing has been said yet.
+
+    """
+    if not messages:
+        return ""
+    lines = "\n".join(f"{'保戶' if m['speaker'] == 'customer' else '櫃台'}：{m['text']}" for m in messages)
+    return f"# 先前對話\n{lines}\n\n"
+
+
+async def _route(
+    provider: Provider, db: Database, turn: Turn, text: str, past: str
+) -> tuple[Scenario | None, dict[str, str]]:
+    """
+    Ask the model which scenario this turn belongs to, and with what.
 
     Args:
         provider: The model seam.
         db: The database, for the trace.
         turn: The turn.
         text: What the customer said.
+        past: The transcript of the case so far.
 
     Returns:
-        The chosen scenario, or None when nothing fits.
+        The chosen scenario and the parameters the model filled from the conversation,
+        or (None, {}) when nothing fits.
+
+    The arguments are the point. A scenario declares the parameters it needs, the model
+    collects them, and until they were returned from here they were discarded — the
+    gather step then ran on hardcoded defaults, so a customer who asked for 壽險 with a
+    budget of 20,000 was matched against health products at 30,000.
 
     """
     completion = await provider.complete(
         instructions=ROUTER_INSTRUCTIONS,
-        user_input=text,
+        user_input=f"{past}# 本次訊息\n{text}",
         tools=[tool_schema(s) for s in CATALOGUE],
     )
     await _record(db, turn, Phase.ROUTE, completion, None)
 
     for call in completion.tool_calls:
         if (scenario := BY_NAME.get(call.get("name", ""))) is not None:
-            return scenario
+            try:
+                args = json.decode((call.get("arguments") or "{}").encode())
+            except DecodeError:
+                logger.warning("router_arguments_unreadable", call=str(call)[:200])
+                args = {}
+            return scenario, {k: str(v) for k, v in args.items() if isinstance(args, dict)}
     turn.reply = completion.text
-    return None
+    return None, {}
 
 
-async def _gather(db: Database, scenario: Scenario, turn: Turn, *, today: date) -> dict[str, Any]:
+def _as_budget(raw: str) -> int | None:
     """
-    Run the scenario's tools.
+    Read the budget the model collected.
+
+    Args:
+        raw: What the model put in the parameter.
+
+    Returns:
+        The annual premium as an integer, or None when it is not a plain number. None
+        means no recommendation is made: a budget filter that silently falls back to a
+        default is how a customer is shown a product they said they cannot afford.
+
+    """
+    try:
+        return int(raw.strip().replace(",", ""))
+    except (AttributeError, ValueError):
+        logger.warning("budget_unreadable", raw=str(raw)[:60])
+        return None
+
+
+async def _gather(
+    db: Database, scenario: Scenario, turn: Turn, *, today: date, params: dict[str, str]
+) -> dict[str, Any]:
+    """
+    Run the scenario's tools, on what the model collected.
 
     Args:
         db: The database.
         scenario: Which scenario is running.
         turn: The turn.
         today: The date to judge currency against.
+        params: The scenario parameters the router filled from the conversation.
 
     Returns:
         Everything the tools returned, by tool name.
@@ -165,9 +222,9 @@ async def _gather(db: Database, scenario: Scenario, turn: Turn, *, today: date) 
     # trip each, on the path a customer is waiting on.
     pending: dict[str, Any] = {"_allowed_clauses": tools.clause_ids_for(db, product_ids)}
     if "find_clause" in scenario.tools:
-        pending["find_clause"] = tools.find_clause(db, product_ids, "住院")
+        pending["find_clause"] = tools.find_clause(db, product_ids, params.get("topic", ""))
     if "find_multiplier" in scenario.tools:
-        pending["find_multiplier"] = tools.find_multiplier(db, product_ids, turn.procedure_hint)
+        pending["find_multiplier"] = tools.find_multiplier(db, product_ids, params.get("event", turn.procedure_hint))
     if "required_documents" in scenario.tools:
         pending["required_documents"] = tools.required_documents(db, product_ids)
     if "billing_summary" in scenario.tools:
@@ -182,11 +239,22 @@ async def _gather(db: Database, scenario: Scenario, turn: Turn, *, today: date) 
         member = await db.fetch_one(
             "SELECT birth_date, occupation_class FROM member WHERE member_id = $1::bigint", [turn.member_id]
         )
-        if member:
-            age = today.year - member["birth_date"].year
+        budget = _as_budget(params.get("budget", ""))
+        if member and budget is not None:
+            age = insurance_age(member["birth_date"], today)
             facts["suitable_products"] = await tools.suitable_products(
-                db, insurance_age=age, occupation_class=member["occupation_class"], budget=30000
+                db,
+                insurance_age=age,
+                occupation_class=member["occupation_class"],
+                budget=budget,
+                line=params.get("line", ""),
             )
+            facts["_criteria"] = {
+                "insurance_age": age,
+                "occupation_class": member["occupation_class"],
+                "budget": budget,
+                "line": params.get("line", ""),
+            }
 
     return facts
 
@@ -240,10 +308,13 @@ async def run_turn(
     """
     today = today or datetime.now(UTC).date()
     turn = Turn(case_id, member_id)
+    # The customer's own message is written before this runs, so the window excludes it
+    # and the transcript never repeats what the router is already reading as this turn.
+    past = _transcript((await tools.history(db, case_id))[:-1])
 
     started = time.perf_counter()
     try:
-        scenario = await _route(provider, db, turn, text)
+        scenario, params = await _route(provider, db, turn, text, past)
     except ProviderError as exc:
         latency = int((time.perf_counter() - started) * 1000)
         logger.warning("turn_unrouted", case_id=case_id, error=str(exc))
@@ -256,7 +327,8 @@ async def run_turn(
 
     turn.scenario = scenario.name
     turn.procedure_hint = text
-    facts = await _gather(db, scenario, turn, today=today)
+    turn.params = params
+    facts = await _gather(db, scenario, turn, today=today, params=params)
     allowed: frozenset[str] = facts.pop("_allowed_clauses")
 
     if scenario.emit is Emit.TEMPLATE:
@@ -272,7 +344,7 @@ async def run_turn(
         # them. A tool the model cannot reach is a claim, not a guarantee.
         completion = await provider.complete(
             instructions=f"{ROUTER_INSTRUCTIONS}\n\n{scenario.injection}",
-            user_input=f"# 保戶說\n{text}\n\n# 工具回傳\n{material}",
+            user_input=f"{past}# 本次訊息\n{text}\n\n# 工具回傳\n{material}",
             tools=[TOOL_SCHEMA],
         )
     except ProviderError as exc:

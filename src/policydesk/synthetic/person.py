@@ -23,6 +23,7 @@ generated together so they stay consistent with each other; an applicant whose
 occupation cannot buy the product the demo needs is a broken demo, not a realistic one.
 """
 
+from calendar import monthrange
 from datetime import UTC, date, datetime
 from enum import IntEnum, StrEnum
 from typing import TYPE_CHECKING
@@ -252,10 +253,7 @@ class Person(Struct, frozen=True):
             The age the insurer underwrites on.
 
         """
-        years = self.age_on(when)
-        anniversary = date(when.year - (0 if (when.month, when.day) >= (self.birth_date.month, self.birth_date.day) else 1), self.birth_date.month, self.birth_date.day)
-        months_past = (when.year - anniversary.year) * 12 + when.month - anniversary.month
-        return years + 1 if months_past > 6 else years
+        return insurance_age(self.birth_date, when)
 
 
 
@@ -309,6 +307,34 @@ def _pick_address(rng: random.Random) -> Address:
         number=rng.randint(1, 480),
         floor=rng.choice([None, *range(1, 15)]),
     )
+
+
+def insurance_age(birth_date: date, when: date) -> int:
+    """
+    Give 保險年齡 from a birth date.
+
+    Args:
+        birth_date: The date of birth.
+        when: The date to age against.
+
+    Returns:
+        The age the insurer underwrites on: 以足歲計算，但未滿一歲的零數超過六個月者，
+        加算一歲. Someone 34 years and 7 months old is 35 here, and that one year moves
+        both eligibility and premium — a plain year subtraction gets it wrong twice.
+
+    """
+    had_birthday = (when.month, when.day) >= (birth_date.month, birth_date.day)
+    years = when.year - birth_date.year - (0 if had_birthday else 1)
+    anniversary = date(when.year - (0 if had_birthday else 1), birth_date.month, birth_date.day)
+
+    # 超過六個月 is measured against the half-year date, not against a month counter.
+    # Subtracting months only compared 7 to 6, so the whole of the seventh month read as
+    # exactly six and the year was added up to thirty days late.
+    month = anniversary.month + 6
+    year = anniversary.year + (month > 12)
+    month = month - 12 if month > 12 else month
+    day = min(anniversary.day, monthrange(year, month)[1])
+    return years + 1 if when > date(year, month, day) else years
 
 
 def _pick_history(rng: random.Random, insurance_age: int) -> tuple[MedicalHistory, ...]:
