@@ -34,7 +34,6 @@ from policydesk.agent.scenario import BY_NAME, CATALOGUE, OPENERS, ROUTER_INSTRU
 from policydesk.bootloader import logger
 from policydesk.llm.provider import Completion, Phase, Provider, ProviderError
 from policydesk.skills.calculator import TOOL_SCHEMA, CalculationError, calculate
-from policydesk.synthetic.person import insurance_age
 from policydesk.validation.validator import Verdict, recheck
 
 if TYPE_CHECKING:
@@ -161,6 +160,18 @@ async def _route(
     return None, {}
 
 
+async def _nothing() -> dict[str, Any]:
+    """
+    Stand in for a member read this session may not make.
+
+    Returns:
+        An empty brief. `asyncio.gather` needs an awaitable in every slot, and a
+        conditional that skips the slot would change the tuple's shape.
+
+    """
+    return {}
+
+
 def _as_budget(raw: str) -> int | None:
     """
     Read the budget the model collected.
@@ -212,6 +223,8 @@ async def _gather(
         pending["find_clause"] = tools.find_clause(db, product_ids, params.get("topic", ""))
     if "find_multiplier" in scenario.tools:
         pending["find_multiplier"] = tools.find_multiplier(db, product_ids, params.get("event", turn.procedure_hint))
+    if "benefit_headings" in scenario.tools:
+        pending["benefit_headings"] = tools.benefit_headings(db, product_ids)
     if "required_documents" in scenario.tools:
         pending["required_documents"] = tools.required_documents(db, product_ids)
     if "billing_summary" in scenario.tools:
@@ -223,12 +236,10 @@ async def _gather(
     facts.update(dict(zip(pending, results, strict=True)))
 
     if "suitable_products" in scenario.tools:
-        member = await db.fetch_one(
-            "SELECT birth_date, occupation_class FROM member WHERE member_id = $1::bigint", [turn.member_id]
-        )
+        member = await tools.member_underwriting(db, turn.member_id, today=today)
         budget = _as_budget(params.get("budget", ""))
         if member and budget is not None:
-            age = insurance_age(member["birth_date"], today)
+            age = member["insurance_age"]
             facts["suitable_products"] = await tools.suitable_products(
                 db,
                 insurance_age=age,
@@ -286,7 +297,14 @@ def _render(scenario: Scenario, facts: dict[str, Any]) -> str:
 
 
 async def run_turn(
-    provider: Provider, db: Database, *, case_id: int, member_id: int, text: str, today: date | None = None
+    provider: Provider,
+    db: Database,
+    *,
+    case_id: int,
+    member_id: int,
+    text: str,
+    confirmed: bool = False,
+    today: date | None = None,
 ) -> Turn:
     """
     Handle one thing the customer said.
@@ -297,6 +315,10 @@ async def run_turn(
         case_id: Which case.
         member_id: Whose case.
         text: What the customer said.
+        confirmed: Whether this session has passed 資料核對. Everything this desk knows
+            is about one named person's contracts, so an unconfirmed session reaches no
+            tool marked `requires_identity` — the scenario is refused before its tools
+            run, not after.
         today: The date to judge currency against.
 
     Returns:
@@ -316,11 +338,26 @@ async def run_turn(
     #
     # The customer's own message is already written, so the window drops its last row
     # and never repeats what the router is reading as this turn.
-    messages, profile = await asyncio.gather(
+    messages, profile, brief = await asyncio.gather(
         memory.recent(db, case_id),
         memory.card(db, member_id=member_id, case_id=case_id),
+        tools.standing_brief(db, member_id, today=today) if confirmed else _nothing(),
     )
-    past = f"{profile}{memory.transcript(messages[:-1])}"
+    # The brief is what turns a clarifying question into a grounded one. Without it the
+    # router can only ask 想了解哪一項保障主題, which makes the customer do a lookup the
+    # desk could have done; holding it, the same question arrives with the answers in it.
+    known = f"# 這位保戶的現況\n{etoon.dumps(brief)}\n\n" if brief else ""
+    if not confirmed:
+        # Told to the model, so the ask arrives in the conversation rather than as a
+        # system refusal, and enforced below, so a model that ignores it still reads
+        # nothing. The prompt makes it natural; the gate makes it true.
+        known = (
+            "# 本次連線尚未完成身分核對\n"
+            "保戶還沒輸入身分證字號核對身分，所以你看不到他的任何保單資料。"
+            "不要猜、不要說任何關於他保單的內容，也不要說你查不到。"
+            "請他直接在對話中提供身分證字號，你收到後就會完成核對並接著回答他原本的問題。\n\n"
+        )
+    past = f"{known}{profile}{memory.transcript(messages[:-1])}"
 
     started = time.perf_counter()
     try:
@@ -333,6 +370,19 @@ async def run_turn(
         return turn
 
     if scenario is None:
+        return turn
+
+    if not confirmed and tools.reads_identity(scenario.tools):
+        # Refused before the gather, so no member row is read at all. Refusing after
+        # would mean the data had already been fetched and the only thing withheld was
+        # the sentence about it.
+        logger.info("scenario_gated", case_id=case_id, scenario=scenario.name)
+        turn.scenario = scenario.name
+        turn.quick_replies = ()
+        turn.reply = (
+            "您好，為了確保您的個人資料安全，我們需要先協助核對您的身分，"
+            "請提供您的身分證字號。核對完成後我會立刻為您查詢。"
+        )
         return turn
 
     turn.scenario = scenario.name

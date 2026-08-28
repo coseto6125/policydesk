@@ -435,6 +435,19 @@
     flex: 1; justify-content: center; padding: 8px;
     background: var(--paper-2); border-color: var(--rule);
   }
+  .presets { display: grid; gap: 5px; }
+  .presets button {
+    text-align: left; display: block; padding: 8px 11px;
+    background: var(--paper-2); border-color: var(--rule);
+  }
+  .presets button b { display: block; font-size: 12.5px; font-weight: 600; }
+  .presets button small { display: block; font-size: 11px; color: var(--ink-3); line-height: 1.5; margin-top: 1px; }
+  .presets button[aria-pressed="true"] {
+    background: var(--accent-wash); border-color: var(--accent);
+  }
+  .presets button[aria-pressed="true"] b { color: var(--accent); }
+  .presets button[aria-pressed="true"] small { color: var(--ink-2); }
+
   .segment button[aria-pressed="true"] {
     background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600;
   }
@@ -477,6 +490,11 @@
   .gate label { display: block; margin-bottom: 5px; }
   .gate input { width: 100%; font-size: 14px; padding: 9px 12px; }
   .gate button { width: 100%; margin-top: var(--s3); padding: 10px; justify-content: center; }
+  /* The alias row pairs a readonly input with a reroll button beside it, not stacked
+     full-width like every other gate control — so it opts out of `.gate input`/`.gate button`. */
+  .gate-row { display: flex; gap: 6px; }
+  .gate-row input { flex: 1; min-width: 0; width: auto; font-size: 16px; letter-spacing: .08em; }
+  .gate-row button { width: auto; margin-top: 0; padding: 9px 12px; }
 
   dialog {
     border: 1px solid var(--rule); border-radius: var(--radius); padding: 0;
@@ -670,8 +688,8 @@
       <p>代號即帳號，由系統產生，不會與其他人重複。進入後由您自己選擇性別、年齡與職業，
          這三項決定您能投保哪些商品，所以不由系統代填。</p>
       <label for="nameInput" class="label">代號</label>
-      <div style="display:flex;gap:6px">
-        <input id="nameInput" autocomplete="off" readonly style="flex:1;font-size:16px;letter-spacing:.08em">
+      <div class="gate-row">
+        <input id="nameInput" autocomplete="off" readonly>
         <button id="rerollBtn" title="換一個代號">換一個</button>
       </div>
       <button class="primary" id="enterBtn">進入</button>
@@ -813,40 +831,38 @@ const money = (n) => Number(n || 0).toLocaleString("zh-Hant-TW");
 /**
  * The member's book, and the four figures a service console leads with.
  *
- * A policy is in force until its lapsed_at passes, and a rider whose main policy is
- * not in this list is an orphan — the customer holds it, no main contract carries it,
- * and it is the kind of thing that only shows up when the book is laid out in full.
+ * A policy is in force until its lapsed_at passes. A rider names the main contract it
+ * hangs off, which the schema enforces with a foreign key — so the book always shows a
+ * rider next to a main policy that exists.
  */
 function renderPolicies(policies, c) {
   const today = (c.generated_at || "").slice(0, 10);
   const live = (p) => !p.lapsed_at || p.lapsed_at > today;
   const active = policies.filter(live);
-  const numbers = new Set(policies.map(p => p.policy_number));
-  const orphans = policies.filter(p => p.main_policy_ref && !numbers.has(p.main_policy_ref));
+  // A rider without its main policy is no longer a state the schema can hold — the FK
+  // makes it impossible — so the only outstanding items are unsigned documents.
+  const riders = policies.filter(p => p.main_policy_id);
 
   $("kpis").hidden = policies.length === 0;
   $("kpiActive").innerHTML = `${active.length}<small>張 / 共 ${policies.length}</small>`;
   $("kpiPremium").innerHTML = `${money(active.reduce((t, p) => t + Number(p.annual_premium || 0), 0))}<small>元</small>`;
   $("kpiSum").innerHTML = `${money(active.reduce((t, p) => t + Number(p.sum_insured || 0), 0))}<small>元</small>`;
-  const todo = (docs => docs.filter(d => !d.signed_at).length)(c.documents ?? []) + orphans.length;
+  const todo = (c.documents ?? []).filter(d => !d.signed_at).length;
   $("kpiTodo").innerHTML = todo ? `${todo}<small>項</small>` : `0<small>項</small>`;
   $("kpiTodoBox").classList.toggle("alert", todo > 0);
 
-  $("policyCount").textContent = policies.length ? `${active.length}/${policies.length} 有效` : "";
-  $("policyTable").innerHTML = policies.length ? policies.map(p => {
-    const orphan = p.main_policy_ref && !numbers.has(p.main_policy_ref);
-    return `<tr class="${live(p) ? "" : "lapsed"}">
+  $("policyCount").textContent = policies.length
+    ? `${active.length}/${policies.length} 有效${riders.length ? ` · 附約 ${riders.length}` : ""}` : "";
+  $("policyTable").innerHTML = policies.length ? policies.map(p => `
+    <tr class="${live(p) ? "" : "lapsed"}">
       <td class="pnum">${esc(p.policy_number)}</td>
       <td><a class="pname" href="/contract/${encodeURIComponent(p.product_id)}?token=${encodeURIComponent(DESK_TOKEN)}&member=${memberId}" target="_blank" title="開啟這張保單的契約條款">${esc(p.product_name)}</a>${
-        p.main_policy_ref
-          ? `<br><span class="rider">主約 ${esc(p.main_policy_ref)}${orphan ? "（查無主約）" : ""}</span>`
-          : ""}</td>
+        p.main_policy_number ? `<br><span class="rider">主約 ${esc(p.main_policy_number)}</span>` : ""}</td>
       <td class="num">${money(p.sum_insured)}</td>
       <td class="num">${money(p.annual_premium)}</td>
       <td class="mono">${esc(p.effective_at)}</td>
-      <td>${orphan ? PILLS.flag("孤兒附約") : live(p) ? PILLS.ok("有效") : PILLS.no("已停效")}</td>
-    </tr>`;
-  }).join("") : `<tr><td colspan="6" class="empty">尚無保單</td></tr>`;
+      <td>${live(p) ? PILLS.ok("有效") : PILLS.no("已停效")}</td>
+    </tr>`).join("") : `<tr><td colspan="6" class="empty">尚無保單</td></tr>`;
 }
 
 function renderModalDocs(docs) {
@@ -936,12 +952,20 @@ function renderSetup(draft) {
       <input id="occPick" autocomplete="off" value="${esc(draft.occupation)}" placeholder="輸入關鍵字，例如 司機">
       <div class="combo-list" id="occList" hidden></div>
     </div>
+    <div class="field">
+      <span class="label">既有保單</span>
+      <div class="presets" id="presetPick">${(draft.presets ?? []).map((p, i) => `
+        <button type="button" data-preset="${esc(p.key)}" aria-pressed="${i === 1}">
+          <b>${esc(p.label)}</b><small>${esc(p.detail)}</small>
+        </button>`).join("")}</div>
+    </div>
     <button class="primary" id="enrolBtn" style="justify-content:center">完成建檔</button>`;
   $("chatLog").append(card);
   $("chatLog").scrollTop = $("chatLog").scrollHeight;
 
   let sex = draft.sex;
   let occupation = draft.occupation;
+  let preset = (draft.presets ?? [])[1]?.key ?? "basic";
   const options = draft.occupations ?? [];
 
   $("sexPick").addEventListener("click", (e) => {
@@ -949,6 +973,13 @@ function renderSetup(draft) {
     if (!b) return;
     sex = b.dataset.sex;
     for (const other of $("sexPick").children) other.setAttribute("aria-pressed", String(other === b));
+  });
+
+  $("presetPick").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-preset]");
+    if (!b) return;
+    preset = b.dataset.preset;
+    for (const other of $("presetPick").children) other.setAttribute("aria-pressed", String(other === b));
   });
 
   const list = $("occList");
@@ -987,6 +1018,7 @@ function renderSetup(draft) {
       sex,
       age: Number($("agePick").value) || draft.age,
       occupation: matched ? matched.occupation : occupation,
+      preset,
     }));
   };
 }
@@ -1012,7 +1044,9 @@ function connectCustomer(name) {
         $("sendBtn").disabled = false;
         $("chatInput").focus();
         connectDesk();
-        renderChips(OPENERS);
+        break;
+      case "confirmed":
+        bubble("sys", "身分核對通過");
         break;
       case "case": renderCase(m); break;
       case "reply":
