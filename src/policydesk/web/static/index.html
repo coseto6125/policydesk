@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>保險櫃台 policydesk</title>
+<style>
+  :root {
+    --desk-bg: #f2f4f7;
+    --desk-panel: #ffffff;
+    --desk-line: #d8dee7;
+    --ink: #1a2230;
+    --ink-soft: #5a6675;
+    --ink-faint: #8b97a6;
+    --chat-bg: #8fa9c4;
+    --bubble-them: #ffffff;
+    --bubble-me: #a7e05a;
+    --accent: #0d8a4f;
+    --warn: #b3261e;
+    --good: #16704a;
+    --mark: #8a6a10;
+    --mark-bg: #fbf3d9;
+    --mono: ui-monospace, "JetBrains Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: "Noto Sans TC", -apple-system, system-ui, sans-serif;
+    background: var(--desk-bg); color: var(--ink);
+    display: grid; grid-template-columns: 1fr 400px; height: 100vh; overflow: hidden;
+  }
+  @media (max-width: 980px) { body { grid-template-columns: 1fr; grid-template-rows: 1fr 60vh; } }
+
+  /* ---------------- back office (left) ---------------- */
+  .desk { overflow-y: auto; padding: 18px 22px 60px; }
+  .desk h1 {
+    font-size: 15px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--ink-faint); margin: 0 0 4px; font-weight: 700;
+  }
+  .desk .sub { font-size: 12px; color: var(--ink-faint); margin-bottom: 16px; font-family: var(--mono); }
+
+  .panel {
+    background: var(--desk-panel); border: 1px solid var(--desk-line);
+    border-radius: 6px; padding: 14px 16px; margin-bottom: 12px;
+  }
+  .panel h2 {
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--ink-faint); margin: 0 0 10px; font-weight: 700;
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .panel h2 .count { font-family: var(--mono); letter-spacing: 0; }
+
+  .kv { display: grid; grid-template-columns: 116px 1fr; gap: 5px 12px; font-size: 13px; }
+  .kv dt { color: var(--ink-faint); }
+  .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .kv dd.mono { font-family: var(--mono); font-size: 12px; }
+
+  .stages { display: flex; gap: 3px; flex-wrap: wrap; margin-bottom: 12px; }
+  .stage {
+    font-size: 11px; padding: 3px 9px; border-radius: 3px;
+    background: #e8ecf1; color: var(--ink-faint); white-space: nowrap;
+  }
+  .stage.done { background: #dcefe4; color: var(--good); }
+  .stage.now { background: var(--accent); color: #fff; font-weight: 700; }
+  .stage.bad { background: #f6e2e0; color: var(--warn); font-weight: 700; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th {
+    text-align: left; font-weight: 400; font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink-faint); padding: 0 8px 6px 0;
+    border-bottom: 1px solid var(--desk-line);
+  }
+  td { padding: 6px 8px 6px 0; border-bottom: 1px solid #eef1f5; vertical-align: top; }
+  td.mono { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+  .pill {
+    display: inline-block; font-size: 10.5px; padding: 1px 7px; border-radius: 9px; white-space: nowrap;
+  }
+  .pill.ok { background: #dcefe4; color: var(--good); }
+  .pill.no { background: #f6e2e0; color: var(--warn); }
+  .pill.wait { background: #eceff3; color: var(--ink-faint); }
+
+  .missing { background: var(--mark-bg); border-left: 3px solid var(--mark); padding: 8px 12px; font-size: 12.5px; margin-top: 8px; }
+  .missing b { display: block; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mark); margin-bottom: 3px; }
+
+  .decide { display: flex; gap: 8px; margin-top: 10px; }
+  .decide input { flex: 1; padding: 6px 9px; border: 1px solid var(--desk-line); border-radius: 4px; font-size: 12.5px; font-family: inherit; }
+  button {
+    font-family: inherit; font-size: 12.5px; padding: 6px 14px; border-radius: 4px;
+    border: 1px solid var(--desk-line); background: #fff; color: var(--ink); cursor: pointer;
+  }
+  button:hover { background: #f5f7fa; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: #fff; border-color: var(--warn); color: var(--warn); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+
+  .trail { font-size: 12px; }
+  .trail li { list-style: none; padding: 5px 0 5px 14px; border-left: 2px solid var(--desk-line); position: relative; }
+  .trail li::before {
+    content: ""; position: absolute; left: -4px; top: 11px; width: 6px; height: 6px;
+    border-radius: 50%; background: var(--desk-line);
+  }
+  .trail .who { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+  .trail .what { color: var(--ink); }
+
+  /* ---------------- chat (right) ---------------- */
+  .chat { display: flex; flex-direction: column; background: var(--chat-bg); border-left: 1px solid #7d97b2; }
+  .chat-top {
+    background: #33404f; color: #fff; padding: 10px 14px; font-size: 13px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .chat-top .who { font-weight: 700; }
+  .chat-top .docs { font-size: 11.5px; }
+  .chat-log { flex: 1; overflow-y: auto; padding: 14px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { max-width: 78%; padding: 8px 11px; border-radius: 14px; font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; }
+  .msg.them { background: var(--bubble-them); border-top-left-radius: 3px; align-self: flex-start; }
+  .msg.me { background: var(--bubble-me); border-top-right-radius: 3px; align-self: flex-end; }
+  .msg.sys { align-self: center; background: rgba(0,0,0,.28); color: #fff; font-size: 11.5px; border-radius: 10px; padding: 4px 12px; }
+  .chat-in { display: flex; gap: 6px; padding: 9px; background: #fff; border-top: 1px solid #cfd8e3; }
+  .chat-in input { flex: 1; padding: 8px 11px; border: 1px solid var(--desk-line); border-radius: 18px; font-size: 13.5px; font-family: inherit; }
+
+  /* ---------------- gate + modal ---------------- */
+  .gate {
+    position: fixed; inset: 0; background: rgba(20,26,34,.9); display: grid; place-items: center; z-index: 40;
+  }
+  .gate .card { background: #fff; padding: 26px 30px; border-radius: 8px; width: min(420px, 90vw); }
+  .gate h3 { margin: 0 0 6px; font-size: 17px; }
+  .gate p { margin: 0 0 16px; font-size: 12.5px; color: var(--ink-soft); line-height: 1.7; }
+  .gate input { width: 100%; padding: 9px 12px; border: 1px solid var(--desk-line); border-radius: 5px; font-size: 14px; font-family: inherit; }
+  .gate button { width: 100%; margin-top: 10px; padding: 9px; }
+
+  dialog {
+    border: 1px solid var(--desk-line); border-radius: 8px; padding: 0;
+    width: min(520px, 92vw); box-shadow: 0 18px 50px rgba(0,0,0,.25);
+  }
+  dialog::backdrop { background: rgba(20,26,34,.55); }
+  .modal-head { padding: 14px 18px; border-bottom: 1px solid var(--desk-line); font-weight: 700; font-size: 14px; }
+  .modal-body { padding: 6px 18px 16px; max-height: 60vh; overflow-y: auto; }
+  .modal-foot { padding: 12px 18px; border-top: 1px solid var(--desk-line); display: flex; justify-content: flex-end; gap: 8px; }
+  .doc-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid #eef1f5; font-size: 13px; }
+  .doc-row .name { flex: 1; }
+  .empty { color: var(--ink-faint); font-size: 12.5px; padding: 6px 0; }
+</style>
+</head>
+<body>
+
+<section class="desk">
+  <h1>後台 · 核保理賠作業</h1>
+  <div class="sub" id="deskStatus">尚未連線</div>
+
+  <div class="panel">
+    <h2>案件 <span class="count" id="caseMeta"></span></h2>
+    <div class="stages" id="stages"></div>
+    <dl class="kv" id="caseKv"><dd class="empty">尚無案件</dd></dl>
+    <div id="missingBox"></div>
+    <div class="decide" id="decideBox" hidden>
+      <input id="decideReason" placeholder="退件理由（退件時必填，保戶會看到原文）">
+      <button class="primary" id="approveBtn">核准</button>
+      <button class="danger" id="rejectBtn">退件</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>要保人 · 被保險人</h2>
+    <dl class="kv" id="memberKv"><dd class="empty">尚無資料</dd></dl>
+  </div>
+
+  <div class="panel">
+    <h2>應簽署文件 <span class="count" id="docCount"></span></h2>
+    <table><thead><tr><th>文件</th><th style="width:90px">狀態</th><th style="width:120px">簽署時間</th></tr></thead>
+    <tbody id="docTable"><tr><td colspan="3" class="empty">尚未交付</td></tr></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2>身分驗證</h2>
+    <table><thead><tr><th style="width:80px">結果</th><th>理由</th><th style="width:70px">延遲</th><th style="width:120px">時間</th></tr></thead>
+    <tbody id="idTable"><tr><td colspan="4" class="empty">尚未驗證</td></tr></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2>稽核軌跡 <span class="count" id="trailCount"></span></h2>
+    <ul class="trail" id="trail" style="margin:0;padding:0"><li class="empty">尚無事件</li></ul>
+  </div>
+
+  <div class="panel">
+    <h2>案件佇列 <span class="count" id="queueCount"></span></h2>
+    <table><thead><tr><th style="width:52px">案號</th><th>保戶</th><th style="width:82px">階段</th><th style="width:44px">版本</th></tr></thead>
+    <tbody id="queueTable"><tr><td colspan="4" class="empty">載入中</td></tr></tbody></table>
+  </div>
+</section>
+
+<section class="chat">
+  <div class="chat-top">
+    <span class="who" id="chatWho">保險櫃台</span>
+    <button class="docs" id="docsBtn" hidden>應簽署文件</button>
+  </div>
+  <div class="chat-log" id="chatLog"></div>
+  <div class="chat-in">
+    <input id="chatInput" placeholder="請輸入訊息" autocomplete="off" disabled>
+    <button class="primary" id="sendBtn" disabled>送出</button>
+  </div>
+</section>
+
+<div class="gate" id="gate">
+  <div class="card">
+    <h3>請輸入您的姓名</h3>
+    <p>姓名即帳號。同名再次登入會將前一位登出，示範期間請使用不易重名的名稱。<br>
+       年齡與性別於建檔時隨機給定，送出第一則訊息前可修改。</p>
+    <input id="nameInput" placeholder="例如：陳彥廷" autocomplete="off">
+    <button class="primary" id="enterBtn">進入</button>
+  </div>
+</div>
+
+<dialog id="docModal">
+  <div class="modal-head">應簽署文件</div>
+  <div class="modal-body"><div id="modalDocs"></div></div>
+  <div class="modal-foot"><button id="closeModal">關閉</button></div>
+</dialog>
+
+<script>
+const STAGES = [
+  ["inquiry","詢問"],["proposed","提出方案"],["issued","交付文件"],
+  ["signed","已簽署"],["verified","身分已驗"],["review","人工審核"],
+];
+let caseId = null, customerWs = null, deskWs = null, currentCase = null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const shortTime = (iso) => iso ? String(iso).slice(0,19).replace("T"," ") : "";
+
+function bubble(kind, text) {
+  const el = document.createElement("div");
+  el.className = `msg ${kind}`;
+  el.textContent = text;
+  $("chatLog").append(el);
+  $("chatLog").scrollTop = $("chatLog").scrollHeight;
+}
+
+function renderStages(stage) {
+  const idx = STAGES.findIndex(([k]) => k === stage);
+  const decided = stage === "approved" || stage === "rejected";
+  $("stages").innerHTML = STAGES.map(([key, label], i) => {
+    let cls = "stage";
+    if (decided || i < idx) cls += " done";
+    else if (i === idx) cls += " now";
+    return `<span class="${cls}">${label}</span>`;
+  }).join("") + (decided
+    ? `<span class="stage ${stage === "approved" ? "done" : "bad"}">${stage === "approved" ? "已核准" : "已退件"}</span>`
+    : "");
+}
+
+function renderCase(c) {
+  currentCase = c;
+  caseId = c.case_id;
+  $("caseMeta").textContent = `#${c.case_id} · v${c.case_version}`;
+  renderStages(c.stage);
+
+  $("caseKv").innerHTML = `
+    <dt>案件種類</dt><dd>${esc(c.kind)}</dd>
+    <dt>目前階段</dt><dd>${esc(c.stage)}</dd>
+    <dt>案件版本</dt><dd class="mono">${c.case_version}</dd>
+    <dt>責任業務員</dt><dd>${c.adviser_name ? esc(c.adviser_name) : "<span style='color:#8b97a6'>尚未指定</span>"}</dd>
+    <dt>登錄字號</dt><dd class="mono">${esc(c.adviser_licence ?? "—")}</dd>
+    <dt>決定人</dt><dd>${esc(c.decided_by ?? "—")}</dd>
+    <dt>決定理由</dt><dd>${esc(c.decision_reason || "—")}</dd>
+    <dt>快照時間</dt><dd class="mono">${shortTime(c.generated_at)}</dd>`;
+
+  $("memberKv").innerHTML = `
+    <dt>姓名</dt><dd>${esc(c.display_name)}</dd>
+    <dt>身分證字號</dt><dd class="mono">${esc(c.national_id)}</dd>
+    <dt>職業</dt><dd>${esc(c.occupation)}（第 ${c.occupation_class} 類）</dd>`;
+
+  const docs = c.documents ?? [];
+  $("docCount").textContent = docs.length ? `${docs.filter(d => d.signed_at).length}/${docs.length}` : "";
+  $("docTable").innerHTML = docs.length ? docs.map(d => `
+    <tr><td>${esc(d.kind)}</td>
+        <td>${d.signed_at ? '<span class="pill ok">已簽署</span>' : '<span class="pill wait">待簽署</span>'}</td>
+        <td class="mono">${shortTime(d.signed_at)}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="empty">尚未交付</td></tr>`;
+
+  const checks = c.identity_checks ?? [];
+  $("idTable").innerHTML = checks.length ? checks.map(k => `
+    <tr><td>${k.verified ? '<span class="pill ok">通過</span>' : '<span class="pill no">未通過</span>'}</td>
+        <td>${esc(k.reason || "—")}</td>
+        <td class="mono">${k.latency_ms ?? "—"}ms</td>
+        <td class="mono">${shortTime(k.checked_at)}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="empty">尚未驗證</td></tr>`;
+
+  const trail = c.audit ?? [];
+  $("trailCount").textContent = trail.length || "";
+  $("trail").innerHTML = trail.length ? trail.slice().reverse().map(e => `
+    <li><span class="who">${esc(e.actor)} · v${e.case_version ?? "—"} · ${shortTime(e.created_at)}</span><br>
+        <span class="what">${esc(e.action)}</span></li>`).join("")
+    : `<li class="empty">尚無事件</li>`;
+
+  $("decideBox").hidden = c.stage !== "review";
+  renderModalDocs(docs);
+  $("docsBtn").hidden = docs.length === 0;
+}
+
+function renderModalDocs(docs) {
+  $("modalDocs").innerHTML = docs.length ? docs.map(d => `
+    <div class="doc-row">
+      <span class="name">${esc(d.kind)}</span>
+      ${d.signed_at
+        ? '<span class="pill ok">已簽署</span>'
+        : `<button data-doc="${d.document_id}" class="dl">下載</button>
+           <button data-doc="${d.document_id}" class="up primary">上傳簽署本</button>`}
+    </div>`).join("")
+    : `<div class="empty">目前沒有待簽署文件。</div>`;
+}
+
+function connectCustomer(name) {
+  customerWs = new WebSocket(`ws://${location.host}/ws/customer`);
+  customerWs.onopen = () => customerWs.send(JSON.stringify({ type: "hello", name }));
+  customerWs.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (typeof m === "string") { bubble("sys", m); return; }
+    switch (m.type) {
+      case "profile":
+        $("chatWho").textContent = `${m.name}（保險年齡 ${m.insurance_age}）`;
+        bubble("them", `${m.name} 您好，我是保險櫃台。\n已為您建檔：${m.sex === "male" ? "男" : "女"}性、保險年齡 ${m.insurance_age} 歲、職業 ${m.occupation}（第 ${m.occupation_class} 類）。\n身分證字號 ${m.national_id}。\n送出第一則訊息後資料即固定。`);
+        break;
+      case "case": renderCase(m); break;
+      case "notice": bubble("sys", m.text); break;
+    }
+  };
+  customerWs.onclose = () => bubble("sys", "連線已中斷");
+}
+
+function connectDesk() {
+  deskWs = new WebSocket(`ws://${location.host}/ws/desk`);
+  deskWs.onopen = () => { $("deskStatus").textContent = "已連線 · 即時同步"; };
+  deskWs.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "case") renderCase(m);
+    if (m.type === "queue") {
+      const cases = m.cases ?? [];
+      $("queueCount").textContent = cases.length || "";
+      $("queueTable").innerHTML = cases.length ? cases.map(c => `
+        <tr style="cursor:pointer" data-case="${c.case_id}">
+          <td class="mono">#${c.case_id}</td><td>${esc(c.display_name)}</td>
+          <td>${esc(c.stage)}</td><td class="mono">v${c.case_version}</td></tr>`).join("")
+        : `<tr><td colspan="4" class="empty">尚無案件</td></tr>`;
+    }
+    if (m.type === "notice") $("deskStatus").textContent = m.text;
+  };
+  deskWs.onclose = () => { $("deskStatus").textContent = "後台連線中斷"; };
+}
+
+$("enterBtn").onclick = () => {
+  const name = $("nameInput").value.trim();
+  if (!name) return;
+  $("gate").hidden = true;
+  $("gate").style.display = "none";
+  $("chatInput").disabled = false;
+  $("sendBtn").disabled = false;
+  connectCustomer(name);
+  connectDesk();
+};
+$("nameInput").addEventListener("keydown", e => { if (e.key === "Enter") $("enterBtn").click(); });
+
+function send() {
+  const text = $("chatInput").value.trim();
+  if (!text || !customerWs) return;
+  bubble("me", text);
+  customerWs.send(JSON.stringify({ type: "say", text }));
+  $("chatInput").value = "";
+}
+$("sendBtn").onclick = send;
+$("chatInput").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
+
+$("docsBtn").onclick = () => $("docModal").showModal();
+$("closeModal").onclick = () => $("docModal").close();
+$("modalDocs").addEventListener("click", (e) => {
+  const id = e.target.dataset.doc;
+  if (!id) return;
+  if (e.target.classList.contains("dl")) {
+    window.open(`/doc/${id}`, "_blank");
+  } else if (e.target.classList.contains("up")) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.onchange = () => {
+      customerWs.send(JSON.stringify({ type: "upload", document_id: Number(id), filename: input.files[0]?.name ?? "" }));
+    };
+    input.click();
+  }
+});
+
+$("approveBtn").onclick = () => deskWs?.send(JSON.stringify({ type: "decide", case_id: caseId, approved: true, by: "核保人員" }));
+$("rejectBtn").onclick = () => deskWs?.send(JSON.stringify({
+  type: "decide", case_id: caseId, approved: false, reason: $("decideReason").value.trim(), by: "核保人員",
+}));
+$("queueTable").addEventListener("click", (e) => {
+  const row = e.target.closest("tr[data-case]");
+  if (row) deskWs?.send(JSON.stringify({ type: "open", case_id: Number(row.dataset.case) }));
+});
+</script>
+</body>
+</html>
