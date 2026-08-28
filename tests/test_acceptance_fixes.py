@@ -181,3 +181,38 @@ def test_the_model_session_is_reused_and_closed():
 
     assert hasattr(OpenAIProvider, "close")
     assert hasattr(OpenAIProvider, "_open_session")
+
+
+def test_open_case_resumes_a_live_case_rather_than_starting_another():
+    """
+    A reload is the same applicant, not a new one.
+
+    Opening a case per websocket hello filled the desk queue with a row per page
+    load, each carrying the signatures and identity checks the previous row already
+    had. An underwriter looking at the queue could not tell which row was the case.
+    """
+    from pathlib import Path
+
+    source = Path("src/policydesk/core/commands.py").read_text()
+    body = source[source.index("async def open_case"):source.index("async def propose")]
+    lookup = body.index("stage NOT IN ('approved','rejected')")
+    insert = body.index('INSERT INTO "case"')
+    assert lookup < insert, "the live-case lookup must precede the insert"
+    assert "case_resumed" in body
+
+
+def test_the_desk_snapshot_carries_the_member_own_policies():
+    """
+    The agent tells the customer 各張保單明細請見左側後台的保單清單.
+
+    Until the snapshot carried them that sentence pointed at a panel that did not
+    exist: the total it quoted was correct and there was nowhere to check it. The
+    read is scoped by member_id like every other read here.
+    """
+    from pathlib import Path
+
+    source = Path("src/policydesk/core/commands.py").read_text()
+    body = source[source.index("async def snapshot"):]
+    assert '"policies"' in body
+    policies = body[body.index('case["policies"]'):]
+    assert "po.member_id = $1::bigint" in policies, "one member's book, never another's"

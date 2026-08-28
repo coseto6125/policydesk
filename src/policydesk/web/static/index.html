@@ -5,196 +5,601 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>保險櫃台 policydesk</title>
 <style>
+  /*
+    Two rooms, one screen. The left is a back office: dense, quiet, instrumented,
+    read by an underwriter who has to decide. The right is a phone: warm, roomy, one
+    thing at a time. They do not share a visual language, and that is the point — a
+    customer's bubble should never look like a record, and a record should never look
+    like a chat.
+
+    Tokens are declared on bare :root and redefined for dark. Nothing below sets a
+    colour literal, so both themes resolve as a set.
+  */
   :root {
-    --desk-bg: #f2f4f7;
-    --desk-panel: #ffffff;
-    --desk-line: #d8dee7;
-    --ink: #1a2230;
-    --ink-soft: #5a6675;
-    --ink-faint: #8b97a6;
-    --chat-bg: #8fa9c4;
+    color-scheme: light;
+    --ground: #eceff0;
+    --paper: #ffffff;
+    --paper-2: #f6f8f7;
+    --rule: #dbe2df;
+    --rule-soft: #eceeed;
+
+    --ink: #0f1a16;
+    --ink-2: #46554f;
+    --ink-3: #5d6e68;
+
+    --accent: #0b6b46;
+    --accent-ink: #ffffff;
+    --accent-wash: #e6f1ec;
+
+    --flag: #8a5300;
+    --flag-wash: #fbf1e0;
+    --bad: #a4231d;
+    --bad-wash: #fbecea;
+    --good: #0b6b46;
+    --good-wash: #e6f1ec;
+
+    --room: #7f9bb8;
+    --room-bar: #2b3742;
+    --room-ink: #ffffff;
     --bubble-them: #ffffff;
-    --bubble-me: #a7e05a;
-    --accent: #0d8a4f;
-    --warn: #b3261e;
-    --good: #16704a;
-    --mark: #8a6a10;
-    --mark-bg: #fbf3d9;
-    --mono: ui-monospace, "JetBrains Mono", Menlo, monospace;
+    --bubble-me: #a9e263;
+    --bubble-sys: rgba(15, 26, 22, .34);
+
+    --shadow-1: 0 1px 2px rgba(15, 26, 22, .05);
+    --shadow-2: 0 8px 28px rgba(15, 26, 22, .14);
+
+    --sans: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", -apple-system, system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+
+    /* Dense scale. This is a console, not a page. */
+    --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
+    --rail: 236px;
+    --chat: 400px;
+    --radius: 8px;
   }
+  :root:not([data-theme="light"]) { }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --ground: #0e1513;
+      --paper: #151d1a;
+      --paper-2: #1b2421;
+      --rule: #2a3531;
+      --rule-soft: #212b28;
+
+      --ink: #e8efeb;
+      --ink-2: #a6b5af;
+      --ink-3: #7d8d87;
+
+      --accent: #3fbd85;
+      --accent-ink: #06231a;
+      --accent-wash: #17322a;
+
+      --flag: #d5a45a;
+      --flag-wash: #33291a;
+      --bad: #e88a83;
+      --bad-wash: #331e1d;
+      --good: #3fbd85;
+      --good-wash: #17322a;
+
+      --room: #46596b;
+      --room-bar: #101a20;
+      --bubble-them: #232e2b;
+      --bubble-me: #2f5a2a;
+      --bubble-sys: rgba(0, 0, 0, .45);
+
+      --shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
+      --shadow-2: 0 8px 28px rgba(0, 0, 0, .55);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground: #0e1513;
+    --paper: #151d1a;
+    --paper-2: #1b2421;
+    --rule: #2a3531;
+    --rule-soft: #212b28;
+    --ink: #e8efeb;
+    --ink-2: #a6b5af;
+    --ink-3: #7d8d87;
+    --accent: #3fbd85;
+    --accent-ink: #06231a;
+    --accent-wash: #17322a;
+    --flag: #d5a45a;
+    --flag-wash: #33291a;
+    --bad: #e88a83;
+    --bad-wash: #331e1d;
+    --good: #3fbd85;
+    --good-wash: #17322a;
+    --room: #46596b;
+    --room-bar: #101a20;
+    --bubble-them: #232e2b;
+    --bubble-me: #2f5a2a;
+    --bubble-sys: rgba(0, 0, 0, .45);
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
+    --shadow-2: 0 8px 28px rgba(0, 0, 0, .55);
+  }
+
   * { box-sizing: border-box; }
+  /* The author rules below set display, which beats the UA rule for [hidden]. Without
+     this line a `.hidden = true` in JS does nothing, and the desk offers an underwriter
+     an approve button on a case the server will refuse. */
+  [hidden] { display: none !important; }
   html, body { height: 100%; margin: 0; }
   body {
-    font-family: "Noto Sans TC", -apple-system, system-ui, sans-serif;
-    background: var(--desk-bg); color: var(--ink);
-    display: grid; grid-template-columns: 1fr 400px; height: 100vh; overflow: hidden;
+    font-family: var(--sans);
+    background: var(--ground); color: var(--ink);
+    font-size: 13px; line-height: 1.55;
+    display: grid; grid-template-columns: 1fr var(--chat); height: 100vh; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
   }
-  @media (max-width: 980px) { body { grid-template-columns: 1fr; grid-template-rows: 1fr 60vh; } }
+  :where(button, input, a):focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+  }
 
-  /* ---------------- back office (left) ---------------- */
-  .desk { overflow-y: auto; padding: 18px 22px 60px; }
-  .desk h1 {
-    font-size: 15px; letter-spacing: .12em; text-transform: uppercase;
-    color: var(--ink-faint); margin: 0 0 4px; font-weight: 700;
-  }
-  .desk .sub { font-size: 12px; color: var(--ink-faint); margin-bottom: 16px; font-family: var(--mono); }
+  /* ═══════════════ back office ═══════════════ */
 
-  .panel {
-    background: var(--desk-panel); border: 1px solid var(--desk-line);
-    border-radius: 6px; padding: 14px 16px; margin-bottom: 12px;
-  }
-  .panel h2 {
-    font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
-    color: var(--ink-faint); margin: 0 0 10px; font-weight: 700;
-    display: flex; justify-content: space-between; align-items: baseline;
-  }
-  .panel h2 .count { font-family: var(--mono); letter-spacing: 0; }
+  .desk { display: grid; grid-template-rows: auto 1fr; min-width: 0; overflow: hidden; }
 
-  .kv { display: grid; grid-template-columns: 116px 1fr; gap: 5px 12px; font-size: 13px; }
-  .kv dt { color: var(--ink-faint); }
-  .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
-  .kv dd.mono { font-family: var(--mono); font-size: 12px; }
-
-  .stages { display: flex; gap: 3px; flex-wrap: wrap; margin-bottom: 12px; }
-  .stage {
-    font-size: 11px; padding: 3px 9px; border-radius: 3px;
-    background: #e8ecf1; color: var(--ink-faint); white-space: nowrap;
+  .topbar {
+    display: flex; align-items: center; gap: var(--s3);
+    padding: 0 var(--s4); height: 46px;
+    background: var(--paper); border-bottom: 1px solid var(--rule);
   }
-  .stage.done { background: #dcefe4; color: var(--good); }
-  .stage.now { background: var(--accent); color: #fff; font-weight: 700; }
-  .stage.bad { background: #f6e2e0; color: var(--warn); font-weight: 700; }
+  .topbar .mark {
+    font-size: 12px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--ink); white-space: nowrap;
+  }
+  .topbar .mark span { color: var(--accent); }
+  .topbar .crumb { font-size: 12px; color: var(--ink-3); }
+  .topbar .spacer { flex: 1; }
+  .link-status {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11.5px; color: var(--ink-2); font-family: var(--mono);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); flex: none; }
+  .dot.live { background: var(--good); box-shadow: 0 0 0 3px var(--good-wash); }
+  .dot.down { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-wash); }
+
+  .desk-body {
+    display: grid; grid-template-columns: var(--rail) 1fr;
+    min-height: 0; overflow: hidden;
+  }
+
+  /* ── queue rail: this is navigation, so it lives where navigation lives ── */
+  .rail {
+    background: var(--paper); border-right: 1px solid var(--rule);
+    display: grid; grid-template-rows: auto 1fr; min-height: 0;
+  }
+  .rail-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: var(--s3) var(--s3) var(--s2);
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .rail-list { overflow-y: auto; padding: var(--s2) 0 var(--s5); }
+  .qrow {
+    display: grid; grid-template-columns: 1fr auto; gap: 2px var(--s2);
+    padding: 8px var(--s3); cursor: pointer; border-left: 3px solid transparent;
+    transition: background 180ms ease, border-color 180ms ease;
+  }
+  .qrow:hover { background: var(--paper-2); }
+  .qrow[aria-current="true"] { background: var(--accent-wash); border-left-color: var(--accent); }
+  .qrow .who { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qrow .id { font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .qrow .meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; }
+
+  /* ── case area ── */
+  .case { overflow-y: auto; min-width: 0; padding-bottom: var(--s6); scroll-behavior: smooth; }
+
+  /* Sticky so a decision never requires a scroll back up. */
+  .case-head {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--paper); border-bottom: 1px solid var(--rule);
+    padding: var(--s3) var(--s4) var(--s2);
+  }
+  .case-head::before {
+    content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: transparent;
+  }
+  .case-head[data-alert="review"]::before { background: var(--flag); }
+  .case-head[data-alert="rejected"]::before { background: var(--bad); }
+  .case-head[data-alert="approved"]::before { background: var(--good); }
+
+  .case-title { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+  .case-title h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+  .case-title .num {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The stepper encodes a real sequence, so it is drawn as one: a connected rail. */
+  .steps { display: flex; align-items: center; margin: var(--s3) 0 var(--s1); flex-wrap: wrap; gap: 2px 0; }
+  .step { display: flex; align-items: center; gap: 6px; padding-right: 6px; }
+  .step .bead {
+    width: 16px; height: 16px; border-radius: 50%; flex: none;
+    display: grid; place-items: center;
+    border: 1.5px solid var(--rule); background: var(--paper);
+    font-size: 9px; font-family: var(--mono); color: var(--ink-3);
+  }
+  .step .name { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+  .step .bar { width: 14px; height: 1.5px; background: var(--rule); margin: 0 2px; }
+  .step.done .bead { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .step.done .name { color: var(--ink-2); }
+  .step.done .bar { background: var(--accent); }
+  .step.now .bead { border-color: var(--accent); border-width: 2px; color: var(--accent); font-weight: 700; }
+  .step.now .name { color: var(--ink); font-weight: 600; }
+  .step.bad .bead { background: var(--bad); border-color: var(--bad); color: var(--paper); }
+  .step.bad .name { color: var(--bad); font-weight: 600; }
+
+  .decide {
+    display: flex; gap: var(--s2); align-items: center;
+    margin-top: var(--s3); padding-top: var(--s3); border-top: 1px dashed var(--rule);
+  }
+  .decide label { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--flag); font-weight: 700; white-space: nowrap; }
+  .decide input { flex: 1; min-width: 0; }
+
+  /* ── the strip a real service console leads with: whose book, and how big ── */
+  .kpis {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+    gap: 1px; margin: var(--s3) var(--s4) 0;
+    background: var(--rule); border: 1px solid var(--rule); border-radius: var(--radius); overflow: hidden;
+  }
+  .kpi { background: var(--paper); padding: 10px var(--s3); display: grid; gap: 2px; }
+  .kpi .k { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); font-weight: 700; }
+  .kpi .v { font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; line-height: 1.2; }
+  .kpi .v small { font-size: 11px; font-weight: 400; color: var(--ink-3); margin-left: 3px; }
+  .kpi.alert .v { color: var(--flag); }
+
+  .pnum { font-family: var(--mono); font-size: 11.5px; letter-spacing: .01em; white-space: nowrap; }
+  .lapsed { color: var(--ink-3); }
+  .lapsed .pname { text-decoration: line-through; text-decoration-color: var(--ink-3); }
+  .rider { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; color: var(--ink-3); }
+  .rider::before { content: "↳"; }
+
+  /* ── the grid that stops the horizontal waste ── */
+  .grid {
+    display: grid; gap: var(--s3);
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    padding: var(--s3) var(--s4) 0;
+    align-items: start;
+  }
+  .grid .wide { grid-column: 1 / -1; }
+  @media (max-width: 1240px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+
+  .card {
+    background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius);
+    box-shadow: var(--shadow-1); overflow: hidden;
+  }
+  .card > header {
+    display: flex; align-items: center; gap: var(--s2);
+    padding: 9px var(--s3); border-bottom: 1px solid var(--rule-soft); background: var(--paper-2);
+  }
+  .card > header h3 {
+    margin: 0; font-size: 11px; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--ink-2); font-weight: 700; display: flex; align-items: center; gap: 6px;
+    white-space: nowrap; min-width: 0;
+  }
+  .card > header h3 svg { width: 13px; height: 13px; flex: none; color: var(--ink-3); }
+  /* Same rule for a column head: a narrow column shrinks the label to one glyph per
+     line otherwise, and 理 由 stacked vertically is not a table header. */
+  thead th { white-space: nowrap; }
+  .card > header .spacer { flex: 1; }
+  .card > .body { padding: var(--s3); }
+  .card > .body.flush { padding: 0; }
+  .scroller { max-height: 320px; overflow-y: auto; }
+
+  .label {
+    font-size: 11px; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 700;
+  }
+  .count { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; letter-spacing: 0; }
+
+  .kv { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 7px var(--s3); margin: 0; font-size: 13px; }
+  .kv dt { color: var(--ink-3); }
+  .kv dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .kv dd.mono { font-family: var(--mono); font-size: 12px; letter-spacing: .01em; }
+  .kv dd.none { color: var(--ink-3); }
 
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  th {
-    text-align: left; font-weight: 400; font-size: 10.5px; letter-spacing: .1em;
-    text-transform: uppercase; color: var(--ink-faint); padding: 0 8px 6px 0;
-    border-bottom: 1px solid var(--desk-line);
+  thead th {
+    position: sticky; top: 0; background: var(--paper); z-index: 1;
+    text-align: left; font-weight: 700; font-size: 10px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--ink-3);
+    padding: 8px var(--s3) 6px; border-bottom: 1px solid var(--rule);
   }
-  td { padding: 6px 8px 6px 0; border-bottom: 1px solid #eef1f5; vertical-align: top; }
-  td.mono { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+  tbody td { padding: 7px var(--s3); border-bottom: 1px solid var(--rule-soft); vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.mono { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* Status carries a glyph as well as a colour, so it survives a colour-blind reader
+     and a black-and-white print of the audit screen. */
   .pill {
-    display: inline-block; font-size: 10.5px; padding: 1px 7px; border-radius: 9px; white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+    font-size: 11px; font-weight: 600; padding: 2px 8px 2px 6px; border-radius: 999px;
   }
-  .pill.ok { background: #dcefe4; color: var(--good); }
-  .pill.no { background: #f6e2e0; color: var(--warn); }
-  .pill.wait { background: #eceff3; color: var(--ink-faint); }
+  .pill svg { width: 11px; height: 11px; flex: none; }
+  .pill.ok { background: var(--good-wash); color: var(--good); }
+  .pill.no { background: var(--bad-wash); color: var(--bad); }
+  .pill.wait { background: var(--paper-2); color: var(--ink-3); box-shadow: inset 0 0 0 1px var(--rule); }
+  .pill.flag { background: var(--flag-wash); color: var(--flag); }
 
-  .missing { background: var(--mark-bg); border-left: 3px solid var(--mark); padding: 8px 12px; font-size: 12.5px; margin-top: 8px; }
-  .missing b { display: block; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mark); margin-bottom: 3px; }
-
-  .decide { display: flex; gap: 8px; margin-top: 10px; }
-  .decide input { flex: 1; padding: 6px 9px; border: 1px solid var(--desk-line); border-radius: 4px; font-size: 12.5px; font-family: inherit; }
-  button {
-    font-family: inherit; font-size: 12.5px; padding: 6px 14px; border-radius: 4px;
-    border: 1px solid var(--desk-line); background: #fff; color: var(--ink); cursor: pointer;
+  .notice {
+    display: flex; gap: var(--s2); align-items: flex-start;
+    background: var(--flag-wash); border-left: 3px solid var(--flag);
+    padding: 9px var(--s3); font-size: 12.5px; color: var(--ink);
+    border-radius: 0 4px 4px 0; margin-top: var(--s3);
   }
-  button:hover { background: #f5f7fa; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.danger { background: #fff; border-color: var(--warn); color: var(--warn); }
-  button:disabled { opacity: .45; cursor: not-allowed; }
+  .notice svg { width: 14px; height: 14px; flex: none; margin-top: 2px; color: var(--flag); }
+  .notice b { display: block; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--flag); margin-bottom: 2px; }
 
-  .trail { font-size: 12px; }
-  .trail li { list-style: none; padding: 5px 0 5px 14px; border-left: 2px solid var(--desk-line); position: relative; }
+  /* Audit trail: a spine with beads, because it is a sequence of events in time. */
+  .trail { margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
+  .trail li { position: relative; padding: 6px 0 6px var(--s4); }
   .trail li::before {
-    content: ""; position: absolute; left: -4px; top: 11px; width: 6px; height: 6px;
-    border-radius: 50%; background: var(--desk-line);
+    content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 1.5px; background: var(--rule);
   }
-  .trail .who { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
-  .trail .what { color: var(--ink); }
+  .trail li:first-child::before { top: 13px; }
+  .trail li:last-child::before { bottom: calc(100% - 13px); }
+  .trail li::after {
+    content: ""; position: absolute; left: 0; top: 10px; width: 9px; height: 9px;
+    border-radius: 50%; background: var(--paper); border: 2px solid var(--rule);
+  }
+  .trail li.latest::after { background: var(--accent); border-color: var(--accent); }
+  .trail .what { font-weight: 500; }
+  .trail .who { font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 
-  /* ---------------- chat (right) ---------------- */
-  .chat { display: flex; flex-direction: column; background: var(--chat-bg); border-left: 1px solid #7d97b2; }
+  input, button { font-family: inherit; }
+  input[type="text"], input:not([type]) {
+    padding: 7px 10px; border: 1px solid var(--rule); border-radius: 5px;
+    font-size: 12.5px; background: var(--paper); color: var(--ink);
+    transition: border-color 180ms ease, box-shadow 180ms ease;
+  }
+  input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
+  input::placeholder { color: var(--ink-3); }
+
+  button {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 12.5px; font-weight: 500; padding: 7px 13px; border-radius: 5px;
+    border: 1px solid var(--rule); background: var(--paper); color: var(--ink); cursor: pointer;
+    transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
+  }
+  button svg { width: 13px; height: 13px; }
+  button:hover { background: var(--paper-2); border-color: var(--ink-3); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button.primary:hover { filter: brightness(1.1); }
+  button.danger { color: var(--bad); border-color: var(--bad); background: var(--paper); }
+  button.danger:hover { background: var(--bad-wash); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.ghost { border-color: transparent; background: transparent; color: var(--ink-2); padding: 5px 8px; }
+  button.ghost:hover { background: var(--paper-2); }
+
+  .empty { color: var(--ink-3); font-size: 12.5px; padding: var(--s3); text-align: center; }
+  td .empty, .body > .empty { padding: var(--s4) var(--s3); }
+
+  /* ═══════════════ customer room ═══════════════ */
+
+  .chat { display: flex; flex-direction: column; background: var(--room); min-width: 0; }
   .chat-top {
-    background: #33404f; color: #fff; padding: 10px 14px; font-size: 13px;
-    display: flex; justify-content: space-between; align-items: center;
+    background: var(--room-bar); color: var(--room-ink); padding: 0 var(--s3);
+    height: 46px; display: flex; justify-content: space-between; align-items: center; gap: var(--s2);
   }
-  .chat-top .who { font-weight: 700; }
-  .chat-top .docs { font-size: 11.5px; }
-  .chat-log { flex: 1; overflow-y: auto; padding: 14px 12px; display: flex; flex-direction: column; gap: 8px; }
-  .msg { max-width: 78%; padding: 8px 11px; border-radius: 14px; font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; }
-  .msg.them { background: var(--bubble-them); border-top-left-radius: 3px; align-self: flex-start; }
-  .msg.me { background: var(--bubble-me); border-top-right-radius: 3px; align-self: flex-end; }
-  .msg.sys { align-self: center; background: rgba(0,0,0,.28); color: #fff; font-size: 11.5px; border-radius: 10px; padding: 4px 12px; }
-  .chat-in { display: flex; gap: 6px; padding: 9px; background: #fff; border-top: 1px solid #cfd8e3; }
-  .chat-in input { flex: 1; padding: 8px 11px; border: 1px solid var(--desk-line); border-radius: 18px; font-size: 13.5px; font-family: inherit; }
+  .chat-top .who { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-top .who small { display: block; font-weight: 400; font-size: 11px; opacity: .65; font-family: var(--mono); }
+  .chat-top button { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.22); color: var(--room-ink); font-size: 11.5px; padding: 5px 10px; }
+  .chat-top button:hover { background: rgba(255,255,255,.2); border-color: rgba(255,255,255,.4); }
+  .chat-log { flex: 1; overflow-y: auto; padding: var(--s4) var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
+  .msg {
+    max-width: 80%; padding: 9px 12px; border-radius: 16px; font-size: 13.5px;
+    line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; box-shadow: var(--shadow-1);
+  }
+  .msg.them { background: var(--bubble-them); color: var(--ink); border-top-left-radius: 4px; align-self: flex-start; }
+  .msg.me { background: var(--bubble-me); color: #16300c; border-top-right-radius: 4px; align-self: flex-end; }
+  .msg.sys {
+    align-self: center; background: var(--bubble-sys); color: #fff; font-size: 11.5px;
+    border-radius: 10px; padding: 4px 12px; box-shadow: none; max-width: 92%; text-align: center;
+  }
+  .msg.pending { display: flex; gap: 4px; align-items: center; padding: 12px 14px; }
+  .msg.pending i { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); animation: blip 1.2s infinite ease-in-out; }
+  .msg.pending i:nth-child(2) { animation-delay: .18s; }
+  .msg.pending i:nth-child(3) { animation-delay: .36s; }
+  @keyframes blip { 0%, 60%, 100% { opacity: .25; } 30% { opacity: 1; } }
+  .chat-in { display: flex; gap: 6px; padding: var(--s2); background: var(--paper); border-top: 1px solid var(--rule); }
+  .chat-in input { flex: 1; min-width: 0; border-radius: 18px; padding: 9px 14px; font-size: 13.5px; }
 
-  /* ---------------- gate + modal ---------------- */
-  .gate {
-    position: fixed; inset: 0; background: rgba(20,26,34,.9); display: grid; place-items: center; z-index: 40;
-  }
-  .gate .card { background: #fff; padding: 26px 30px; border-radius: 8px; width: min(420px, 90vw); }
-  .gate h3 { margin: 0 0 6px; font-size: 17px; }
-  .gate p { margin: 0 0 16px; font-size: 12.5px; color: var(--ink-soft); line-height: 1.7; }
-  .gate input { width: 100%; padding: 9px 12px; border: 1px solid var(--desk-line); border-radius: 5px; font-size: 14px; font-family: inherit; }
-  .gate button { width: 100%; margin-top: 10px; padding: 9px; }
+  /* ═══════════════ gate + modal ═══════════════ */
+
+  .gate { position: fixed; inset: 0; background: rgba(9, 16, 13, .82); display: grid; place-items: center; z-index: 40; padding: var(--s4); }
+  .gate .card { width: min(430px, 100%); box-shadow: var(--shadow-2); }
+  .gate .body { padding: var(--s5); }
+  .gate h3 { margin: 0 0 var(--s2); font-size: 18px; font-weight: 600; }
+  .gate p { margin: 0 0 var(--s4); font-size: 12.5px; color: var(--ink-2); line-height: 1.75; }
+  .gate label { display: block; margin-bottom: 5px; }
+  .gate input { width: 100%; font-size: 14px; padding: 9px 12px; }
+  .gate button { width: 100%; margin-top: var(--s3); padding: 10px; justify-content: center; }
 
   dialog {
-    border: 1px solid var(--desk-line); border-radius: 8px; padding: 0;
-    width: min(520px, 92vw); box-shadow: 0 18px 50px rgba(0,0,0,.25);
+    border: 1px solid var(--rule); border-radius: var(--radius); padding: 0;
+    width: min(540px, 92vw); box-shadow: var(--shadow-2);
+    background: var(--paper); color: var(--ink);
   }
-  dialog::backdrop { background: rgba(20,26,34,.55); }
-  .modal-head { padding: 14px 18px; border-bottom: 1px solid var(--desk-line); font-weight: 700; font-size: 14px; }
-  .modal-body { padding: 6px 18px 16px; max-height: 60vh; overflow-y: auto; }
-  .modal-foot { padding: 12px 18px; border-top: 1px solid var(--desk-line); display: flex; justify-content: flex-end; gap: 8px; }
-  .doc-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid #eef1f5; font-size: 13px; }
-  .doc-row .name { flex: 1; }
-  .empty { color: var(--ink-faint); font-size: 12.5px; padding: 6px 0; }
+  dialog::backdrop { background: rgba(9, 16, 13, .55); }
+  .modal-head { padding: var(--s3) var(--s4); border-bottom: 1px solid var(--rule); font-weight: 600; font-size: 14px; }
+  .modal-body { padding: 0 var(--s4); max-height: 60vh; overflow-y: auto; }
+  .modal-foot { padding: var(--s3) var(--s4); border-top: 1px solid var(--rule); display: flex; justify-content: flex-end; gap: var(--s2); }
+  .doc-row { display: flex; align-items: center; gap: var(--s2); padding: 10px 0; border-bottom: 1px solid var(--rule-soft); font-size: 13px; }
+  .doc-row:last-child { border-bottom: 0; }
+  .doc-row .name { flex: 1; min-width: 0; }
+
+  /* ═══════════════ responsive ═══════════════ */
+
+  /*
+    Below the two-pane width the desk stacks above the chat, and vertical room becomes
+    the scarce thing. The queue turns into a horizontal strip so it costs one row
+    instead of six, and the case header stops being sticky — in a short viewport a
+    sticky header eats the space the case itself needs.
+  */
+  @media (max-width: 1080px) {
+    body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(300px, 44vh); }
+    .desk-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .rail { border-right: 0; border-bottom: 1px solid var(--rule); grid-template-rows: auto auto; }
+    .rail-list { display: flex; gap: var(--s2); overflow-x: auto; overflow-y: hidden; padding: var(--s2) var(--s3) var(--s3); }
+    .qrow {
+      flex: 0 0 auto; width: 196px; border-left: 0; border-bottom: 3px solid transparent;
+      border-radius: 6px; background: var(--paper-2); align-content: start;
+    }
+    .qrow[aria-current="true"] { border-bottom-color: var(--accent); }
+    .case-head { position: static; }
+    .kpis { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 640px) {
+    :root { --s4: 12px; --s5: 16px; }
+    .case-head { padding: var(--s3); }
+    .grid { padding: var(--s3) var(--s3) 0; }
+    .kv { grid-template-columns: 82px minmax(0, 1fr); }
+    .decide { flex-wrap: wrap; }
+  }
 </style>
 </head>
 <body>
 
+<!-- Icons defined once, used by reference. One set (Lucide), one 24-unit viewBox. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <g id="i-check"><path d="M20 6 9 17l-5-5"/></g>
+    <g id="i-x"><path d="M18 6 6 18M6 6l12 12"/></g>
+    <g id="i-clock"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></g>
+    <g id="i-alert"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></g>
+    <g id="i-user"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></g>
+    <g id="i-file"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h6M9 13h6M9 17h6"/></g>
+    <g id="i-shield"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/></g>
+    <g id="i-history"><path d="M3 12a9 9 0 1 0 2.6-6.4M3 4v5h5"/><path d="M12 7v5l3 2"/></g>
+    <g id="i-book"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/><path d="M9 7h7M9 11h7"/></g>
+    <g id="i-inbox"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.4 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.4-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.8 1.1Z"/></g>
+    <g id="i-download"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></g>
+    <g id="i-upload"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></g>
+  </defs>
+</svg>
+
 <section class="desk">
-  <h1>後台 · 核保理賠作業</h1>
-  <div class="sub" id="deskStatus">尚未連線</div>
+  <div class="topbar">
+    <span class="mark">policy<span>desk</span></span>
+    <span class="crumb">核保理賠作業台</span>
+    <span class="spacer"></span>
+    <span class="link-status"><i class="dot" id="linkDot"></i><span id="deskStatus">尚未連線</span></span>
+  </div>
 
-  <div class="panel">
-    <h2>案件 <span class="count" id="caseMeta"></span></h2>
-    <div class="stages" id="stages"></div>
-    <dl class="kv" id="caseKv"><dd class="empty">尚無案件</dd></dl>
-    <div id="missingBox"></div>
-    <div class="decide" id="decideBox" hidden>
-      <input id="decideReason" placeholder="退件理由（退件時必填，保戶會看到原文）">
-      <button class="primary" id="approveBtn">核准</button>
-      <button class="danger" id="rejectBtn">退件</button>
+  <div class="desk-body">
+    <nav class="rail" aria-label="案件佇列">
+      <div class="rail-head">
+        <span class="label">案件佇列</span>
+        <span class="count" id="queueCount"></span>
+      </div>
+      <div class="rail-list" id="queueList"><div class="empty">載入中</div></div>
+    </nav>
+
+    <div class="case">
+      <header class="case-head" id="caseHead">
+        <div class="case-title">
+          <h2 id="caseWho">尚無案件</h2>
+          <span class="num" id="caseMeta"></span>
+          <span class="spacer" style="flex:1"></span>
+          <span id="caseBadge"></span>
+        </div>
+        <div class="steps" id="steps"></div>
+        <div class="decide" id="decideBox" hidden>
+          <label for="decideReason">人工決定</label>
+          <input id="decideReason" placeholder="退件理由（退件時必填，保戶會看到原文）">
+          <button class="primary" id="approveBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>核准</button>
+          <button class="danger" id="rejectBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg>退件</button>
+        </div>
+      </header>
+
+      <div class="kpis" id="kpis" hidden>
+        <div class="kpi"><span class="k">有效保單</span><span class="v" id="kpiActive">—</span></div>
+        <div class="kpi"><span class="k">年繳保費</span><span class="v" id="kpiPremium">—</span></div>
+        <div class="kpi"><span class="k">保險金額合計</span><span class="v" id="kpiSum">—</span></div>
+        <div class="kpi" id="kpiTodoBox"><span class="k">待辦</span><span class="v" id="kpiTodo">—</span></div>
+      </div>
+
+      <div class="grid">
+        <div class="card wide">
+          <header>
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-book"/></svg>保單清單</h3>
+            <span class="spacer"></span><span class="count" id="policyCount"></span>
+          </header>
+          <div class="body flush">
+            <div class="scroller">
+              <table>
+                <thead><tr>
+                  <th style="width:126px">保單號碼</th><th>商品</th>
+                  <th style="width:96px" class="num">保險金額</th><th style="width:96px" class="num">年繳保費</th>
+                  <th style="width:98px">生效日</th><th style="width:86px">狀態</th>
+                </tr></thead>
+                <tbody id="policyTable"><tr><td colspan="6" class="empty">尚無保單</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-user"/></svg>要保人 · 被保險人</h3></header>
+          <div class="body"><dl class="kv" id="memberKv"><dd class="empty" style="grid-column:1/-1">尚無資料</dd></dl></div>
+        </div>
+
+        <div class="card">
+          <header>
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-file"/></svg>應簽署文件</h3>
+            <span class="spacer"></span><span class="count" id="docCount"></span>
+          </header>
+          <div class="body flush">
+            <div class="scroller">
+              <table>
+                <thead><tr><th>文件</th><th style="width:88px">狀態</th><th style="width:132px">簽署時間</th></tr></thead>
+                <tbody id="docTable"><tr><td colspan="3" class="empty">尚未交付</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <header><h3>案件資料</h3><span class="spacer"></span><span class="count" id="caseStage"></span></header>
+          <div class="body"><dl class="kv" id="caseKv"><dd class="empty" style="grid-column:1/-1">尚無案件</dd></dl></div>
+        </div>
+
+        <div class="card">
+          <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"/></svg>身分驗證</h3></header>
+          <div class="body flush">
+            <table>
+              <thead><tr><th style="width:76px">結果</th><th>理由</th><th style="width:62px" class="num">延遲</th><th style="width:132px">時間</th></tr></thead>
+              <tbody id="idTable"><tr><td colspan="4" class="empty">尚未驗證</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card wide">
+          <header>
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-history"/></svg>稽核軌跡</h3>
+            <span class="spacer"></span><span class="count" id="trailCount"></span>
+          </header>
+          <div class="body"><ul class="trail" id="trail"><li class="empty">尚無事件</li></ul></div>
+        </div>
+      </div>
+
     </div>
-  </div>
-
-  <div class="panel">
-    <h2>要保人 · 被保險人</h2>
-    <dl class="kv" id="memberKv"><dd class="empty">尚無資料</dd></dl>
-  </div>
-
-  <div class="panel">
-    <h2>應簽署文件 <span class="count" id="docCount"></span></h2>
-    <table><thead><tr><th>文件</th><th style="width:90px">狀態</th><th style="width:120px">簽署時間</th></tr></thead>
-    <tbody id="docTable"><tr><td colspan="3" class="empty">尚未交付</td></tr></tbody></table>
-  </div>
-
-  <div class="panel">
-    <h2>身分驗證</h2>
-    <table><thead><tr><th style="width:80px">結果</th><th>理由</th><th style="width:70px">延遲</th><th style="width:120px">時間</th></tr></thead>
-    <tbody id="idTable"><tr><td colspan="4" class="empty">尚未驗證</td></tr></tbody></table>
-  </div>
-
-  <div class="panel">
-    <h2>稽核軌跡 <span class="count" id="trailCount"></span></h2>
-    <ul class="trail" id="trail" style="margin:0;padding:0"><li class="empty">尚無事件</li></ul>
-  </div>
-
-  <div class="panel">
-    <h2>案件佇列 <span class="count" id="queueCount"></span></h2>
-    <table><thead><tr><th style="width:52px">案號</th><th>保戶</th><th style="width:82px">階段</th><th style="width:44px">版本</th></tr></thead>
-    <tbody id="queueTable"><tr><td colspan="4" class="empty">載入中</td></tr></tbody></table>
   </div>
 </section>
 
 <section class="chat">
   <div class="chat-top">
-    <span class="who" id="chatWho">保險櫃台</span>
-    <button class="docs" id="docsBtn" hidden>應簽署文件</button>
+    <span class="who" id="chatWho">保險櫃台<small id="chatSub">尚未建檔</small></span>
+    <button id="docsBtn" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-file"/></svg>應簽署文件</button>
   </div>
   <div class="chat-log" id="chatLog"></div>
   <div class="chat-in">
+    <label for="chatInput" class="sr" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">訊息</label>
     <input id="chatInput" placeholder="請輸入訊息" autocomplete="off" disabled>
     <button class="primary" id="sendBtn" disabled>送出</button>
   </div>
@@ -202,11 +607,13 @@
 
 <div class="gate" id="gate">
   <div class="card">
-    <h3>請輸入您的姓名</h3>
-    <p>姓名即帳號。同名再次登入會將前一位登出，示範期間請使用不易重名的名稱。<br>
-       年齡與性別於建檔時隨機給定，送出第一則訊息前可修改。</p>
-    <input id="nameInput" placeholder="例如：陳彥廷" autocomplete="off">
-    <button class="primary" id="enterBtn">進入</button>
+    <div class="body">
+      <h3>請輸入您的姓名</h3>
+      <p>姓名即帳號。同名再次登入會將前一位登出，示範期間請使用不易重名的名稱。年齡與性別於建檔時隨機給定，送出第一則訊息前可修改。</p>
+      <label for="nameInput" class="label">姓名</label>
+      <input id="nameInput" placeholder="例如：陳彥廷" autocomplete="off">
+      <button class="primary" id="enterBtn">進入</button>
+    </div>
   </div>
 </div>
 
@@ -221,12 +628,23 @@ const STAGES = [
   ["inquiry","詢問"],["proposed","提出方案"],["issued","交付文件"],
   ["signed","已簽署"],["verified","身分已驗"],["review","人工審核"],
 ];
+const STAGE_NAMES = Object.fromEntries(STAGES.concat([["approved","已核准"],["rejected","已退件"]]));
 const DESK_TOKEN = "__DESK_TOKEN__";
-let caseId = null, customerWs = null, deskWs = null, currentCase = null;
+let caseId = null, customerWs = null, deskWs = null, pending = null;
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const shortTime = (iso) => iso ? String(iso).slice(0,19).replace("T"," ") : "";
+const icon = (name, w = 2) =>
+  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"><use href="#i-${name}"/></svg>`;
+
+/** Status reads as a glyph plus a word, never as a colour alone. */
+const PILLS = {
+  ok:   (t) => `<span class="pill ok">${icon("check", 3)}${t}</span>`,
+  no:   (t) => `<span class="pill no">${icon("x", 3)}${t}</span>`,
+  wait: (t) => `<span class="pill wait">${icon("clock")}${t}</span>`,
+  flag: (t) => `<span class="pill flag">${icon("alert")}${t}</span>`,
+};
 
 function bubble(kind, text) {
   const el = document.createElement("div");
@@ -234,68 +652,135 @@ function bubble(kind, text) {
   el.textContent = text;
   $("chatLog").append(el);
   $("chatLog").scrollTop = $("chatLog").scrollHeight;
+  return el;
 }
 
-function renderStages(stage) {
+/** A turn takes several seconds, so the wait is shown rather than left blank. */
+function waiting(on) {
+  if (!on) { pending?.remove(); pending = null; return; }
+  pending = document.createElement("div");
+  pending.className = "msg them pending";
+  pending.innerHTML = "<i></i><i></i><i></i>";
+  $("chatLog").append(pending);
+  $("chatLog").scrollTop = $("chatLog").scrollHeight;
+}
+
+function renderSteps(stage) {
   const idx = STAGES.findIndex(([k]) => k === stage);
   const decided = stage === "approved" || stage === "rejected";
-  $("stages").innerHTML = STAGES.map(([key, label], i) => {
-    let cls = "stage";
-    if (decided || i < idx) cls += " done";
-    else if (i === idx) cls += " now";
-    return `<span class="${cls}">${label}</span>`;
-  }).join("") + (decided
-    ? `<span class="stage ${stage === "approved" ? "done" : "bad"}">${stage === "approved" ? "已核准" : "已退件"}</span>`
-    : "");
+  const drawn = STAGES.map(([key, label], i) => {
+    const cls = decided || i < idx ? "done" : i === idx ? "now" : "";
+    const bead = decided || i < idx ? icon("check", 3.5) : i + 1;
+    return `<span class="step ${cls}"><span class="bead">${bead}</span><span class="name">${label}</span></span>`
+         + (i < STAGES.length - 1 ? `<span class="step ${decided || i < idx ? "done" : ""}"><span class="bar"></span></span>` : "");
+  });
+  if (decided) {
+    const ok = stage === "approved";
+    drawn.push(`<span class="step ${ok ? "done" : "bad"}"><span class="bar"></span></span>`);
+    drawn.push(`<span class="step ${ok ? "done" : "bad"}"><span class="bead">${icon(ok ? "check" : "x", 3.5)}</span><span class="name">${ok ? "已核准" : "已退件"}</span></span>`);
+  }
+  $("steps").innerHTML = drawn.join("");
 }
 
 function renderCase(c) {
-  currentCase = c;
   caseId = c.case_id;
+  $("caseWho").textContent = c.display_name || "—";
   $("caseMeta").textContent = `#${c.case_id} · v${c.case_version}`;
-  renderStages(c.stage);
+  $("caseStage").textContent = STAGE_NAMES[c.stage] ?? c.stage;
+  $("caseHead").dataset.alert = ["review","approved","rejected"].includes(c.stage) ? c.stage : "";
+  $("caseBadge").innerHTML =
+      c.stage === "review"   ? PILLS.flag("待人工審核")
+    : c.stage === "approved" ? PILLS.ok("已核准")
+    : c.stage === "rejected" ? PILLS.no("已退件")
+    : PILLS.wait(STAGE_NAMES[c.stage] ?? c.stage);
+  renderSteps(c.stage);
 
+  const none = (v) => v ? esc(v) : `<span class="none">—</span>`;
   $("caseKv").innerHTML = `
     <dt>案件種類</dt><dd>${esc(c.kind)}</dd>
-    <dt>目前階段</dt><dd>${esc(c.stage)}</dd>
-    <dt>案件版本</dt><dd class="mono">${c.case_version}</dd>
-    <dt>責任業務員</dt><dd>${c.adviser_name ? esc(c.adviser_name) : "<span style='color:#8b97a6'>尚未指定</span>"}</dd>
-    <dt>登錄字號</dt><dd class="mono">${esc(c.adviser_licence ?? "—")}</dd>
-    <dt>決定人</dt><dd>${esc(c.decided_by ?? "—")}</dd>
-    <dt>決定理由</dt><dd>${esc(c.decision_reason || "—")}</dd>
+    <dt>責任業務員</dt><dd>${c.adviser_name ? esc(c.adviser_name) : '<span class="none">尚未指定</span>'}</dd>
+    <dt>登錄字號</dt><dd class="mono">${none(c.adviser_licence)}</dd>
+    <dt>決定人</dt><dd>${none(c.decided_by)}</dd>
+    <dt>決定理由</dt><dd>${none(c.decision_reason)}</dd>
     <dt>快照時間</dt><dd class="mono">${shortTime(c.generated_at)}</dd>`;
 
   $("memberKv").innerHTML = `
     <dt>姓名</dt><dd>${esc(c.display_name)}</dd>
     <dt>身分證字號</dt><dd class="mono">${esc(c.national_id)}</dd>
-    <dt>職業</dt><dd>${esc(c.occupation)}（第 ${c.occupation_class} 類）</dd>`;
+    <dt>職業</dt><dd>${esc(c.occupation)}</dd>
+    <dt>職業等級</dt><dd>第 ${c.occupation_class} 類</dd>`;
+
+  renderPolicies(c.policies ?? [], c);
 
   const docs = c.documents ?? [];
-  $("docCount").textContent = docs.length ? `${docs.filter(d => d.signed_at).length}/${docs.length}` : "";
+  const signed = docs.filter(d => d.signed_at).length;
+  $("docCount").textContent = docs.length ? `${signed}/${docs.length}` : "";
   $("docTable").innerHTML = docs.length ? docs.map(d => `
     <tr><td>${esc(d.kind)}</td>
-        <td>${d.signed_at ? '<span class="pill ok">已簽署</span>' : '<span class="pill wait">待簽署</span>'}</td>
-        <td class="mono">${shortTime(d.signed_at)}</td></tr>`).join("")
+        <td>${d.signed_at ? PILLS.ok("已簽署") : PILLS.wait("待簽署")}</td>
+        <td class="mono">${shortTime(d.signed_at) || "—"}</td></tr>`).join("")
     : `<tr><td colspan="3" class="empty">尚未交付</td></tr>`;
 
   const checks = c.identity_checks ?? [];
   $("idTable").innerHTML = checks.length ? checks.map(k => `
-    <tr><td>${k.verified ? '<span class="pill ok">通過</span>' : '<span class="pill no">未通過</span>'}</td>
+    <tr><td>${k.verified ? PILLS.ok("通過") : PILLS.no("未通過")}</td>
         <td>${esc(k.reason || "—")}</td>
-        <td class="mono">${k.latency_ms ?? "—"}ms</td>
+        <td class="mono num">${k.latency_ms ?? "—"}ms</td>
         <td class="mono">${shortTime(k.checked_at)}</td></tr>`).join("")
     : `<tr><td colspan="4" class="empty">尚未驗證</td></tr>`;
 
-  const trail = c.audit ?? [];
+  const trail = (c.audit ?? []).slice().reverse();
   $("trailCount").textContent = trail.length || "";
-  $("trail").innerHTML = trail.length ? trail.slice().reverse().map(e => `
-    <li><span class="who">${esc(e.actor)} · v${e.case_version ?? "—"} · ${shortTime(e.created_at)}</span><br>
-        <span class="what">${esc(e.action)}</span></li>`).join("")
+  $("trail").innerHTML = trail.length ? trail.map((e, i) => `
+    <li class="${i === 0 ? "latest" : ""}"><span class="what">${esc(e.action)}</span><br>
+        <span class="who">${esc(e.actor)} · v${e.case_version ?? "—"} · ${shortTime(e.created_at)}</span></li>`).join("")
     : `<li class="empty">尚無事件</li>`;
 
   $("decideBox").hidden = c.stage !== "review";
   renderModalDocs(docs);
   $("docsBtn").hidden = docs.length === 0;
+  markQueue();
+}
+
+const money = (n) => Number(n || 0).toLocaleString("zh-Hant-TW");
+
+/**
+ * The member's book, and the four figures a service console leads with.
+ *
+ * A policy is in force until its lapsed_at passes, and a rider whose main policy is
+ * not in this list is an orphan — the customer holds it, no main contract carries it,
+ * and it is the kind of thing that only shows up when the book is laid out in full.
+ */
+function renderPolicies(policies, c) {
+  const today = (c.generated_at || "").slice(0, 10);
+  const live = (p) => !p.lapsed_at || p.lapsed_at > today;
+  const active = policies.filter(live);
+  const numbers = new Set(policies.map(p => p.policy_number));
+  const orphans = policies.filter(p => p.main_policy_ref && !numbers.has(p.main_policy_ref));
+
+  $("kpis").hidden = policies.length === 0;
+  $("kpiActive").innerHTML = `${active.length}<small>張 / 共 ${policies.length}</small>`;
+  $("kpiPremium").innerHTML = `${money(active.reduce((t, p) => t + Number(p.annual_premium || 0), 0))}<small>元</small>`;
+  $("kpiSum").innerHTML = `${money(active.reduce((t, p) => t + Number(p.sum_insured || 0), 0))}<small>元</small>`;
+  const todo = (docs => docs.filter(d => !d.signed_at).length)(c.documents ?? []) + orphans.length;
+  $("kpiTodo").innerHTML = todo ? `${todo}<small>項</small>` : `0<small>項</small>`;
+  $("kpiTodoBox").classList.toggle("alert", todo > 0);
+
+  $("policyCount").textContent = policies.length ? `${active.length}/${policies.length} 有效` : "";
+  $("policyTable").innerHTML = policies.length ? policies.map(p => {
+    const orphan = p.main_policy_ref && !numbers.has(p.main_policy_ref);
+    return `<tr class="${live(p) ? "" : "lapsed"}">
+      <td class="pnum">${esc(p.policy_number)}</td>
+      <td><span class="pname">${esc(p.product_name)}</span>${
+        p.main_policy_ref
+          ? `<br><span class="rider">主約 ${esc(p.main_policy_ref)}${orphan ? "（查無主約）" : ""}</span>`
+          : ""}</td>
+      <td class="num">${money(p.sum_insured)}</td>
+      <td class="num">${money(p.annual_premium)}</td>
+      <td class="mono">${esc(p.effective_at)}</td>
+      <td>${orphan ? PILLS.flag("孤兒附約") : live(p) ? PILLS.ok("有效") : PILLS.no("已停效")}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="6" class="empty">尚無保單</td></tr>`;
 }
 
 function renderModalDocs(docs) {
@@ -303,11 +788,39 @@ function renderModalDocs(docs) {
     <div class="doc-row">
       <span class="name">${esc(d.kind)}</span>
       ${d.signed_at
-        ? '<span class="pill ok">已簽署</span>'
-        : `<button data-doc="${d.document_id}" class="dl">下載</button>
-           <button data-doc="${d.document_id}" class="up primary">上傳簽署本</button>`}
+        ? PILLS.ok("已簽署")
+        : `<button data-doc="${d.document_id}" class="dl">${icon("download")}下載</button>
+           <button data-doc="${d.document_id}" class="up primary">${icon("upload")}上傳簽署本</button>`}
     </div>`).join("")
     : `<div class="empty">目前沒有待簽署文件。</div>`;
+}
+
+function markQueue() {
+  for (const row of $("queueList").querySelectorAll("[data-case]")) {
+    row.setAttribute("aria-current", String(Number(row.dataset.case) === caseId));
+  }
+}
+
+function renderQueue(cases) {
+  $("queueCount").textContent = cases.length || "";
+  $("queueList").innerHTML = cases.length ? cases.map(c => `
+    <div class="qrow" role="button" tabindex="0" data-case="${c.case_id}">
+      <span class="who">${esc(c.display_name)}</span>
+      <span class="id">#${c.case_id}</span>
+      <span class="meta">${
+        c.stage === "review" ? PILLS.flag("待審") :
+        c.stage === "approved" ? PILLS.ok("核准") :
+        c.stage === "rejected" ? PILLS.no("退件") :
+        PILLS.wait(STAGE_NAMES[c.stage] ?? c.stage)
+      }<span class="id">v${c.case_version}</span></span>
+    </div>`).join("")
+    : `<div class="empty">尚無案件</div>`;
+  markQueue();
+}
+
+function setLink(state, text) {
+  $("linkDot").className = `dot ${state}`;
+  $("deskStatus").textContent = text;
 }
 
 function connectCustomer(name) {
@@ -318,48 +831,41 @@ function connectCustomer(name) {
     if (typeof m === "string") { bubble("sys", m); return; }
     switch (m.type) {
       case "profile":
-        $("chatWho").textContent = `${m.name}（保險年齡 ${m.insurance_age}）`;
+        $("chatWho").innerHTML = `${esc(m.name)}<small>保險年齡 ${m.insurance_age} · ${m.sex === "male" ? "男" : "女"} · 第 ${m.occupation_class} 類</small>`;
         bubble("them", `${m.name} 您好，我是保險櫃台。\n已為您建檔：${m.sex === "male" ? "男" : "女"}性、保險年齡 ${m.insurance_age} 歲、職業 ${m.occupation}（第 ${m.occupation_class} 類）。\n身分證字號 ${m.national_id}。\n送出第一則訊息後資料即固定。`);
         break;
       case "case": renderCase(m); break;
       case "reply":
+        waiting(false);
         bubble("them", m.text);
         if (m.scenario) bubble("sys", `情境：${m.scenario}${m.citations?.length ? " · 引用 " + m.citations.join("、") : ""}`);
         if (m.faults?.length) bubble("sys", `引用查核未過：${m.faults.join("；")}`);
         break;
-      case "notice": bubble("sys", m.text); break;
+      case "notice": waiting(false); bubble("sys", m.text); break;
     }
   };
-  customerWs.onclose = () => bubble("sys", "連線已中斷");
+  customerWs.onclose = () => { waiting(false); bubble("sys", "連線已中斷"); };
 }
 
 function connectDesk() {
   deskWs = new WebSocket(`ws://${location.host}/ws/desk?token=${encodeURIComponent(DESK_TOKEN)}`);
-  deskWs.onopen = () => { $("deskStatus").textContent = "已連線 · 即時同步"; };
+  deskWs.onopen = () => setLink("live", "已連線 · 即時同步");
   deskWs.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === "case") renderCase(m);
-    if (m.type === "queue") {
-      const cases = m.cases ?? [];
-      $("queueCount").textContent = cases.length || "";
-      $("queueTable").innerHTML = cases.length ? cases.map(c => `
-        <tr style="cursor:pointer" data-case="${c.case_id}">
-          <td class="mono">#${c.case_id}</td><td>${esc(c.display_name)}</td>
-          <td>${esc(c.stage)}</td><td class="mono">v${c.case_version}</td></tr>`).join("")
-        : `<tr><td colspan="4" class="empty">尚無案件</td></tr>`;
-    }
-    if (m.type === "notice") $("deskStatus").textContent = m.text;
+    if (m.type === "queue") renderQueue(m.cases ?? []);
+    if (m.type === "notice") setLink("live", m.text);
   };
-  deskWs.onclose = () => { $("deskStatus").textContent = "後台連線中斷"; };
+  deskWs.onclose = () => setLink("down", "後台連線中斷");
 }
 
 $("enterBtn").onclick = () => {
   const name = $("nameInput").value.trim();
-  if (!name) return;
+  if (!name) { $("nameInput").focus(); return; }
   $("gate").hidden = true;
-  $("gate").style.display = "none";
   $("chatInput").disabled = false;
   $("sendBtn").disabled = false;
+  $("chatInput").focus();
   connectCustomer(name);
   connectDesk();
 };
@@ -369,6 +875,7 @@ function send() {
   const text = $("chatInput").value.trim();
   if (!text || !customerWs) return;
   bubble("me", text);
+  waiting(true);
   customerWs.send(JSON.stringify({ type: "say", text }));
   $("chatInput").value = "";
 }
@@ -378,11 +885,12 @@ $("chatInput").addEventListener("keydown", e => { if (e.key === "Enter") send();
 $("docsBtn").onclick = () => $("docModal").showModal();
 $("closeModal").onclick = () => $("docModal").close();
 $("modalDocs").addEventListener("click", (e) => {
-  const id = e.target.dataset.doc;
-  if (!id) return;
-  if (e.target.classList.contains("dl")) {
+  const button = e.target.closest("button[data-doc]");
+  if (!button) return;
+  const id = button.dataset.doc;
+  if (button.classList.contains("dl")) {
     window.open(`/doc/${id}?token=${encodeURIComponent(DESK_TOKEN)}`, "_blank");
-  } else if (e.target.classList.contains("up")) {
+  } else {
     const input = document.createElement("input");
     input.type = "file";
     input.onchange = () => {
@@ -396,9 +904,14 @@ $("approveBtn").onclick = () => deskWs?.send(JSON.stringify({ type: "decide", ca
 $("rejectBtn").onclick = () => deskWs?.send(JSON.stringify({
   type: "decide", case_id: caseId, approved: false, reason: $("decideReason").value.trim(), by: "核保人員",
 }));
-$("queueTable").addEventListener("click", (e) => {
-  const row = e.target.closest("tr[data-case]");
-  if (row) deskWs?.send(JSON.stringify({ type: "open", case_id: Number(row.dataset.case) }));
+
+/** The queue rail is navigation, so it answers the keyboard as well as the mouse. */
+function openRow(el) {
+  if (el) deskWs?.send(JSON.stringify({ type: "open", case_id: Number(el.dataset.case) }));
+}
+$("queueList").addEventListener("click", (e) => openRow(e.target.closest("[data-case]")));
+$("queueList").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openRow(e.target.closest("[data-case]")); }
 });
 </script>
 </body>
