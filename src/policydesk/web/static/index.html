@@ -872,7 +872,7 @@ function renderPolicies(policies, c) {
   $("policyTable").innerHTML = policies.length ? policies.map(p => `
     <tr class="${live(p) ? "" : "lapsed"}">
       <td class="pnum">${esc(p.policy_number)}</td>
-      <td><a class="pname" href="/contract/${encodeURIComponent(p.product_id)}?token=${encodeURIComponent(DESK_TOKEN)}&member=${memberId}" target="_blank" title="開啟這張保單的契約條款">${esc(p.product_name)}</a>${
+      <td><a class="pname" href="/contract/${encodeURIComponent(p.product_id)}?member=${memberId}" target="_blank" title="開啟這張保單的契約條款">${esc(p.product_name)}</a>${
         p.main_policy_number ? `<br><span class="rider">主約 ${esc(p.main_policy_number)}</span>` : ""}</td>
       <td class="num">${money(p.sum_insured)}</td>
       <td class="num">${money(p.annual_premium)}</td>

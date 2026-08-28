@@ -117,6 +117,7 @@ POLICY_OVERVIEW = Scenario(
         "以及該張保單的給付項目，每一項後面標註 clause_id，例如 [art.5]。"
         "已停效的保單要明講目前不提供保障。"
         "不要說任何未經工具回傳的金額或條款。"
+        "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料。此時照工具回傳的公開資訊說明有哪些商品或一般規定，接著說明要評估是否適合他、或查詢他名下的內容，需要先核對身分，請他提供身分證字號。不要憑空講任何關於他保單、保費、保額或理賠的內容。"
     ),
     tools=("list_policies", "benefit_headings"),
     quick_replies=("這些保障有哪些不賠的情況？", "我想了解保額夠不夠", "想確認有沒有重複投保"),
@@ -134,6 +135,7 @@ EXPLAIN_COVER = Scenario(
         "寫在該句句末的方括號內，例如 [art.12]。等待期則寫 [waiting]。"
         "工具沒有回傳的內容就說查不到，不要補足。"
         "不要說任何金額，金額由計算工具產生。"
+        "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料。此時照工具回傳的公開資訊說明有哪些商品或一般規定，接著說明要評估是否適合他、或查詢他名下的內容，需要先核對身分，請他提供身分證字號。不要憑空講任何關於他保單、保費、保額或理賠的內容。"
     ),
     tools=("find_clause", "list_policies"),
     params=(
@@ -150,10 +152,40 @@ EXPLAIN_COVER = Scenario(
     quick_replies=("這張有哪些不賠的情況？", "等待期是多久？", "我想了解目前的保障夠不夠"),
 )
 
+BROWSE_PRODUCTS = Scenario(
+    name="browse_products",
+    display_name="商品介紹",
+    description=(
+        "保戶問「你們有什麼保險」「有哪些壽險商品」「賣什麼」這類還沒談到自身條件的問題時使用。"
+        "只需要商品線一個參數，不要問預算。"
+    ),
+    injection=(
+        "你正在介紹目錄上公開販售的商品，這些資訊對任何人都可以說。"
+        "逐項說明商品名稱、每單位年繳保費與計價單位、可投保年齡範圍，並註明附約需附加於主約。"
+        "說完之後告訴保戶：要判斷哪一張適合他，需要看他的年齡、職業等級與既有保障，"
+        "因此請他提供身分證字號完成核對，核對後就能為他篩選並試算。"
+        "不要說任何關於這位保戶自身條件或既有保單的內容，你還看不到。"
+    ),
+    tools=("catalogue_sample",),
+    params=(
+        Param(
+            name="line",
+            description=(
+                "保戶想看的商品線，只填下列其中一個英文字："
+                "health 醫療、life 壽險、accident 意外、annuity 年金、investment 投資型。"
+                "保戶沒指明就填 health"
+            ),
+            example="life",
+        ),
+    ),
+    quick_replies=("這幾張的差別在哪？", "我想了解等待期怎麼算", "想確認附約要不要先有主約"),
+    transitions=("recommend",),
+)
+
 RECOMMEND = Scenario(
     name="recommend",
     display_name="方案建議",
-    description="保戶想投保、比較商品、詢問適合什麼保險時使用。",
+    description="保戶已說出自身需求與預算，要挑出適合他的商品時使用。只想知道有賣什麼請改用 browse_products。",
     injection=(
         "你正在說明一組已由適合度規則篩選出來的商品。"
         "你不決定推薦哪幾張，只解釋為什麼這幾張符合保戶的年齡、職業等級與預算。"
@@ -163,6 +195,7 @@ RECOMMEND = Scenario(
         "再照 openings 說明改動哪一個條件就會有商品，並列出那些商品。"
         "openings 為空就直說目前沒有可行的調整方向，不要自己想辦法。"
         "結尾必須載明：本推介由登錄業務員具名負責。"
+        "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料。此時照工具回傳的公開資訊說明有哪些商品或一般規定，接著說明要評估是否適合他、或查詢他名下的內容，需要先核對身分，請他提供身分證字號。不要憑空講任何關於他保單、保費、保額或理賠的內容。"
     ),
     quick_replies=("這幾張的等待期差在哪？", "我想了解各張的除外責任", "想確認保費怎麼算出來的"),
     tools=("suitable_products", "member_underwriting"),
@@ -219,6 +252,7 @@ CLAIM_CHECKLIST = Scenario(
         "以及目前還缺什麼。條款依據以工具回傳的 clause_id 原樣標註，"
         "例如 [art.12]、[art.6.carve1]，寫在該句句末。"
         "若需說明給付倍數，一律呼叫 calculate 工具計算，不要自行心算或估計。"
+        "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料。此時照工具回傳的公開資訊說明有哪些商品或一般規定，接著說明要評估是否適合他、或查詢他名下的內容，需要先核對身分，請他提供身分證字號。不要憑空講任何關於他保單、保費、保額或理賠的內容。"
     ),
     quick_replies=("診斷證明書要寫到什麼程度？", "我想了解手術給付倍數怎麼算", "送出後大概多久會有結果？"),
     tools=("required_documents", "list_policies", "find_multiplier"),
@@ -258,6 +292,7 @@ COVERAGE = Scenario(
 CATALOGUE: tuple[Scenario, ...] = (
     POLICY_OVERVIEW,
     EXPLAIN_COVER,
+    BROWSE_PRODUCTS,
     RECOMMEND,
     ISSUE_DOCUMENTS,
     VERIFY_IDENTITY,
