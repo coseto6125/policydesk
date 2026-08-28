@@ -295,7 +295,7 @@ than an exception to it: these tools genuinely read no member row.
 """
 
 
-async def gather(db: Database, params: dict[str, str], *, retriever: Any | None = None) -> dict[str, Any]:
+async def gather(db: Database, params: dict[str, str], *, retriever: Any | None = None, **_: Any) -> dict[str, Any]:
     """
     Run this scenario's tools.
 
@@ -346,6 +346,7 @@ SOOTHE = Scenario(
         "他問到自己的保單時，告訴他你可以為他查，並請他完成身分核對。"
     ),
     tools=("statute_reference", "complaint_channel"),
+    tools_module="policydesk.agent.scenarios.soothe",
     params=(
         Param(
             name="concern",

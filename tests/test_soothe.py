@@ -151,17 +151,31 @@ def test_the_gate_treats_a_name_it_cannot_resolve_as_protected():
     assert set(SOOTHE.tools).isdisjoint(dir(tools)), "if these ever land in tools.py, this note is stale"
 
 
-@pytest.mark.asyncio
-async def test_soothe_answers_before_the_gate_rather_than_through_it():
-    # SOOTHE's two tools are unresolvable names, so the gate calls them protected — which
-    # is correct for an unknown name and wrong for these two. The executor settles it by
-    # dispatching soothe ahead of the gate, so an unverified customer still gets the law.
-    from policydesk.agent import executor
+def test_soothe_names_the_module_its_gate_is_derived_from():
+    # Unknown names are gated, so a scenario whose tools live in its own module has to
+    # say where they live. Given the module the derivation runs on the real functions and
+    # answers no; given nothing it answers yes, and an angry customer asking about public
+    # law is met with 請提供身分證字號.
+    from importlib import import_module
 
-    assert tools.reads_identity(SOOTHE.tools), "unknown names are gated, by design"
-    source = inspect.getsource(executor._gather)
-    gate = source.index("reads_identity")
-    assert source.index('scenario.name == "soothe"') < gate, "the dispatch must precede the gate"
+    assert SOOTHE.tools_module, "without this the gate resolves nothing and refuses everything"
+    owner = import_module(SOOTHE.tools_module)
+    assert not tools.reads_identity(SOOTHE.tools, owner=owner)
+    assert tools.reads_identity(SOOTHE.tools), "and gated when the module is not named"
+
+
+def test_the_scenario_module_contract_is_what_the_executor_calls():
+    # One signature, so the executor's dispatch is one line for every scenario module.
+    # A module reading member data needs member_id and today; soothe reads none and takes
+    # them anyway, because a contract each caller special-cases is not one.
+    from policydesk.agent.scenarios import soothe
+
+    # Read off the code object rather than `inspect.signature`, which evaluates the
+    # annotations — and `Database` is only imported under TYPE_CHECKING, so evaluating
+    # them raises NameError and the test fails for a reason that is not the contract.
+    code = soothe.gather.__code__
+    assert "retriever" in code.co_varnames
+    assert code.co_flags & 0x08, "member_id and today are passed to every scenario module"
 
 
 def test_soothe_forbids_admitting_fault_and_promising_payment():
@@ -296,7 +310,6 @@ def test_the_scenarios_package_pulls_in_nothing():
     # the catalogue, and a scenario wanting only `Scenario` would load all the others.
     # Read as source, not as attributes: importing a submodule binds its name on the
     # package, so `vars()` reports `soothe` whether or not this file imported anything.
-    import inspect
 
     from policydesk.agent import scenarios as package
 
