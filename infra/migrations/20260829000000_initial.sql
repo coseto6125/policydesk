@@ -246,3 +246,20 @@ COMMENT ON COLUMN llm_usage.phase IS 'Where in the turn the call sat. "validate"
 
 CREATE INDEX IF NOT EXISTS llm_usage_by_turn ON llm_usage (turn_id);
 CREATE INDEX IF NOT EXISTS llm_usage_by_case ON llm_usage (case_id, created_at);
+
+-- ---------------------------------------------------------------- benefit schedules
+
+CREATE TABLE IF NOT EXISTS surgery_multiplier (
+    product_id   text NOT NULL REFERENCES product(product_id) ON DELETE CASCADE,
+    schedule     text NOT NULL,
+    code         text NOT NULL,
+    procedure    text NOT NULL,
+    multiplier   numeric(6,2) NOT NULL,
+    page         integer NOT NULL,
+    PRIMARY KEY (product_id, schedule, code)
+);
+COMMENT ON TABLE surgery_multiplier IS '附表1 手術項目給付倍數表 and 附表2 特定處置. The clause says 手術給付倍數 ╳ 住院醫療保險金日額 and prints the multiplier here, so without this table the formula has no number and the calculator has nothing to evaluate.';
+COMMENT ON COLUMN surgery_multiplier.schedule IS 'Which appendix: surgery or procedure.';
+COMMENT ON COLUMN surgery_multiplier.multiplier IS 'Multiplied by the daily benefit. Numeric because psqlpy binds numeric from Decimal and money in float is wrong by cents.';
+
+CREATE INDEX IF NOT EXISTS surgery_by_procedure ON surgery_multiplier USING gin (procedure gin_trgm_ops);
