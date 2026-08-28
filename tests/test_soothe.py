@@ -14,6 +14,8 @@ tests below assert that the retrieval reaches the customer's half, and that the 
 runs without demanding ID from someone mid-complaint.
 """
 
+import inspect
+
 import pytest
 
 from policydesk.agent import statute, tools
@@ -140,19 +142,26 @@ def test_soothe_tools_read_no_member_record():
     assert not [name for name, fn in TOOLS.items() if getattr(fn, "requires_identity", False)]
 
 
-def test_soothe_passes_the_executors_gate():
-    assert not tools.reads_identity(SOOTHE.tools)
-
-
-def test_the_gate_cannot_see_tools_outside_the_tools_module():
-    # Recorded rather than worked around, because it belongs to `tools.py` which the
-    # retrieval session owns. `reads_identity` resolves names through that module's
-    # globals, so ANY name it does not define reads as unmarked — including a decorated
-    # tool living in a scenario package like this one. SOOTHE is safe because its tools
-    # genuinely read nothing, not because the derivation checked them; a later scenario
-    # module that adds a @requires_identity tool would be waved through.
-    assert not tools.reads_identity(("no_such_tool_at_all",))
+def test_the_gate_treats_a_name_it_cannot_resolve_as_protected():
+    # The direction this fails in is the whole point. `reads_identity` resolves names
+    # through `tools`, so a tool written in a scenario package resolves to nothing — and
+    # reading nothing as 「不需核對」 would wave a future @requires_identity tool through
+    # the gate silently. Unknown therefore means gated.
+    assert tools.reads_identity(("no_such_tool_at_all",))
     assert set(SOOTHE.tools).isdisjoint(dir(tools)), "if these ever land in tools.py, this note is stale"
+
+
+@pytest.mark.asyncio
+async def test_soothe_answers_before_the_gate_rather_than_through_it():
+    # SOOTHE's two tools are unresolvable names, so the gate calls them protected — which
+    # is correct for an unknown name and wrong for these two. The executor settles it by
+    # dispatching soothe ahead of the gate, so an unverified customer still gets the law.
+    from policydesk.agent import executor
+
+    assert tools.reads_identity(SOOTHE.tools), "unknown names are gated, by design"
+    source = inspect.getsource(executor._gather)
+    gate = source.index("reads_identity")
+    assert source.index('scenario.name == "soothe"') < gate, "the dispatch must precede the gate"
 
 
 def test_soothe_forbids_admitting_fault_and_promising_payment():

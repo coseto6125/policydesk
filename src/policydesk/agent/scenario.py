@@ -18,89 +18,9 @@ tool with no arguments and skips the collection step entirely, which looks like 
 customer being helped and is the customer being asked nothing.
 """
 
-from enum import StrEnum
+from policydesk.agent.scenario_base import Emit, Param, Scenario, tool_schema
 
-from msgspec import Struct
-
-
-class Emit(StrEnum):
-    """Where a scenario's answer comes from."""
-
-    TEMPLATE = "template"
-    """Rendered from data, verbatim. No model call."""
-    MODEL = "model"
-    """The model writes it, from material the tools returned."""
-
-
-class Param(Struct, frozen=True):
-    """
-    One thing that must be known before a scenario can run.
-
-    Every param is injected into the scenario tool's schema as both a property and a
-    required field. A param that is only a property is a param the model may omit.
-    """
-
-    name: str
-    description: str
-    example: str = ""
-
-
-class Scenario(Struct, frozen=True):
-    """One thing the desk knows how to do."""
-
-    name: str
-    display_name: str
-    description: str
-    """Read by the router. Written for the model, not for an operator."""
-    injection: str = ""
-    """Added to the model's instructions once this scenario is entered."""
-    tools: tuple[str, ...] = ()
-    params: tuple[Param, ...] = ()
-    emit: Emit = Emit.MODEL
-    template: str = ""
-    """Used when emit is TEMPLATE. Formatted against the tool results."""
-    transitions: tuple[str, ...] = ()
-    """Scenarios reachable from this one."""
-    requires_stage: str | None = None
-    """The case stage this scenario needs. Refused with an explanation otherwise."""
-    quick_replies: tuple[str, ...] = ()
-    """Offered to the customer as one-tap follow-ups after this scenario answers.
-
-    Every one is a question. None of them commits the customer to anything — a tap is
-    one pixel away from a mis-tap, and a mis-tap that reads as 我要買這張 is an
-    expression of intent the customer never made. Buying is typed, never tapped.
-    """
-
-
-def tool_schema(scenario: Scenario) -> dict:
-    """
-    Turn a scenario into a tool the router can call.
-
-    Args:
-        scenario: The scenario to expose.
-
-    Returns:
-        A function-tool schema whose properties and required list both carry every
-        parameter.
-
-    """
-    properties = {
-        p.name: {"type": "string", "description": f"{p.description}{f'，例如 {p.example}' if p.example else ''}"}
-        for p in scenario.params
-    }
-    return {
-        "type": "function",
-        "name": scenario.name,
-        "description": scenario.description,
-        "parameters": {
-            "type": "object",
-            "properties": properties,
-            # Both lists, always. A property that is not required is a question the
-            # model is free to skip.
-            "required": [p.name for p in scenario.params],
-            "additionalProperties": False,
-        },
-    }
+__all__ = ["BY_NAME", "CATALOGUE", "OPENERS", "ROUTER_INSTRUCTIONS", "Emit", "Param", "Scenario", "tool_schema"]
 
 
 POLICY_OVERVIEW = Scenario(
@@ -289,6 +209,12 @@ COVERAGE = Scenario(
     transitions=(),
 )
 
+# Imported here rather than at the top because `scenarios.soothe` imports `Scenario`
+# and `Param` from this module. The registry is the cycle: a scenario needs the type,
+# and the catalogue needs the scenario. Below the type definitions is the one place
+# both halves are satisfied.
+from policydesk.agent.scenarios.soothe import SOOTHE
+
 CATALOGUE: tuple[Scenario, ...] = (
     POLICY_OVERVIEW,
     EXPLAIN_COVER,
@@ -299,6 +225,7 @@ CATALOGUE: tuple[Scenario, ...] = (
     CLAIM_CHECKLIST,
     BILLING,
     COVERAGE,
+    SOOTHE,
 )
 
 BY_NAME: dict[str, Scenario] = {s.name: s for s in CATALOGUE}

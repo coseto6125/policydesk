@@ -31,6 +31,7 @@ from msgspec import DecodeError, json
 
 from policydesk.agent import memory, tools
 from policydesk.agent.scenario import BY_NAME, CATALOGUE, OPENERS, ROUTER_INSTRUCTIONS, Emit, Scenario, tool_schema
+from policydesk.agent.scenarios import soothe
 from policydesk.bootloader import logger
 from policydesk.llm.provider import Completion, Phase, Provider, ProviderError
 from policydesk.skills.calculator import TOOL_SCHEMA, CalculationError, calculate
@@ -38,7 +39,7 @@ from policydesk.validation.validator import Verdict, recheck
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
-    from policydesk.retrieval.index import ClauseIndex
+    from policydesk.retrieval.base import Retriever
 
 # "art.17", "art.17.carve1", "waiting" — the ids the clause index actually mints.
 _CITATION = re.compile(r"\b(?:art\.\d{1,3}(?:\.carve\d)?|waiting)\b")
@@ -225,7 +226,7 @@ async def _gather(
     today: date,
     params: dict[str, str],
     confirmed: bool = True,
-    index: ClauseIndex | None = None,
+    index: Retriever | None = None,
 ) -> dict[str, Any]:
     """
     Run the scenario's tools, on what the model collected.
@@ -239,13 +240,24 @@ async def _gather(
         confirmed: Whether this session has passed 資料核對. Unconfirmed, every tool
             marked `requires_identity` is skipped — the query never runs, so there is
             nothing read and then withheld.
-        index: The BM25 clause index, when one is open. None falls back to the SQL
+        index: The clause retriever, when one is open. None falls back to the SQL
             search, which ranks worse and still answers.
 
     Returns:
         Everything the tools returned, by tool name. Unconfirmed, only the public ones.
 
     """
+    if scenario.name == "soothe":
+        # Dispatched before the gate, not exempted by it. Its tools read the statute and
+        # the complaint channel, both public, and neither resolves through `tools` — so
+        # `reads_identity` would call them unknown and gate them, which is the right
+        # default for an unknown name and the wrong answer for these two. The empty
+        # `_allowed_clauses` is not an omission: statute citations carry their own
+        # 〔保險法 第64條第2項〕 syntax and are checked against `statute_article`, so the
+        # `art.NN` checker has nothing here to allow.
+        facts = await soothe.gather(db, params, retriever=index)
+        facts["_allowed_clauses"] = frozenset()
+        return facts
     if not confirmed and tools.reads_identity(scenario.tools):
         return await _public_only(db, scenario, params)
     # list_policies first, because everything else needs its product_ids.
@@ -370,7 +382,7 @@ async def run_turn(
     member_id: int,
     text: str,
     confirmed: bool = False,
-    index: ClauseIndex | None = None,
+    index: Retriever | None = None,
     today: date | None = None,
 ) -> Turn:
     """

@@ -45,6 +45,23 @@
     --bubble-me: #a9e263;
     --bubble-sys: rgba(15, 26, 22, .34);
 
+    /*
+      One hue per turn phase, for the trace ticks and the pipeline nodes. Mixed from the
+      tokens above rather than written as literals, so each one re-resolves when the
+      theme swaps its inputs — a single declaration that is correct in both, instead of
+      seven more lines in each dark block that a later edit would have to keep in step.
+      Four base hues have to separate seven phases, which is why three of these are
+      mixes rather than a fifth and sixth literal nobody could name.
+    */
+    --ph-route: var(--ink-3);
+    --ph-scenario_tools: color-mix(in oklab, var(--accent) 50%, var(--flag));
+    --ph-answer: var(--accent);
+    --ph-validate: var(--flag);
+    --ph-repair: var(--bad);
+    --ph-embedding: color-mix(in oklab, var(--ink-3) 50%, var(--accent));
+    --ph-facts: color-mix(in oklab, var(--flag) 50%, var(--bad));
+    --ph-response: var(--good);
+
     --shadow-1: 0 1px 2px rgba(15, 26, 22, .05);
     --shadow-2: 0 8px 28px rgba(15, 26, 22, .14);
 
@@ -170,9 +187,12 @@
   }
 
   /* ── queue rail: this is navigation, so it lives where navigation lives ── */
+  /* Three rows now: the seven tabs, then the case queue's head and list. The queue only
+     drives the 總覽 pane, so it is hidden on the other six rather than sitting there as
+     navigation that goes nowhere. */
   .rail {
     background: var(--paper); border-right: 1px solid var(--rule);
-    display: grid; grid-template-rows: auto 1fr; min-height: 0;
+    display: grid; grid-template-rows: auto auto 1fr; min-height: 0;
   }
   .rail-head {
     display: flex; align-items: baseline; justify-content: space-between;
@@ -191,8 +211,58 @@
   .qrow .id { font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
   .qrow .meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; }
 
+  .tabs { display: grid; padding: var(--s2) 0; border-bottom: 1px solid var(--rule); }
+  .tab {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    padding: 7px var(--s3); font-size: 12.5px; color: var(--ink-2);
+    border: 0; border-left: 3px solid transparent; border-radius: 0; background: transparent;
+  }
+  .tab:hover { background: var(--paper-2); border-color: transparent; border-left-color: transparent; }
+  .tab[aria-current="true"] {
+    background: var(--accent-wash); border-left-color: var(--accent);
+    color: var(--ink); font-weight: 600;
+  }
+  .tab svg { width: 14px; height: 14px; flex: none; color: var(--ink-3); }
+  .tab[aria-current="true"] svg { color: var(--accent); }
+
   /* ── case area ── */
   .case { overflow-y: auto; min-width: 0; padding-bottom: var(--s6); scroll-behavior: smooth; }
+
+  /*
+    The other six tabs. Each scrolls on its own so switching back to a tab restores the
+    place it was left at, which one shared scroller cannot do.
+  */
+  .pane {
+    overflow-y: auto; min-width: 0; min-height: 0;
+    padding: var(--s4); padding-bottom: var(--s6);
+    display: grid; gap: var(--s3); align-content: start;
+    /* max-content, not the default auto. An auto row shrinks toward min-content when the
+       grid is shorter than its rows, and `.card { overflow: hidden }` then swallowed the
+       bottom of the call-detail card — the JSON bodies were clipped away and the pane
+       reported nothing to scroll. */
+    grid-auto-rows: max-content;
+  }
+  .pane-head { display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap; }
+  .pane-head h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+  .pane-head p { margin: 0; font-size: 12px; color: var(--ink-3); }
+  .pane-head .spacer { flex: 1; }
+
+  /* The KPI strip is positioned by the case pane's own padding; inside a .pane the pane
+     already supplies it, and the inherited margin would indent it past its neighbours. */
+  .pane .kpis { margin: 0; }
+
+  /* A table wider than its column scrolls inside its own box. The page itself must never
+     scroll sideways: the chat pane is pinned to the right edge and would be pushed off.
+     The floor is what makes the box scroll rather than crush — without it the 商品 column
+     took whatever the fixed-width columns left over, which was one character per line. */
+  .scroll-x { overflow-x: auto; }
+  .scroll-x table { min-width: 620px; }
+
+  .split {
+    display: grid; grid-template-columns: minmax(250px, 330px) minmax(0, 1fr);
+    gap: var(--s3); align-items: start;
+  }
+  @media (max-width: 1240px) { .split { grid-template-columns: minmax(0, 1fr); } }
 
   /* Sticky so a decision never requires a scroll back up. */
   .case-head {
@@ -385,6 +455,131 @@
   .empty { color: var(--ink-3); font-size: 12.5px; padding: var(--s3); text-align: center; }
   td .empty, .body > .empty { padding: var(--s4) var(--s3); }
 
+  /* ── 聊天紀錄: an inbox on the left, the transcript it opens on the right ── */
+
+  .inbox { max-height: calc(100vh - 190px); overflow-y: auto; }
+  .inbox-row {
+    display: grid; grid-template-columns: 1fr auto; gap: 2px var(--s2);
+    padding: 9px var(--s3); cursor: pointer;
+    border-left: 3px solid transparent; border-bottom: 1px solid var(--rule-soft);
+    transition: background 180ms ease, border-color 180ms ease;
+  }
+  .inbox-row:hover { background: var(--paper-2); }
+  .inbox-row[aria-current="true"] { background: var(--accent-wash); border-left-color: var(--accent); }
+  /* The person the right-hand pane is talking to. Pinned to the top of the list and
+     marked, because a caseworker scanning the inbox has to find the live one first. */
+  .inbox-row.pinned { background: var(--good-wash); border-left-color: var(--good); }
+  .inbox-row.pinned[aria-current="true"] { box-shadow: inset 0 0 0 1px var(--good); }
+  .inbox-row .who { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .inbox-row .when { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); white-space: nowrap; }
+  .inbox-row .prev {
+    grid-column: 1 / -1; font-size: 12px; color: var(--ink-3);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .inbox-row .meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; }
+  .unread { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+
+  .tx { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s3); max-height: calc(100vh - 240px); overflow-y: auto; }
+  .tx .row { display: flex; flex-direction: column; gap: 2px; max-width: 78%; }
+  .tx .row.agent { align-self: flex-start; }
+  .tx .row.customer { align-self: flex-end; align-items: flex-end; }
+  .tx .row.system { align-self: center; align-items: center; max-width: 92%; }
+  .tx .bub { padding: 8px 12px; border-radius: 12px; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tx .row.agent .bub { background: var(--paper-2); border: 1px solid var(--rule-soft); border-top-left-radius: 4px; }
+  .tx .row.customer .bub { background: var(--accent-wash); border: 1px solid var(--accent); border-top-right-radius: 4px; }
+  .tx .row.system .bub { background: transparent; color: var(--ink-3); font-size: 11.5px; padding: 2px 8px; }
+  .tx .at { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+
+  /* ── 客戶資料 ── */
+  .facts { display: grid; gap: 6px; }
+  .fact { display: grid; grid-template-columns: auto 1fr auto; gap: var(--s2); align-items: baseline; font-size: 12.5px; }
+  .fact .cat {
+    font-size: 10px; letter-spacing: .1em; font-weight: 700; text-transform: uppercase;
+    padding: 1px 6px; border-radius: 4px; background: var(--paper-2); color: var(--ink-3);
+    box-shadow: inset 0 0 0 1px var(--rule); white-space: nowrap;
+  }
+  .fact .k { font-weight: 600; }
+  .fact .v { color: var(--ink-2); overflow-wrap: anywhere; }
+  .fact .at { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); white-space: nowrap; }
+  .summary { font-size: 12.5px; line-height: 1.7; color: var(--ink-2); white-space: pre-wrap; }
+
+  /* ── LLM 追蹤 ── */
+  .tiers { display: flex; gap: 6px; }
+  .tiers button[aria-pressed="true"] {
+    background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600;
+  }
+  tbody tr.pick { cursor: pointer; }
+  tbody tr.pick:hover { background: var(--paper-2); }
+  tbody tr.pick[aria-current="true"] { background: var(--accent-wash); }
+  td.tight { white-space: nowrap; }
+
+  /* Taller than the shared .scroller, and wider than the pane: the trace list is the one
+     table on the page with ten columns, and squeezed into 770px the phase label folded
+     to one character per line. It scrolls in both axes instead. */
+  .trace-scroll { max-height: 46vh; overflow: auto; }
+  .trace-scroll table { min-width: 900px; }
+
+  /* The phase chain, one tick per call in the order they ran. Colour carries which phase
+     and the tooltip carries its name, so the chain is readable without the legend. */
+  .ticks { display: inline-flex; gap: 3px; align-items: center; }
+  .tick { width: 9px; height: 9px; border-radius: 2px; background: var(--ink-3); }
+  .legend { display: flex; flex-wrap: wrap; gap: var(--s3); font-size: 11px; color: var(--ink-3); }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+
+  .json {
+    margin: 0; font-family: var(--mono); font-size: 11px; line-height: 1.6;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+    background: var(--paper-2); border: 1px solid var(--rule-soft); border-radius: 6px;
+    padding: var(--s3); max-height: 260px; overflow: auto; color: var(--ink-2);
+  }
+
+  /* ── 即時流程圖 ── */
+  /* Six nodes have to fit a pane the chat leaves 770px of, so the basis is what makes
+     the whole pipeline visible without a sideways scroll — a diagram whose last node is
+     off-screen is where every settled turn parks, which is the half worth seeing. */
+  .flow { display: flex; align-items: stretch; overflow-x: auto; padding: var(--s3); gap: 0; }
+  .node { flex: 1 1 108px; min-width: 108px; display: grid; grid-template-rows: auto 1fr; gap: var(--s2); }
+  .node .cap { display: flex; align-items: center; gap: 5px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700; color: var(--ink-2); white-space: nowrap; }
+  .node .cap i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .node .bay {
+    border: 1px dashed var(--rule); border-radius: var(--radius); background: var(--paper-2);
+    min-height: 150px; max-height: 300px; overflow-y: auto;
+    padding: var(--s2); display: grid; gap: 6px; align-content: start;
+  }
+  .node.hot .bay { border-style: solid; border-color: var(--accent); background: var(--accent-wash); }
+  /* Pinned to the top of the bay row rather than centred: the bays stretch to the
+     fullest one, and a centred arrow then floats halfway down an empty column. */
+  .arrow { align-self: start; padding: 34px 2px 0; color: var(--ink-3); font-family: var(--mono); font-size: 13px; }
+  .turncard {
+    background: var(--paper); border: 1px solid var(--rule); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 6px 8px; display: grid; gap: 1px; box-shadow: var(--shadow-1);
+  }
+  .turncard b { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* One line each, clipped. A 108px node wraps a turn_id to four lines otherwise, and
+     four wrapped cards fill the bay with an id nobody reads in full anyway. */
+  .turncard span { font-family: var(--mono); font-size: 10px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .turncard.settled { opacity: .55; border-left-color: var(--ink-3); }
+
+  /* ── 各情境 token 消耗 / dashboard ── */
+  .bar-cell { display: grid; grid-template-columns: 1fr; gap: 3px; min-width: 90px; }
+  .track { height: 7px; border-radius: 999px; background: var(--rule-soft); overflow: hidden; }
+  .track i { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+  .mix { display: grid; gap: 9px; }
+  .mix .m { display: grid; grid-template-columns: minmax(84px, auto) minmax(0, 1fr) auto; gap: var(--s2); align-items: center; font-size: 12px; }
+  .mix .m .n { font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .meter { height: 10px; border-radius: 999px; background: var(--rule-soft); overflow: hidden; }
+  .meter i { display: block; height: 100%; background: var(--accent); }
+
+  /* Hand-rolled, like everything else on this page: a fixed viewBox scaled to the card,
+     so the fortnight reads the same at any pane width and no library ships for one chart. */
+  .chart { display: block; width: 100%; height: 230px; }
+  .chart .rule-line { stroke: var(--rule-soft); stroke-width: 1; }
+  .chart .bar { fill: var(--accent); opacity: .8; }
+  .chart .line { fill: none; stroke: var(--flag); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .dot { fill: var(--flag); }
+  .chart text { fill: var(--ink-3); font-size: 9px; font-family: var(--mono); }
+
   /* ═══════════════ customer room ═══════════════ */
 
   /* min-height: 0 on both, or the log grows to fit its content and pushes the composer
@@ -550,8 +745,15 @@
   @media (max-width: 1080px) {
     body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(300px, 44vh); }
     .desk-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
-    .rail { border-right: 0; border-bottom: 1px solid var(--rule); grid-template-rows: auto auto; }
+    .rail { border-right: 0; border-bottom: 1px solid var(--rule); grid-template-rows: auto auto auto; }
+    /* The tabs become a strip too, for the same reason the queue does: vertical room is
+       the scarce thing once the desk sits above the chat. */
+    .tabs { display: flex; gap: var(--s2); overflow-x: auto; padding: var(--s2) var(--s3); }
+    .tab { width: auto; flex: 0 0 auto; border-left: 0; border-bottom: 3px solid transparent; border-radius: 6px; background: var(--paper-2); white-space: nowrap; }
+    .tab[aria-current="true"] { border-left-color: transparent; border-bottom-color: var(--accent); }
     .rail-list { display: flex; gap: var(--s2); overflow-x: auto; overflow-y: hidden; padding: var(--s2) var(--s3) var(--s3); }
+    .split { grid-template-columns: minmax(0, 1fr); }
+    .inbox, .tx { max-height: 46vh; }
     .qrow {
       flex: 0 0 auto; width: 196px; border-left: 0; border-bottom: 3px solid transparent;
       border-radius: 6px; background: var(--paper-2); align-content: start;
@@ -586,6 +788,10 @@
     <g id="i-inbox"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.4 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.4-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.8 1.1Z"/></g>
     <g id="i-download"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></g>
     <g id="i-upload"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></g>
+    <g id="i-layers"><path d="m12.8 2.2a2 2 0 0 0-1.6 0L2.6 6.1a1 1 0 0 0 0 1.8l8.6 3.9a2 2 0 0 0 1.6 0l8.6-3.9a1 1 0 0 0 0-1.8Z"/><path d="m22 12.6-9.2 4.2a2 2 0 0 1-1.6 0L2 12.6"/><path d="m22 17.6-9.2 4.2a2 2 0 0 1-1.6 0L2 17.6"/></g>
+    <g id="i-workflow"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="M6.5 10v3.5a2 2 0 0 0 2 2H14"/></g>
+    <g id="i-coins"><circle cx="9" cy="9" r="6"/><path d="M18.1 11.4A6 6 0 1 1 11.4 18.1"/><path d="M7.5 7.5h2v3.5M15.8 14.6l.9.9-2.4 2.4"/></g>
+    <g id="i-gauge"><path d="m12 14 4-4"/><path d="M3.3 19a10 10 0 1 1 17.4 0"/></g>
   </defs>
 </svg>
 
@@ -598,15 +804,16 @@
   </div>
 
   <div class="desk-body">
-    <nav class="rail" aria-label="案件佇列">
-      <div class="rail-head">
+    <nav class="rail" aria-label="後台導覽">
+      <div class="tabs" id="tabList" role="tablist"></div>
+      <div class="rail-head" id="queueHead">
         <span class="label">案件佇列</span>
         <span class="count" id="queueCount"></span>
       </div>
       <div class="rail-list" id="queueList"><div class="empty">載入中</div></div>
     </nav>
 
-    <div class="case">
+    <div class="case" data-pane="overview">
       <header class="case-head" id="caseHead">
         <div class="case-title">
           <h2 id="caseWho">尚無案件</h2>
@@ -695,6 +902,170 @@
       </div>
 
     </div>
+
+    <!-- 聊天紀錄 -->
+    <div class="pane" data-pane="inbox" hidden>
+      <div class="pane-head">
+        <h2>聊天紀錄</h2>
+        <p id="inboxNote"></p>
+        <span class="spacer"></span>
+        <button class="ghost" data-reload="inbox">重新整理</button>
+      </div>
+      <div class="split">
+        <div class="card">
+          <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-inbox"/></svg>對話</h3><span class="spacer"></span><span class="count" id="inboxCount"></span></header>
+          <div class="body flush"><div class="inbox" id="inboxList"><div class="empty">載入中</div></div></div>
+        </div>
+        <div class="card">
+          <header><h3 id="txWho">對話內容</h3><span class="spacer"></span><span class="count" id="txCount"></span></header>
+          <div class="body flush"><div class="tx" id="txLog"><div class="empty">請於左側選擇一則對話</div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 客戶資料 -->
+    <div class="pane" data-pane="profile" hidden>
+      <div class="pane-head">
+        <h2>客戶資料</h2>
+        <p id="profileNote"></p>
+        <span class="spacer"></span>
+        <button class="ghost" data-reload="profile">重新整理</button>
+      </div>
+      <div class="split" style="grid-template-columns:minmax(0,4fr) minmax(0,8fr)">
+        <div class="card">
+          <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-user"/></svg>保戶檔案</h3></header>
+          <div class="body"><dl class="kv" id="profileKv"><dd class="empty" style="grid-column:1/-1">尚無資料</dd></dl></div>
+        </div>
+        <div style="display:grid;gap:var(--s3);align-content:start">
+          <div class="card">
+            <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-book"/></svg>名下保單</h3><span class="spacer"></span><span class="count" id="profilePolicyCount"></span></header>
+            <div class="body flush scroll-x"><table>
+              <thead><tr><th style="width:118px">保單號碼</th><th>商品</th><th style="width:84px" class="num">保險金額</th><th style="width:84px" class="num">年繳保費</th><th style="width:92px">生效日</th></tr></thead>
+              <tbody id="profilePolicies"><tr><td colspan="5" class="empty">尚無保單</td></tr></tbody>
+            </table></div>
+          </div>
+          <div class="card">
+            <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-history"/></svg>抽取記憶 member_fact</h3><span class="spacer"></span><span class="count" id="factCount"></span></header>
+            <div class="body"><div class="facts" id="profileFacts"><div class="empty">尚未抽取</div></div></div>
+          </div>
+          <div class="card">
+            <header><h3>案件摘要 case.summary</h3><span class="spacer"></span><span class="count" id="summaryCount"></span></header>
+            <div class="body"><div id="profileSummaries"><div class="empty">尚無摘要</div></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LLM 追蹤 -->
+    <div class="pane" data-pane="trace" hidden>
+      <div class="pane-head">
+        <h2>LLM 追蹤</h2>
+        <p>自製 Langfuse：對話 → 回合 → 呼叫，全部讀自 llm_usage。</p>
+        <span class="spacer"></span>
+        <div class="tiers" id="tierPick">
+          <button data-tier="conversation">對話</button>
+          <button data-tier="turn">回合</button>
+          <button data-tier="call">呼叫</button>
+        </div>
+      </div>
+      <div class="legend" id="phaseLegend"></div>
+      <div class="card">
+        <header><h3 id="traceTitle">回合</h3><span class="spacer"></span><span class="count" id="traceCount"></span><button class="ghost" id="traceClear" hidden>清除篩選</button></header>
+        <div class="body flush"><div class="trace-scroll"><table>
+          <thead id="traceHead"></thead>
+          <tbody id="traceBody"><tr><td class="empty">載入中</td></tr></tbody>
+        </table></div></div>
+      </div>
+      <div class="card" id="callCard" hidden>
+        <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-layers"/></svg>呼叫明細</h3><span class="spacer"></span><span class="count" id="callId"></span></header>
+        <div class="body" style="display:grid;gap:var(--s3)">
+          <dl class="kv" id="callKv"></dl>
+          <div style="display:grid;gap:var(--s2)">
+            <span class="label">request</span><pre class="json" id="callRequest"></pre>
+            <span class="label">response</span><pre class="json" id="callResponse"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 即時流程圖 -->
+    <div class="pane" data-pane="flow" hidden>
+      <div class="pane-head">
+        <h2>即時流程圖</h2>
+        <p id="flowNote">每 2 秒輪詢 /api/console/live。</p>
+      </div>
+      <div class="card">
+        <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-workflow"/></svg>回合流程</h3><span class="spacer"></span><span class="count" id="flowCount"></span></header>
+        <div class="body flush"><div class="flow" id="flowCanvas"><div class="empty">載入中</div></div></div>
+      </div>
+    </div>
+
+    <!-- 各情境 token 消耗 -->
+    <div class="pane" data-pane="tokens" hidden>
+      <div class="pane-head">
+        <h2>各情境 token 消耗</h2>
+        <p>依 llm_usage.scenario 分組，未歸屬情境的呼叫獨立成一列。</p>
+        <span class="spacer"></span>
+        <button class="ghost" data-reload="tokens">重新整理</button>
+      </div>
+      <div class="kpis" id="tokenKpis">
+        <div class="kpi"><span class="k">呼叫次數</span><span class="v" id="tkCalls">—</span></div>
+        <div class="kpi"><span class="k">總 token</span><span class="v" id="tkTotal">—</span></div>
+        <div class="kpi"><span class="k">快取 token</span><span class="v" id="tkCached">—</span></div>
+        <div class="kpi"><span class="k">情境數</span><span class="v" id="tkScenarios">—</span></div>
+      </div>
+      <div class="card">
+        <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-coins"/></svg>情境用量</h3><span class="spacer"></span><span class="count" id="tokenCount"></span></header>
+        <div class="body flush scroll-x"><table style="min-width:800px">
+          <thead><tr>
+            <th>情境</th><th style="width:58px" class="num">呼叫</th>
+            <th style="width:80px" class="num">prompt</th><th style="width:92px" class="num">completion</th>
+            <th style="width:78px" class="num">cached</th><th style="width:112px" class="num">總 token</th>
+            <th style="width:122px" class="num">延遲 p50 / p95</th><th style="width:74px" class="num">成本</th>
+          </tr></thead>
+          <tbody id="tokenBody"><tr><td colspan="8" class="empty">載入中</td></tr></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- LLM Dashboard -->
+    <div class="pane" data-pane="dash" hidden>
+      <div class="pane-head">
+        <h2>LLM Dashboard</h2>
+        <p id="dashNote"></p>
+        <span class="spacer"></span>
+        <button class="ghost" data-reload="dash">重新整理</button>
+      </div>
+      <div class="kpis" id="dashKpis">
+        <div class="kpi"><span class="k">今日呼叫</span><span class="v" id="dbToday">—</span></div>
+        <div class="kpi"><span class="k">累計呼叫</span><span class="v" id="dbCalls">—</span></div>
+        <div class="kpi"><span class="k">累計 token</span><span class="v" id="dbTokens">—</span></div>
+        <div class="kpi"><span class="k">回合 / 對話</span><span class="v" id="dbTurns">—</span></div>
+        <div class="kpi"><span class="k">延遲 p50 / p95</span><span class="v" id="dbLatency">—</span></div>
+      </div>
+      <div class="card wide">
+        <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-gauge"/></svg>近 14 日呼叫與 token</h3><span class="spacer"></span><span class="count">長條＝token · 折線＝呼叫</span></header>
+        <div class="body"><div class="scroll-x"><svg class="chart" id="dashChart" viewBox="0 0 720 230" preserveAspectRatio="xMidYMid meet" role="img" aria-label="近 14 日 token 與呼叫次數"></svg></div></div>
+      </div>
+      <div class="split" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)">
+        <div class="card">
+          <header><h3>模型組成</h3><span class="spacer"></span><span class="count" id="modelCount"></span></header>
+          <div class="body"><div class="mix" id="dashModels"><div class="empty">載入中</div></div></div>
+        </div>
+        <div class="card">
+          <header><h3>階段組成</h3><span class="spacer"></span><span class="count" id="phaseCount"></span></header>
+          <div class="body"><div class="mix" id="dashPhases"><div class="empty">載入中</div></div></div>
+        </div>
+      </div>
+      <div class="card">
+        <header><h3>快取命中率 cached / prompt</h3><span class="spacer"></span><span class="count" id="cacheRate"></span></header>
+        <div class="body" style="display:grid;gap:var(--s2)">
+          <div class="meter"><i id="cacheBar" style="width:0%"></i></div>
+          <p style="margin:0;font-size:12px;color:var(--ink-3)" id="cacheNote"></p>
+        </div>
+      </div>
+    </div>
+
   </div>
 </section>
 
@@ -759,6 +1130,14 @@ const PILLS = {
   wait: (t) => `<span class="pill wait">${icon("clock")}${t}</span>`,
   flag: (t) => `<span class="pill flag">${icon("alert")}${t}</span>`,
 };
+
+/** A case stage as the rail and the inbox both draw it. One expression, two lists. */
+const stagePill = (stage) =>
+    stage === "review"   ? PILLS.flag("待審")
+  : stage === "approved" ? PILLS.ok("核准")
+  : stage === "rejected" ? PILLS.no("退件")
+  : stage                ? PILLS.wait(STAGE_NAMES[stage] ?? stage)
+  : "";
 
 /** One scroller. Every path that adds to the log ends here, so nothing lands off-screen. */
 function toBottom() {
@@ -925,12 +1304,7 @@ function renderQueue(cases) {
     <div class="qrow" role="button" tabindex="0" data-case="${c.case_id}">
       <span class="who">${esc(c.display_name)}</span>
       <span class="id">#${c.case_id}</span>
-      <span class="meta">${
-        c.stage === "review" ? PILLS.flag("待審") :
-        c.stage === "approved" ? PILLS.ok("核准") :
-        c.stage === "rejected" ? PILLS.no("退件") :
-        PILLS.wait(STAGE_NAMES[c.stage] ?? c.stage)
-      }<span class="id">v${c.case_version}</span></span>
+      <span class="meta">${stagePill(c.stage)}<span class="id">v${c.case_version}</span></span>
     </div>`).join("")
     : `<div class="empty">尚無案件</div>`;
   markQueue();
@@ -1122,6 +1496,9 @@ function connectCustomer(name) {
         $("sendBtn").disabled = false;
         $("chatInput").focus();
         connectDesk();
+        // The member-scoped tabs had nobody to read until this landed. Whichever one is
+        // open was showing 請先於右側完成建檔; it now has an id to fetch against.
+        refreshActive();
         break;
       case "confirmed":
         bubble("sys", "身分核對通過");
@@ -1225,6 +1602,506 @@ $("queueList").addEventListener("click", (e) => openRow(e.target.closest("[data-
 $("queueList").addEventListener("keydown", (e) => {
   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openRow(e.target.closest("[data-case]")); }
 });
+
+/* ═══════════════ the other six tabs ═══════════════ */
+
+/*
+  The case pane was the whole back office. It is now one tab of seven, and the six new
+  ones read HTTP instead of the socket. The socket carries a case: one writer pushes it
+  on every change, and both panes render what it returns. These six answer questions
+  nobody writes — who else is talking, what the desk remembers about a customer, what the
+  model cost — so a push channel for them would be a second protocol carrying no
+  mutation. They fetch when their tab opens, and the live one polls.
+*/
+
+const TABS = [
+  ["overview", "總覽", "book"],
+  ["inbox", "聊天紀錄", "inbox"],
+  ["profile", "客戶資料", "user"],
+  ["trace", "LLM 追蹤", "layers"],
+  ["flow", "即時流程圖", "workflow"],
+  ["tokens", "各情境 token", "coins"],
+  ["dash", "LLM Dashboard", "gauge"],
+];
+
+/** Every phase `llm_usage` can hold, plus the terminal node the pipeline adds. */
+const PHASE_NAMES = {
+  route: "路由", scenario_tools: "情境工具", answer: "作答", validate: "查核",
+  repair: "修補", embedding: "向量", facts: "記憶抽取", response: "已回覆",
+};
+
+const LIVE_POLL_MS = 2000;
+
+let activeTab = "overview";
+let livePoll = null;
+let inboxPick = null;
+const trace = { tier: "turn", caseId: null, turnId: null };
+
+const compact = (n) => {
+  const v = Number(n || 0);
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+  if (v >= 1000) return `${Math.round(v / 1000)}k`;
+  return String(Math.round(v));
+};
+
+/** Relative time in the units a caseworker actually reads a queue in. */
+function ago(iso) {
+  if (!iso) return "—";
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "剛剛";
+  if (s < 3600) return `${Math.floor(s / 60)} 分鐘前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小時前`;
+  if (s < 604800) return `${Math.floor(s / 86400)} 天前`;
+  return String(iso).slice(0, 10);
+}
+
+const ms = (v) => (v === null || v === undefined ? "—" : `${Math.round(v)}ms`);
+const usd = (v) => (v === null || v === undefined ? "—" : `$${Number(v).toFixed(4)}`);
+
+/**
+ * Read the console API under the desk token.
+ *
+ * The token is what separates these rows from the public page, exactly as it does on the
+ * desk socket — the inbox names every customer and the trace carries the prompt they
+ * appear in. An empty parameter is dropped rather than sent, so an unscoped read is a
+ * missing parameter the server refuses and not an empty string it might coerce.
+ */
+async function api(path, params = {}) {
+  const query = new URLSearchParams({ token: DESK_TOKEN });
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined && value !== "") query.set(key, value);
+  }
+  const r = await fetch(`/api/console${path}?${query}`);
+  if (!r.ok) throw new Error(`${path} 回應 ${r.status}`);
+  return r.json();
+}
+
+/** A failed read says so where the rows would have been, rather than leaving the last
+    tab's content on screen under a new heading. */
+function fail(el, err) {
+  el.innerHTML = `<div class="empty">讀取失敗：${esc(err.message)}</div>`;
+}
+
+const phaseColour = (phase) => `var(--ph-${phase}, var(--ink-3))`;
+const ticks = (phases) => `<span class="ticks">${(phases ?? []).map(p =>
+  `<i class="tick" style="background:${phaseColour(p)}" title="${esc(PHASE_NAMES[p] ?? p)}"></i>`).join("")}</span>`;
+
+$("tabList").innerHTML = TABS.map(([key, label, glyph]) =>
+  `<button class="tab" role="tab" data-tab="${key}" aria-current="${key === activeTab}">${icon(glyph)}${esc(label)}</button>`).join("");
+
+$("tabList").addEventListener("click", (e) => {
+  const button = e.target.closest("[data-tab]");
+  if (button) openTab(button.dataset.tab);
+});
+
+/**
+ * Show one tab and load what it renders.
+ *
+ * Only the visible tab fetches. Seven tabs each polling would put seven queries a second
+ * on a database serving a live conversation, and six of the answers would be thrown away
+ * unread.
+ */
+function openTab(key) {
+  activeTab = key;
+  for (const button of $("tabList").children) button.setAttribute("aria-current", String(button.dataset.tab === key));
+  for (const pane of document.querySelectorAll("[data-pane]")) pane.hidden = pane.dataset.pane !== key;
+  // The queue opens a case, and only the 總覽 pane renders one.
+  $("queueHead").hidden = key !== "overview";
+  $("queueList").hidden = key !== "overview";
+
+  clearInterval(livePoll);
+  livePoll = null;
+  LOAD[key]?.();
+  if (key === "flow") livePoll = setInterval(loadLive, LIVE_POLL_MS);
+}
+
+/** Reload whichever tab is open — used when the member finally exists. */
+function refreshActive() { LOAD[activeTab]?.(); }
+
+/* ── 聊天紀錄 ── */
+
+async function loadInbox() {
+  const box = $("inboxList");
+  try {
+    const data = await api("/inbox", { member: memberId ?? "" });
+    // The live customer to the top. A caseworker opens this tab while a conversation is
+    // running, and the running one must not be somewhere down a list of forty-six.
+    const rows = data.rows.slice().sort((a, b) =>
+      (b.member_id === data.member_id) - (a.member_id === data.member_id));
+    $("inboxCount").textContent = rows.length || "";
+    $("inboxNote").textContent = `此部署為展示用，列出全部 ${rows.length} 位保戶`;
+    box.innerHTML = rows.length ? rows.map(r => `
+      <div class="inbox-row ${r.member_id === data.member_id ? "pinned" : ""}" role="button" tabindex="0" data-member="${r.member_id}">
+        <span class="who">${esc(r.display_name)}</span>
+        <span class="when">${ago(r.last_at)}</span>
+        <span class="prev">${r.last_text ? esc(r.last_text) : "尚無訊息"}</span>
+        <span class="meta">${stagePill(r.stage)}${r.member_id === data.member_id ? PILLS.ok("目前對話") : ""}${
+          r.last_speaker === "customer" ? `<i class="unread" title="尚未回覆"></i>` : ""
+        }<span class="id">${r.messages ?? 0} 則</span></span>
+      </div>`).join("") : `<div class="empty">尚無對話</div>`;
+    openTranscript(inboxPick ?? data.member_id ?? rows[0]?.member_id ?? null);
+  } catch (err) { fail(box, err); }
+}
+
+async function openTranscript(id) {
+  if (id === null || id === undefined) return;
+  inboxPick = Number(id);
+  for (const row of $("inboxList").querySelectorAll("[data-member]")) {
+    row.setAttribute("aria-current", String(Number(row.dataset.member) === inboxPick));
+  }
+  const log = $("txLog");
+  try {
+    const data = await api("/transcript", { member: inboxPick });
+    $("txWho").textContent = data.display_name ? `${data.display_name} 的對話` : "對話內容";
+    $("txCount").textContent = data.messages.length || "";
+    log.innerHTML = data.messages.length ? data.messages.map(m => `
+      <div class="row ${esc(m.speaker)}">
+        <div class="bub">${esc(m.text)}</div>
+        <span class="at">${shortTime(m.created_at)}${m.turn_id ? ` · ${esc(m.turn_id)}` : ""}</span>
+      </div>`).join("") : `<div class="empty">這位保戶尚無訊息</div>`;
+  } catch (err) { fail(log, err); }
+}
+
+$("inboxList").addEventListener("click", (e) => {
+  const row = e.target.closest("[data-member]");
+  if (row) openTranscript(Number(row.dataset.member));
+});
+$("inboxList").addEventListener("keydown", (e) => {
+  const row = e.target.closest("[data-member]");
+  if (row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openTranscript(Number(row.dataset.member)); }
+});
+
+/* ── 客戶資料 ── */
+
+async function loadProfile() {
+  const box = $("profileKv");
+  if (memberId === null) {
+    box.innerHTML = `<dd class="empty" style="grid-column:1/-1">請先於右側完成建檔</dd>`;
+    $("profileNote").textContent = "尚未建檔";
+    return;
+  }
+  try {
+    const d = await api("/profile", { member: memberId });
+    const m = d.member;
+    const none = (v) => (v ? esc(v) : `<span class="none">—</span>`);
+    // Joined and defaulted exactly as the signed 要保書 renders it. A caseworker holding
+    // the document beside this screen must not be reading two spellings of one
+    // declaration, so the raw enum values stay raw on both.
+    const history = esc((m.medical_history ?? []).join("、")) || `<span class="none">無</span>`;
+    $("profileNote").textContent = `member_id ${m.member_id} · 建檔於 ${shortTime(m.created_at)}`;
+    box.innerHTML = `
+      <dt>姓名</dt><dd>${esc(m.display_name)}</dd>
+      <dt>身分證字號</dt><dd class="mono">${esc(m.national_id)}</dd>
+      <dt>性別</dt><dd>${m.sex === "male" ? "男" : "女"}</dd>
+      <dt>出生日期</dt><dd class="mono">${esc(m.birth_date)}</dd>
+      <dt>保險年齡</dt><dd>${m.insurance_age} 歲</dd>
+      <dt>職業</dt><dd>${esc(m.occupation)}（第 ${m.occupation_class} 類）</dd>
+      <dt>住址</dt><dd>${esc(`${m.address_city}${m.address_district}${m.address_rest}`)}</dd>
+      <dt>電話</dt><dd class="mono">${esc(m.phone)}</dd>
+      <dt>電子郵件</dt><dd class="mono">${esc(m.email)}</dd>
+      <dt>婚姻狀況</dt><dd>${esc(m.marital_status)}</dd>
+      <dt>收入級距</dt><dd>${esc(m.income_band)}</dd>
+      <dt>病史告知</dt><dd>${history}</dd>
+      <dt>受益人關係</dt><dd>${esc(m.beneficiary_relation)}</dd>
+      <dt>資料凍結</dt><dd class="mono">${none(shortTime(m.profile_frozen_at))}</dd>`;
+
+    $("profilePolicyCount").textContent = d.policies.length || "";
+    $("profilePolicies").innerHTML = d.policies.length ? d.policies.map(p => `
+      <tr class="${!p.lapsed_at ? "" : "lapsed"}">
+        <td class="pnum">${esc(p.policy_number)}</td>
+        <td>${esc(p.product_name)}${p.main_policy_number ? `<br><span class="rider">主約 ${esc(p.main_policy_number)}</span>` : ""}</td>
+        <td class="num">${money(p.sum_insured)}</td>
+        <td class="num">${money(p.annual_premium)}</td>
+        <td class="mono">${esc(p.effective_at)}</td>
+      </tr>`).join("") : `<tr><td colspan="5" class="empty">尚無保單</td></tr>`;
+
+    $("factCount").textContent = d.facts.length || "";
+    $("profileFacts").innerHTML = d.facts.length ? d.facts.map(f => `
+      <div class="fact">
+        <span class="cat">${esc(f.category)}</span>
+        <span><span class="k">${esc(f.key)}</span> <span class="v">${esc(f.value)}</span></span>
+        <span class="at">${ago(f.updated_at)}</span>
+      </div>`).join("") : `<div class="empty">這位保戶尚未抽出任何 member_fact</div>`;
+
+    const withSummary = d.cases.filter(c => c.summary);
+    $("summaryCount").textContent = `${withSummary.length}/${d.cases.length}`;
+    $("profileSummaries").innerHTML = d.cases.length ? d.cases.map(c => `
+      <div style="padding:7px 0;border-bottom:1px solid var(--rule-soft)">
+        <div class="meta" style="display:flex;gap:6px;align-items:center;margin-bottom:3px">
+          ${stagePill(c.stage)}<span class="count">#${c.case_id} · v${c.case_version} · ${esc(c.kind)}</span>
+        </div>
+        <div class="summary">${c.summary ? esc(c.summary) : `<span class="none">尚未產生摘要</span>`}</div>
+      </div>`).join("") : `<div class="empty">尚無案件</div>`;
+  } catch (err) { fail(box, err); }
+}
+
+/* ── LLM 追蹤 ── */
+
+const TIER_NAMES = { conversation: "對話", turn: "回合", call: "呼叫" };
+
+$("phaseLegend").innerHTML = Object.entries(PHASE_NAMES).map(([key, label]) =>
+  `<span><i style="background:${phaseColour(key)}"></i>${esc(label)}</span>`).join("");
+
+$("tierPick").addEventListener("click", (e) => {
+  const button = e.target.closest("[data-tier]");
+  if (!button) return;
+  trace.tier = button.dataset.tier;
+  loadTrace();
+});
+
+$("traceClear").onclick = () => { trace.caseId = null; trace.turnId = null; loadTrace(); };
+
+async function loadTrace() {
+  for (const button of $("tierPick").children) button.setAttribute("aria-pressed", String(button.dataset.tier === trace.tier));
+  const body = $("traceBody");
+  $("traceTitle").textContent = TIER_NAMES[trace.tier] ?? trace.tier;
+  $("traceClear").hidden = trace.caseId === null && trace.turnId === null;
+  try {
+    const data = await api("/llm", { tier: trace.tier, case_id: trace.caseId ?? "", turn_id: trace.turnId ?? "" });
+    $("traceCount").textContent = data.rows.length || "";
+    // One column set per tier, declared beside the row that fills it: a shared header
+    // with per-tier holes reads as a table missing data rather than three tables.
+    if (data.tier === "conversation") {
+      $("traceHead").innerHTML = `<tr><th style="width:74px">案件</th><th>保戶</th>
+        <th style="width:58px" class="num">回合</th><th style="width:58px" class="num">呼叫</th>
+        <th style="width:84px" class="num">prompt</th><th style="width:84px" class="num">cached</th>
+        <th style="width:88px" class="num">總 token</th><th style="width:96px">最後活動</th></tr>`;
+      body.innerHTML = data.rows.length ? data.rows.map(r => `
+        <tr class="pick" data-case="${r.case_id ?? ""}">
+          <td class="mono">#${r.case_id ?? "—"}</td><td>${esc(r.display_name ?? "—")}</td>
+          <td class="num">${r.turns}</td><td class="num">${r.calls}</td>
+          <td class="num">${money(r.prompt_tokens)}</td><td class="num">${money(r.cached_tokens)}</td>
+          <td class="num">${money(r.total_tokens)}</td><td class="mono">${ago(r.last_at)}</td>
+        </tr>`).join("") : `<tr><td colspan="8" class="empty">尚無紀錄</td></tr>`;
+    } else if (data.tier === "call") {
+      $("traceHead").innerHTML = `<tr><th style="width:56px">id</th><th style="width:88px">階段</th>
+        <th>情境</th><th>保戶</th><th style="width:110px">模型</th>
+        <th style="width:80px" class="num">prompt</th><th style="width:80px" class="num">cached</th>
+        <th style="width:84px" class="num">總 token</th><th style="width:70px" class="num">延遲</th>
+        <th style="width:136px">時間</th></tr>`;
+      body.innerHTML = data.rows.length ? data.rows.map(r => `
+        <tr class="pick" data-call="${r.id}">
+          <td class="mono">${r.id}</td>
+          <td class="tight"><span class="ticks"><i class="tick" style="background:${phaseColour(r.phase)}"></i></span> ${esc(PHASE_NAMES[r.phase] ?? r.phase)}</td>
+          <td>${r.scenario ? esc(r.scenario) : `<span class="none">—</span>`}</td>
+          <td>${esc(r.display_name ?? "—")}</td><td class="mono">${esc(r.model)}</td>
+          <td class="num">${money(r.prompt_tokens)}</td><td class="num">${money(r.cached_tokens)}</td>
+          <td class="num">${money(r.total_tokens)}</td><td class="num mono">${ms(r.latency_ms)}</td>
+          <td class="mono">${shortTime(r.created_at)}</td>
+        </tr>`).join("") : `<tr><td colspan="10" class="empty">尚無紀錄</td></tr>`;
+    } else {
+      $("traceHead").innerHTML = `<tr><th style="width:126px">turn_id</th><th>保戶</th><th style="width:120px">情境</th>
+        <th style="width:104px">階段鏈</th><th style="width:54px" class="num">呼叫</th>
+        <th style="width:88px" class="num">總 token</th><th style="width:70px" class="num">延遲</th>
+        <th style="width:136px">時間</th></tr>`;
+      body.innerHTML = data.rows.length ? data.rows.map(r => `
+        <tr class="pick" data-turn="${esc(r.turn_id)}">
+          <td class="mono">${esc(r.turn_id)}</td><td>${esc(r.display_name ?? "—")}</td>
+          <td>${r.scenario ? esc(r.scenario) : `<span class="none">未歸屬</span>`}</td>
+          <td>${ticks(r.phases)}</td><td class="num">${r.calls}</td>
+          <td class="num">${money(r.total_tokens)}</td><td class="num mono">${ms(r.latency_ms)}</td>
+          <td class="mono">${shortTime(r.started_at)}</td>
+        </tr>`).join("") : `<tr><td colspan="8" class="empty">尚無紀錄</td></tr>`;
+    }
+  } catch (err) { fail(body, err); }
+}
+
+// A row drills down one tier, and a call row opens the body. Delegated, because the
+// table is replaced whole on every tier change.
+$("traceBody").addEventListener("click", (e) => {
+  const row = e.target.closest("tr[data-case], tr[data-turn], tr[data-call]");
+  if (!row) return;
+  if (row.dataset.call) { openCall(Number(row.dataset.call)); return; }
+  if (row.dataset.turn) { trace.turnId = row.dataset.turn; trace.tier = "call"; }
+  else { trace.caseId = Number(row.dataset.case); trace.turnId = null; trace.tier = "turn"; }
+  loadTrace();
+});
+
+async function openCall(id) {
+  const card = $("callCard");
+  card.hidden = false;
+  try {
+    const c = await api(`/llm/call/${id}`);
+    $("callId").textContent = `#${c.id}`;
+    $("callKv").innerHTML = `
+      <dt>階段</dt><dd><span class="ticks"><i class="tick" style="background:${phaseColour(c.phase)}"></i></span> ${esc(PHASE_NAMES[c.phase] ?? c.phase)}</dd>
+      <dt>情境</dt><dd>${c.scenario ? esc(c.scenario) : `<span class="none">未歸屬</span>`}</dd>
+      <dt>供應商</dt><dd>${esc(c.provider)}</dd>
+      <dt>模型</dt><dd class="mono">${esc(c.model)}</dd>
+      <dt>保戶</dt><dd>${esc(c.display_name ?? "—")}</dd>
+      <dt>turn_id</dt><dd class="mono">${c.turn_id ? esc(c.turn_id) : `<span class="none">—</span>`}</dd>
+      <dt>工具</dt><dd>${(c.tool_names ?? []).length ? esc(c.tool_names.join("、")) : `<span class="none">—</span>`}</dd>
+      <dt>prompt</dt><dd>${money(c.prompt_tokens)}</dd>
+      <dt>completion</dt><dd>${money(c.completion_tokens)}</dd>
+      <dt>cached</dt><dd>${money(c.cached_tokens)}</dd>
+      <dt>總 token</dt><dd>${money(c.total_tokens)}</dd>
+      <dt>延遲</dt><dd class="mono">${ms(c.latency_ms)}</dd>
+      <dt>成本</dt><dd class="mono">${usd(c.cost_usd)}</dd>
+      <dt>時間</dt><dd class="mono">${shortTime(c.created_at)}</dd>`;
+    $("callRequest").textContent = c.request === null ? "（未記錄）" : JSON.stringify(c.request, null, 2);
+    $("callResponse").textContent = c.response === null ? "（未記錄）" : JSON.stringify(c.response, null, 2);
+    card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (err) { fail($("callKv"), err); }
+}
+
+/* ── 即時流程圖 ── */
+
+async function loadLive() {
+  const canvas = $("flowCanvas");
+  try {
+    const data = await api("/live");
+    const running = data.turns.filter(t => !t.settled);
+    $("flowCount").textContent = `進行中 ${running.length} · 顯示 ${data.turns.length}`;
+    $("flowNote").textContent = `每 ${LIVE_POLL_MS / 1000} 秒輪詢 /api/console/live · 超過 ${data.idle_after_s} 秒未寫入即視為已回覆`;
+    canvas.innerHTML = data.nodes.map((node, i) => {
+      const cards = data.turns.filter(t => t.node === node);
+      return `<div class="node ${cards.some(t => !t.settled) ? "hot" : ""}">
+          <span class="cap"><i style="background:${phaseColour(node)}"></i>${esc(PHASE_NAMES[node] ?? node)}</span>
+          <div class="bay">${cards.map(t => `
+            <div class="turncard ${t.settled ? "settled" : ""}" style="border-left-color:${phaseColour(t.phase)}">
+              <b>${esc(t.display_name ?? "—")}</b>
+              <span>${esc(t.turn_id)}</span>
+              <span>${t.scenario ? esc(t.scenario) : "未歸屬"} · ${money(t.total_tokens)} tok</span>
+              <span>${ago(t.last_at)}</span>
+            </div>`).join("") || `<div class="empty" style="padding:var(--s2)">—</div>`}</div>
+        </div>${i < data.nodes.length - 1 ? `<span class="arrow">→</span>` : ""}`;
+    }).join("");
+  } catch (err) { fail(canvas, err); }
+}
+
+/* ── 各情境 token 消耗 ── */
+
+async function loadTokens() {
+  const body = $("tokenBody");
+  try {
+    const data = await api("/scenarios");
+    const rows = data.rows;
+    const top = Math.max(1, ...rows.map(r => Number(r.total_tokens || 0)));
+    const sum = (key) => rows.reduce((t, r) => t + Number(r[key] || 0), 0);
+    $("tkCalls").innerHTML = `${money(sum("calls"))}<small>次</small>`;
+    $("tkTotal").innerHTML = `${money(sum("total_tokens"))}<small>tok</small>`;
+    $("tkCached").innerHTML = `${money(sum("cached_tokens"))}<small>tok</small>`;
+    $("tkScenarios").innerHTML = `${rows.filter(r => r.scenario).length}<small>個</small>`;
+    $("tokenCount").textContent = rows.length || "";
+    body.innerHTML = rows.length ? rows.map(r => `
+      <tr>
+        <td>${r.scenario
+          ? esc(r.scenario)
+          // route runs before a scenario exists and the offline sweep answers no
+          // message, so both land with scenario NULL. Shown as its own row: these are
+          // most of the bill, and dropping them under-counts every other line.
+          : `<span class="pill wait">${icon("alert")}（路由，未歸屬情境）</span>
+             <br><span class="count">${esc((r.phases ?? []).map(p => PHASE_NAMES[p] ?? p).join(" · "))}</span>`}</td>
+        <td class="num">${money(r.calls)}</td>
+        <td class="num">${money(r.prompt_tokens)}</td>
+        <td class="num">${money(r.completion_tokens)}</td>
+        <td class="num">${money(r.cached_tokens)}</td>
+        <td class="num"><div class="bar-cell">
+          <span>${money(r.total_tokens)}</span>
+          <span class="track"><i style="width:${(100 * Number(r.total_tokens || 0) / top).toFixed(1)}%"></i></span>
+        </div></td>
+        <td class="num mono tight">${r.p50_ms === null ? "—" : Math.round(r.p50_ms)} / ${ms(r.p95_ms)}</td>
+        <td class="num mono">${usd(r.cost_usd)}</td>
+      </tr>`).join("") : `<tr><td colspan="8" class="empty">尚無紀錄</td></tr>`;
+  } catch (err) { fail(body, err); }
+}
+
+/* ── LLM Dashboard ── */
+
+/**
+ * The fortnight as one chart: token bars, call count as a line over them.
+ *
+ * Hand-rolled into a fixed 720×230 viewBox and scaled to the card, like every other
+ * graphic on this page. Two series on one plot because the question is whether the token
+ * bill tracks the traffic — read off two charts side by side, that is the reader's job.
+ */
+function drawChart(days) {
+  const W = 720, H = 230, L = 54, R = 18, T = 14, B = 30;
+  const iw = W - L - R, ih = H - T - B;
+  const topTokens = Math.max(1, ...days.map(d => Number(d.total_tokens || 0)));
+  const topCalls = Math.max(1, ...days.map(d => Number(d.calls || 0)));
+  const bw = iw / Math.max(1, days.length);
+  const x = (i) => L + i * bw + bw / 2;
+  const yCall = (d) => T + ih - ih * Number(d.calls || 0) / topCalls;
+  const parts = [];
+
+  for (let i = 0; i <= 4; i++) {
+    const y = T + ih - (ih * i) / 4;
+    parts.push(`<line class="rule-line" x1="${L}" y1="${y.toFixed(1)}" x2="${W - R}" y2="${y.toFixed(1)}"/>`);
+    parts.push(`<text x="${L - 7}" y="${(y + 3).toFixed(1)}" text-anchor="end">${compact((topTokens * i) / 4)}</text>`);
+  }
+  days.forEach((d, i) => {
+    const h = (ih * Number(d.total_tokens || 0)) / topTokens;
+    parts.push(`<rect class="bar" x="${(L + i * bw + bw * 0.22).toFixed(1)}" y="${(T + ih - h).toFixed(1)}"
+      width="${(bw * 0.56).toFixed(1)}" height="${Math.max(0, h).toFixed(1)}" rx="2"><title>${esc(d.day)} · ${money(d.total_tokens)} token</title></rect>`);
+    parts.push(`<text x="${x(i).toFixed(1)}" y="${H - 10}" text-anchor="middle">${esc(String(d.day).slice(5))}</text>`);
+  });
+  parts.push(`<polyline class="line" points="${days.map((d, i) => `${x(i).toFixed(1)},${yCall(d).toFixed(1)}`).join(" ")}"/>`);
+  days.forEach((d, i) => parts.push(
+    `<circle class="dot" cx="${x(i).toFixed(1)}" cy="${yCall(d).toFixed(1)}" r="2.5"><title>${esc(d.day)} · ${d.calls} 次呼叫</title></circle>`));
+  $("dashChart").innerHTML = parts.join("");
+}
+
+function mix(rows, label, value) {
+  const top = Math.max(1, ...rows.map(r => Number(value(r) || 0)));
+  return rows.length ? rows.map(r => `
+    <div class="m">
+      <span>${label(r)}</span>
+      <span class="track"><i style="width:${(100 * Number(value(r) || 0) / top).toFixed(1)}%"></i></span>
+      <span class="n">${money(value(r))}</span>
+    </div>`).join("") : `<div class="empty">尚無紀錄</div>`;
+}
+
+async function loadDash() {
+  const box = $("dashModels");
+  try {
+    const d = await api("/dashboard");
+    const t = d.totals;
+    // compact() on the token figures, not money(): five KPI tiles share the pane the
+    // chat leaves, and a seven-digit group wrapped the unit onto a third line.
+    $("dbToday").innerHTML = `${money(t.calls_today)}<small>次 · ${compact(t.tokens_today)} tok</small>`;
+    $("dbCalls").innerHTML = `${money(t.calls)}<small>次</small>`;
+    $("dbTokens").innerHTML = `${compact(t.total_tokens)}<small>tok</small>`;
+    $("dbTurns").innerHTML = `${money(t.turns)}<small>/ ${money(t.cases)}</small>`;
+    $("dbLatency").innerHTML = `${ms(t.p50_ms)}<small>/ ${ms(t.p95_ms)}</small>`;
+    $("dashNote").textContent = `${shortTime(t.first_at)} 起 · 最後一筆 ${ago(t.last_at)}`;
+
+    drawChart(d.days);
+
+    $("modelCount").textContent = d.models.length || "";
+    // A call that never reached a model has an empty `model`, and an unlabelled row in a
+    // mix reads as a rendering fault rather than as the failed call it records.
+    box.innerHTML = mix(d.models,
+      r => `${r.model ? esc(r.model) : `<span class="none">（未回報模型）</span>`}<br><span class="n">${esc(r.provider)}</span>`,
+      r => r.total_tokens);
+    $("phaseCount").textContent = d.phases.length || "";
+    $("dashPhases").innerHTML = mix(d.phases,
+      r => `<span class="ticks"><i class="tick" style="background:${phaseColour(r.phase)}"></i></span> ${esc(PHASE_NAMES[r.phase] ?? r.phase)}`,
+      r => r.total_tokens);
+
+    // cached/prompt, not cached/total: a cache hit spares the prompt, and completion
+    // tokens are generated fresh every time — including them makes a working cache look
+    // half as effective as it is.
+    const rate = Number(t.prompt_tokens) ? Number(t.cached_tokens) / Number(t.prompt_tokens) : 0;
+    $("cacheRate").textContent = `${(rate * 100).toFixed(1)}%`;
+    $("cacheBar").style.width = `${(rate * 100).toFixed(1)}%`;
+    $("cacheNote").textContent = `${money(t.cached_tokens)} / ${money(t.prompt_tokens)} prompt token 命中快取`;
+  } catch (err) { fail(box, err); }
+}
+
+const LOAD = {
+  overview: () => {},
+  inbox: loadInbox,
+  profile: loadProfile,
+  trace: loadTrace,
+  flow: loadLive,
+  tokens: loadTokens,
+  dash: loadDash,
+};
+
+for (const button of document.querySelectorAll("[data-reload]")) {
+  button.onclick = () => LOAD[button.dataset.reload]?.();
+}
 </script>
 </body>
 </html>

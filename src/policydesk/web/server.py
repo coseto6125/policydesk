@@ -34,10 +34,13 @@ from policydesk.core import commands as cmd
 from policydesk.core.db import Database
 from policydesk.gov.identity import Sex, verify
 from policydesk.llm.provider import build_provider
+from policydesk.retrieval.base import HybridRetriever
 from policydesk.retrieval.index import open_index
+from policydesk.retrieval.vectors import open_vectors
 from policydesk.synthetic.alias import mint
 from policydesk.synthetic.person import generate, insurance_age, occupation_catalogue
 from policydesk.synthetic.portfolio import DEFAULT_PRESET, enrol, preset_catalogue
+from policydesk.web.console import console
 from policydesk.web.highlight import page_count, page_image
 from policydesk.web.session import Registry
 
@@ -88,6 +91,10 @@ here so a figure quoted in the chat can be checked against the page it came from
 app = Sanic("policydesk")
 app.ctx.registry = Registry()
 app.ctx.desk_sockets = set()
+# The back office's seven tabs, read-only, under /api/console. Registered here rather
+# than imported at the top of `console` because that module reads DESK_TOKEN from this
+# one, and the read is deferred to request time for the same reason.
+app.blueprint(console)
 
 
 @app.before_server_start
@@ -106,7 +113,12 @@ async def _open_db(application: Sanic, _loop) -> None:
     application.ctx.sweep = asyncio.create_task(memory.sweep_loop(application.ctx.db, application.ctx.provider))
     # Opened once. A directory walk and an analyzer registration do not belong on the
     # path a customer is waiting on, and the first build takes twenty seconds.
-    application.ctx.clauses = await open_index(application.ctx.db)
+    lexical, semantic = await asyncio.gather(
+        open_index(application.ctx.db), open_vectors(application.ctx.db)
+    )
+    channels = [r for r in (lexical, semantic) if r is not None]
+    application.ctx.clauses = HybridRetriever(channels) if channels else None
+    logger.info("retrieval_ready", channels=[r.name for r in channels])
     if not os.environ.get("POLICYDESK_DESK_TOKEN"):
         logger.warning("desk_token_generated", token=DESK_TOKEN, hint="set POLICYDESK_DESK_TOKEN to fix it across restarts")
 
