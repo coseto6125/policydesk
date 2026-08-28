@@ -19,6 +19,7 @@ Every model call is written to `llm_usage` with its phase, turn, tokens and late
 which is what makes the trace view a record rather than a diagram.
 """
 
+import asyncio
 import re
 import time
 from datetime import UTC, date, datetime
@@ -153,20 +154,30 @@ async def _gather(db: Database, scenario: Scenario, turn: Turn, *, today: date) 
         Everything the tools returned, by tool name.
 
     """
+    # list_policies first, because everything else needs its product_ids.
     policies = await tools.list_policies(db, turn.member_id, today=today)
     product_ids = [p["product_id"] for p in policies]
     facts: dict[str, Any] = {"list_policies": policies}
 
+    # The rest depend on product_ids and member_id, not on each other, so they go out
+    # together rather than one round trip at a time. Two or three queries per turn on a
+    # local database is a few milliseconds; against a networked one it is a full round
+    # trip each, on the path a customer is waiting on.
+    pending: dict[str, Any] = {"_allowed_clauses": tools.clause_ids_for(db, product_ids)}
     if "find_clause" in scenario.tools:
-        facts["find_clause"] = await tools.find_clause(db, product_ids, "住院")
+        pending["find_clause"] = tools.find_clause(db, product_ids, "住院")
     if "find_multiplier" in scenario.tools:
-        facts["find_multiplier"] = await tools.find_multiplier(db, product_ids, turn.procedure_hint)
+        pending["find_multiplier"] = tools.find_multiplier(db, product_ids, turn.procedure_hint)
     if "required_documents" in scenario.tools:
-        facts["required_documents"] = await tools.required_documents(db, product_ids)
+        pending["required_documents"] = tools.required_documents(db, product_ids)
     if "billing_summary" in scenario.tools:
-        facts["billing_summary"] = await tools.billing_summary(db, turn.member_id, today=today)
+        pending["billing_summary"] = tools.billing_summary(db, turn.member_id, today=today)
     if "coverage_summary" in scenario.tools:
-        facts["coverage_summary"] = await tools.coverage_summary(db, turn.member_id, today=today)
+        pending["coverage_summary"] = tools.coverage_summary(db, turn.member_id, today=today)
+
+    results = await asyncio.gather(*pending.values())
+    facts.update(dict(zip(pending, results, strict=True)))
+
     if "suitable_products" in scenario.tools:
         member = await db.fetch_one(
             "SELECT birth_date, occupation_class FROM member WHERE member_id = $1::bigint", [turn.member_id]
@@ -177,7 +188,6 @@ async def _gather(db: Database, scenario: Scenario, turn: Turn, *, today: date) 
                 db, insurance_age=age, occupation_class=member["occupation_class"], budget=30000
             )
 
-    facts["_allowed_clauses"] = await tools.clause_ids_for(db, product_ids)
     return facts
 
 

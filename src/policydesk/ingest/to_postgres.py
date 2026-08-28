@@ -21,6 +21,8 @@ from decimal import Decimal
 from hashlib import blake2b
 from typing import TYPE_CHECKING
 
+from msgspec import json
+
 from policydesk.bootloader import logger
 
 if TYPE_CHECKING:
@@ -122,8 +124,11 @@ async def copy_corpus(sqlite_path: Path, db: Database) -> tuple[int, int]:
             r["heading"],
             r["verbatim"],
             r["page"],
-            # SQLite held this as a JSON string; Postgres wants a real array.
-            [c for c in (r["overrides"] or "[]").strip("[]").replace('"', "").split(",") if c],
+            # SQLite held this as a JSON string; Postgres wants a real array. Decoded
+            # with the reader that wrote it — hand-splitting on commas and stripping
+            # quotes happens to work only while every clause id is comma-free, and the
+            # id format is not this module's to guarantee.
+            json.decode(r["overrides"] or "[]", type=list[str]),
         )
         for r in src.execute("SELECT * FROM clause")
     ]
