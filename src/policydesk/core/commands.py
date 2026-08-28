@@ -478,7 +478,7 @@ async def snapshot(db: Database, case_id: int) -> dict | None:
     # sentence pointed at a panel the back office did not have — the figure it quoted
     # was true and there was nowhere to check it.
     case["policies"] = await db.fetch(
-        """SELECT po.policy_id, po.policy_number, po.sum_insured, po.effective_at, po.lapsed_at,
+        """SELECT po.policy_id, po.policy_number, po.product_id, po.sum_insured, po.effective_at, po.lapsed_at,
                   po.main_policy_ref, pr.name AS product_name, pr.line,
                   round(coalesce(ce.unit_premium, 0) * po.sum_insured / 1000.0) AS annual_premium
            FROM policy po

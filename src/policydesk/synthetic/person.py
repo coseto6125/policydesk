@@ -66,6 +66,28 @@ class OccupationClass(IntEnum):
     UNINSURABLE = 7
     """拒保職業：高壓電力工程、核廢料處理、潛水人員、特種軍人。"""
 
+    @property
+    def label(self) -> str:
+        """
+        Name the class the way a policy schedule names it.
+
+        Returns:
+            The Chinese label a customer would recognise from a rate table.
+
+        """
+        return _CLASS_LABELS[self]
+
+
+_CLASS_LABELS: dict[OccupationClass, str] = {
+    OccupationClass.CLERICAL: "第 1 類 · 內勤文書",
+    OccupationClass.LIGHT_MANUAL: "第 2 類 · 輕度勞動",
+    OccupationClass.SKILLED_MANUAL: "第 3 類 · 技術勞動",
+    OccupationClass.HEAVY_MANUAL: "第 4 類 · 重度勞動",
+    OccupationClass.HAZARDOUS: "第 5 類 · 高度危險作業",
+    OccupationClass.HIGH_HAZARD: "第 6 類 · 極高危險作業",
+    OccupationClass.UNINSURABLE: "拒保職業",
+}
+
 
 _OCCUPATIONS: dict[OccupationClass, tuple[str, ...]] = {
     OccupationClass.CLERICAL: ("行政人員", "會計師", "小學教師", "平面設計師", "家庭主婦", "門市店員", "護理師"),
@@ -76,6 +98,30 @@ _OCCUPATIONS: dict[OccupationClass, tuple[str, ...]] = {
     OccupationClass.HIGH_HAZARD: ("遠洋漁船船員", "爆破作業員"),
     OccupationClass.UNINSURABLE: ("高壓電力設施維修員", "核廢料處理人員", "商業潛水員"),
 }
+
+
+OCCUPATION_CLASS: dict[str, OccupationClass] = {
+    occupation: cls for cls, names in _OCCUPATIONS.items() for occupation in names
+}
+"""Every occupation the desk offers, and the class it carries. The class is looked up
+here rather than accepted from the caller: 職業等級 decides what can be sold, so a
+client that could name its own class could sell itself a product it is barred from."""
+
+
+def occupation_catalogue() -> list[dict[str, object]]:
+    """
+    List the occupations a visitor may pick, with their classes.
+
+    Returns:
+        One entry per occupation, ordered by class then name, so a picker can group
+        them without knowing the taxonomy.
+
+    """
+    return [
+        {"occupation": occupation, "occupation_class": int(cls), "label": cls.label}
+        for cls, names in sorted(_OCCUPATIONS.items())
+        for occupation in names
+    ]
 
 
 class MaritalStatus(StrEnum):
@@ -356,26 +402,42 @@ def _pick_history(rng: random.Random, insurance_age: int) -> tuple[MedicalHistor
     return tuple(rng.sample(pool, k=rng.choice([1, 1, 1, 2])))
 
 
-def generate(name: str, serial: int, *, today: date | None = None, valid_id: bool = True) -> Person:
+def generate(
+    name: str,
+    serial: int,
+    *,
+    today: date | None = None,
+    valid_id: bool = True,
+    sex: Sex | None = None,
+    age: int | None = None,
+    occupation: str | None = None,
+) -> Person:
     """
     Build the applicant behind a display name.
 
     Args:
-        name: The display name the visitor typed.
+        name: The display name the visitor holds.
         serial: Position in the demo's ID series, which keeps national IDs distinct.
         today: The date to age against, for tests.
         valid_id: False mints an ID whose checksum fails, so the identity mock's
             rejection path runs on stage instead of sitting as dead code.
+        sex: Overrides the drawn sex. It also decides the national ID's gender digit,
+            so it has to be settled before the number is issued, not patched after.
+        age: Overrides the drawn age, clamped to the insurable 18–85 band.
+        occupation: Overrides the drawn occupation. Its class is looked up rather than
+            supplied, because 職業等級 decides what can be sold.
 
     Returns:
-        The applicant. The same name always returns the same one.
+        The applicant. The same name and the same choices always return the same one.
 
     """
     rng = rng_for(name, _SEED_SALT)
     today = today or datetime.now(UTC).date()
 
-    sex = rng.choice([Sex.MALE, Sex.FEMALE])
-    age = rng.randint(18, 85)
+    drawn_sex = rng.choice([Sex.MALE, Sex.FEMALE])
+    drawn_age = rng.randint(18, 85)
+    sex = sex if sex is not None else drawn_sex
+    age = min(85, max(18, age)) if age is not None else drawn_age
     month, day = rng.randint(1, 12), rng.randint(1, 28)
     # Subtracting the age from this year gives that age only once the birthday has
     # passed. A December birthday drawn in August lands a year short, which is how an
@@ -389,7 +451,10 @@ def generate(name: str, serial: int, *, today: date | None = None, valid_id: boo
         # well-formed, so the refusal is a checksum refusal and not a shape complaint.
         national_id = national_id[:-1] + str((int(national_id[-1]) + 1) % 10)
 
-    occupation, occupation_class = _pick_occupation(rng, allow_uninsurable=True)
+    drawn_occupation, drawn_class = _pick_occupation(rng, allow_uninsurable=True)
+    chosen_class = OCCUPATION_CLASS.get(occupation or "")
+    occupation = occupation if chosen_class is not None else drawn_occupation
+    occupation_class = chosen_class if chosen_class is not None else drawn_class
     rng.choice(_GIVEN_MALE if sex is Sex.MALE else _GIVEN_FEMALE)
 
     person = Person(

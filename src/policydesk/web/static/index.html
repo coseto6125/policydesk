@@ -255,6 +255,12 @@
   .pnum { font-family: var(--mono); font-size: 11.5px; letter-spacing: .01em; white-space: nowrap; }
   .lapsed { color: var(--ink-3); }
   .lapsed .pname { text-decoration: line-through; text-decoration-color: var(--ink-3); }
+  /* The contract behind the policy, one click away. A figure quoted in the chat is
+     checkable against the page it came from, which is what separates a citation from
+     a claim. */
+  a.pname { color: inherit; text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 3px; }
+  a.pname:hover { color: var(--accent); text-decoration-color: var(--accent); }
+  .lapsed a.pname { color: var(--ink-3); }
   .rider { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; color: var(--ink-3); }
   .rider::before { content: "↳"; }
 
@@ -412,6 +418,54 @@
   @keyframes blip { 0%, 60%, 100% { opacity: .25; } 30% { opacity: 1; } }
   .chat-in { display: flex; gap: 6px; padding: var(--s2); background: var(--paper); border-top: 1px solid var(--rule); }
   .chat-in input { flex: 1; min-width: 0; border-radius: 18px; padding: 9px 14px; font-size: 13.5px; }
+
+  /* ── the enrolment card, and the chips under a reply ── */
+  .setup {
+    align-self: stretch; background: var(--paper); color: var(--ink);
+    border-radius: 14px; padding: var(--s3) var(--s4) var(--s4); box-shadow: var(--shadow-1);
+    display: grid; gap: var(--s3);
+  }
+  .setup h4 { margin: 0; font-size: 13.5px; font-weight: 600; }
+  .setup p { margin: 0; font-size: 12px; color: var(--ink-2); line-height: 1.7; }
+  .field { display: grid; gap: 5px; }
+  .field > .label { font-size: 10.5px; }
+
+  .segment { display: flex; gap: 6px; }
+  .segment button {
+    flex: 1; justify-content: center; padding: 8px;
+    background: var(--paper-2); border-color: var(--rule);
+  }
+  .segment button[aria-pressed="true"] {
+    background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600;
+  }
+
+  /* A combobox: type to narrow, or scroll the list. The occupation set is 27 long and
+     grouped by 職業等級, which is the number that decides what can be sold. */
+  .combo { position: relative; }
+  .combo input { width: 100%; }
+  .combo-list {
+    position: absolute; inset: calc(100% + 4px) 0 auto 0; z-index: 20;
+    max-height: 216px; overflow-y: auto;
+    background: var(--paper); border: 1px solid var(--rule); border-radius: 6px;
+    box-shadow: var(--shadow-2);
+  }
+  .combo-group {
+    padding: 6px var(--s3) 3px; font-size: 10px; letter-spacing: .1em;
+    color: var(--ink-3); font-weight: 700; background: var(--paper-2);
+    position: sticky; top: 0;
+  }
+  .combo-item { padding: 7px var(--s3); font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; gap: var(--s2); }
+  .combo-item:hover, .combo-item[aria-selected="true"] { background: var(--accent-wash); }
+  .combo-item .cls { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+  .combo-item.none { color: var(--ink-3); cursor: default; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; align-self: flex-start; max-width: 92%; }
+  .chip {
+    background: var(--paper); color: var(--accent); border: 1px solid var(--accent);
+    border-radius: 999px; padding: 6px 13px; font-size: 12.5px; cursor: pointer;
+    box-shadow: var(--shadow-1);
+  }
+  .chip:hover { background: var(--accent-wash); }
 
   /* ═══════════════ gate + modal ═══════════════ */
 
@@ -612,11 +666,16 @@
 <div class="gate" id="gate">
   <div class="card">
     <div class="body">
-      <h3>請輸入您的姓名</h3>
-      <p>姓名即帳號。同名再次登入會將前一位登出，示範期間請使用不易重名的名稱。年齡與性別於建檔時隨機給定，送出第一則訊息前可修改。</p>
-      <label for="nameInput" class="label">姓名</label>
-      <input id="nameInput" placeholder="例如：陳彥廷" autocomplete="off">
+      <h3>已為您產生匿名代號</h3>
+      <p>代號即帳號，由系統產生，不會與其他人重複。進入後由您自己選擇性別、年齡與職業，
+         這三項決定您能投保哪些商品，所以不由系統代填。</p>
+      <label for="nameInput" class="label">代號</label>
+      <div style="display:flex;gap:6px">
+        <input id="nameInput" autocomplete="off" readonly style="flex:1;font-size:16px;letter-spacing:.08em">
+        <button id="rerollBtn" title="換一個代號">換一個</button>
+      </div>
       <button class="primary" id="enterBtn">進入</button>
+      <button class="ghost" id="ownNameBtn" style="width:100%;justify-content:center;margin-top:2px;font-size:12px">我要自己輸入代號</button>
     </div>
   </div>
 </div>
@@ -634,7 +693,10 @@ const STAGES = [
 ];
 const STAGE_NAMES = Object.fromEntries(STAGES.concat([["approved","已核准"],["rejected","已退件"]]));
 const DESK_TOKEN = "__DESK_TOKEN__";
-let caseId = null, customerWs = null, deskWs = null, pending = null;
+let caseId = null, customerWs = null, deskWs = null, pending = null, memberId = null;
+
+/** Openers for a visitor who does not yet know what to ask. Questions, like every chip. */
+const OPENERS = ["我想了解目前的保單保什麼", "想確認一年繳多少保費", "理賠要準備哪些文件？", "我想了解有沒有適合的方案"];
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -775,7 +837,7 @@ function renderPolicies(policies, c) {
     const orphan = p.main_policy_ref && !numbers.has(p.main_policy_ref);
     return `<tr class="${live(p) ? "" : "lapsed"}">
       <td class="pnum">${esc(p.policy_number)}</td>
-      <td><span class="pname">${esc(p.product_name)}</span>${
+      <td><a class="pname" href="/contract/${encodeURIComponent(p.product_id)}?token=${encodeURIComponent(DESK_TOKEN)}&member=${memberId}" target="_blank" title="開啟這張保單的契約條款">${esc(p.product_name)}</a>${
         p.main_policy_ref
           ? `<br><span class="rider">主約 ${esc(p.main_policy_ref)}${orphan ? "（查無主約）" : ""}</span>`
           : ""}</td>
@@ -827,6 +889,108 @@ function setLink(state, text) {
   $("deskStatus").textContent = text;
 }
 
+/** A chip is a question, never a purchase. See renderChips. */
+function renderChips(items) {
+  document.querySelectorAll(".chips").forEach(el => el.remove());
+  if (!items?.length) return;
+  const box = document.createElement("div");
+  box.className = "chips";
+  box.innerHTML = items.map(t => `<button class="chip">${esc(t)}</button>`).join("");
+  box.addEventListener("click", (e) => {
+    const chip = e.target.closest(".chip");
+    if (!chip) return;
+    $("chatInput").value = chip.textContent;
+    box.remove();
+    send();
+  });
+  $("chatLog").append(box);
+  $("chatLog").scrollTop = $("chatLog").scrollHeight;
+}
+
+/**
+ * The enrolment card: the three fields that decide what can be sold.
+ *
+ * Sex, age and 職業等級 gate the product catalogue, so the visitor picks them rather
+ * than receiving whatever a random seed drew. The occupation list is 27 long and
+ * grouped by class, which is why it is a combobox and not a select.
+ */
+function renderSetup(draft) {
+  const card = document.createElement("div");
+  card.className = "msg them setup";
+  card.innerHTML = `
+    <h4>建立您的保戶資料</h4>
+    <p>以下三項決定您能投保哪些商品。填好後按「完成建檔」，資料即固定，之後才能開始對話。</p>
+    <div class="field">
+      <span class="label">性別</span>
+      <div class="segment" id="sexPick">
+        <button type="button" data-sex="male" aria-pressed="${draft.sex === "male"}">男</button>
+        <button type="button" data-sex="female" aria-pressed="${draft.sex === "female"}">女</button>
+      </div>
+    </div>
+    <div class="field">
+      <label class="label" for="agePick">年齡（18 至 85）</label>
+      <input id="agePick" type="number" min="18" max="85" value="${draft.age}" inputmode="numeric">
+    </div>
+    <div class="field combo">
+      <label class="label" for="occPick">職業（可直接輸入篩選）</label>
+      <input id="occPick" autocomplete="off" value="${esc(draft.occupation)}" placeholder="輸入關鍵字，例如 司機">
+      <div class="combo-list" id="occList" hidden></div>
+    </div>
+    <button class="primary" id="enrolBtn" style="justify-content:center">完成建檔</button>`;
+  $("chatLog").append(card);
+  $("chatLog").scrollTop = $("chatLog").scrollHeight;
+
+  let sex = draft.sex;
+  let occupation = draft.occupation;
+  const options = draft.occupations ?? [];
+
+  $("sexPick").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-sex]");
+    if (!b) return;
+    sex = b.dataset.sex;
+    for (const other of $("sexPick").children) other.setAttribute("aria-pressed", String(other === b));
+  });
+
+  const list = $("occList");
+  const paint = (filter) => {
+    const hits = options.filter(o => !filter || o.occupation.includes(filter) || o.label.includes(filter));
+    if (!hits.length) { list.innerHTML = `<div class="combo-item none">查無這個職業，請換個關鍵字</div>`; return; }
+    let group = null;
+    list.innerHTML = hits.map(o => {
+      const head = o.label === group ? "" : `<div class="combo-group">${esc(o.label)}</div>`;
+      group = o.label;
+      return `${head}<div class="combo-item" data-occ="${esc(o.occupation)}" aria-selected="${o.occupation === occupation}">
+                <span>${esc(o.occupation)}</span><span class="cls">${o.occupation_class}</span></div>`;
+    }).join("");
+  };
+  const open = () => { paint($("occPick").value.trim()); list.hidden = false; };
+  $("occPick").addEventListener("focus", open);
+  $("occPick").addEventListener("input", open);
+  list.addEventListener("mousedown", (e) => {
+    const item = e.target.closest("[data-occ]");
+    if (!item) return;
+    e.preventDefault();
+    occupation = item.dataset.occ;
+    $("occPick").value = occupation;
+    list.hidden = true;
+  });
+  $("occPick").addEventListener("blur", () => setTimeout(() => { list.hidden = true; }, 120));
+
+  $("enrolBtn").onclick = () => {
+    // The typed text only counts when it names a real occupation. Anything else keeps
+    // the drawn one rather than inventing a class the catalogue does not price.
+    const typed = $("occPick").value.trim();
+    const matched = options.find(o => o.occupation === typed);
+    card.querySelectorAll("button, input").forEach(el => { el.disabled = true; });
+    customerWs.send(JSON.stringify({
+      type: "enrol",
+      sex,
+      age: Number($("agePick").value) || draft.age,
+      occupation: matched ? matched.occupation : occupation,
+    }));
+  };
+}
+
 function connectCustomer(name) {
   customerWs = new WebSocket(`ws://${location.host}/ws/customer`);
   customerWs.onopen = () => customerWs.send(JSON.stringify({ type: "hello", name }));
@@ -834,14 +998,27 @@ function connectCustomer(name) {
     const m = JSON.parse(ev.data);
     if (typeof m === "string") { bubble("sys", m); return; }
     switch (m.type) {
+      case "draft":
+        bubble("them", `${m.name} 您好，我是保險櫃台。\n開始之前，先麻煩您確認幾項基本資料。`);
+        renderSetup(m);
+        break;
       case "profile":
+        memberId = m.member_id;
         $("chatWho").innerHTML = `${esc(m.name)}<small>保險年齡 ${m.insurance_age} · ${m.sex === "male" ? "男" : "女"} · 第 ${m.occupation_class} 類</small>`;
-        bubble("them", `${m.name} 您好，我是保險櫃台。\n已為您建檔：${m.sex === "male" ? "男" : "女"}性、保險年齡 ${m.insurance_age} 歲、職業 ${m.occupation}（第 ${m.occupation_class} 類）。\n身分證字號 ${m.national_id}。\n送出第一則訊息後資料即固定。`);
+        bubble("them", m.returning
+          ? `${m.name} 您好，歡迎回來。\n您的保戶資料為：${m.sex === "male" ? "男" : "女"}性、保險年齡 ${m.insurance_age} 歲、職業 ${m.occupation}（第 ${m.occupation_class} 類）。`
+          : `建檔完成。\n${m.sex === "male" ? "男" : "女"}性、保險年齡 ${m.insurance_age} 歲、職業 ${m.occupation}（第 ${m.occupation_class} 類）。\n身分證字號 ${m.national_id}。\n資料已固定，請問需要什麼協助？`);
+        $("chatInput").disabled = false;
+        $("sendBtn").disabled = false;
+        $("chatInput").focus();
+        connectDesk();
+        renderChips(OPENERS);
         break;
       case "case": renderCase(m); break;
       case "reply":
         waiting(false);
         bubble("them", m.text);
+        renderChips(m.quick);
         if (m.scenario) {
           const carried = Object.entries(m.params ?? {}).map(([k, v]) => `${k}=${v}`).join(" ");
           bubble("sys", `情境：${m.scenario}`
@@ -857,7 +1034,7 @@ function connectCustomer(name) {
 }
 
 function connectDesk() {
-  deskWs = new WebSocket(`ws://${location.host}/ws/desk?token=${encodeURIComponent(DESK_TOKEN)}`);
+  deskWs = new WebSocket(`ws://${location.host}/ws/desk?token=${encodeURIComponent(DESK_TOKEN)}&member=${memberId}`);
   deskWs.onopen = () => setLink("live", "已連線 · 即時同步");
   deskWs.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
@@ -868,15 +1045,30 @@ function connectDesk() {
   deskWs.onclose = () => setLink("down", "後台連線中斷");
 }
 
+async function reroll() {
+  try {
+    const r = await fetch("/api/alias");
+    $("nameInput").value = (await r.json()).alias;
+  } catch { $("nameInput").value = ""; }
+}
+reroll();
+$("rerollBtn").onclick = reroll;
+$("ownNameBtn").onclick = () => {
+  const box = $("nameInput");
+  box.readOnly = false;
+  box.value = "";
+  box.placeholder = "自行輸入代號";
+  box.focus();
+  $("ownNameBtn").hidden = true;
+};
+
 $("enterBtn").onclick = () => {
   const name = $("nameInput").value.trim();
   if (!name) { $("nameInput").focus(); return; }
   $("gate").hidden = true;
-  $("chatInput").disabled = false;
-  $("sendBtn").disabled = false;
-  $("chatInput").focus();
+  // The composer stays disabled until the profile exists. There is nothing to answer
+  // a question against before then.
   connectCustomer(name);
-  connectDesk();
 };
 $("nameInput").addEventListener("keydown", e => { if (e.key === "Enter") $("enterBtn").click(); });
 

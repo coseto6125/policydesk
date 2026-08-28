@@ -30,7 +30,7 @@ import etoon
 from msgspec import DecodeError, json
 
 from policydesk.agent import memory, tools
-from policydesk.agent.scenario import BY_NAME, CATALOGUE, ROUTER_INSTRUCTIONS, Emit, Scenario, tool_schema
+from policydesk.agent.scenario import BY_NAME, CATALOGUE, OPENERS, ROUTER_INSTRUCTIONS, Emit, Scenario, tool_schema
 from policydesk.bootloader import logger
 from policydesk.llm.provider import Completion, Phase, Provider, ProviderError
 from policydesk.skills.calculator import TOOL_SCHEMA, CalculationError, calculate
@@ -57,6 +57,9 @@ class Turn:
         self.faults: tuple[str, ...] = ()
         self.procedure_hint: str = ""
         """What the customer called the procedure, used to look up its multiplier."""
+        self.quick_replies: tuple[str, ...] = OPENERS
+        """One-tap follow-ups, all of them questions. A scenario that ran replaces the
+        openers with its own; one that did not leaves the customer somewhere to start."""
         self.params: dict[str, str] = {}
         """What the router filled from the conversation. Empty before a scenario runs."""
         self.computations: tuple[tuple[str, int], ...] = ()
@@ -333,6 +336,7 @@ async def run_turn(
         return turn
 
     turn.scenario = scenario.name
+    turn.quick_replies = scenario.quick_replies or OPENERS
     turn.procedure_hint = text
     turn.params = params
     facts = await _gather(db, scenario, turn, today=today, params=params)
