@@ -6,9 +6,12 @@ services:
       POSTGRES_USER: policydesk
       POSTGRES_PASSWORD: policydesk
     ports:
+      # 5434 keeps this clear of a local Postgres on 5432 and of enoract's on 5433.
       - "5434:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Postgres runs these once, on an empty data directory only. Recreating the
+      # volume is what re-applies a changed migration.
       - ./infra/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U policydesk -d policydesk"]
@@ -24,12 +27,43 @@ services:
     environment:
       DATABASE_URL: postgres://policydesk:policydesk@postgres:5432/policydesk
       LOG_LEVEL: INFO
+      # Unset mints a token per boot and logs it — read it with
+      # `docker compose logs desk | grep desk_token_generated`. Set it here to keep
+      # the back office reachable at the same token across restarts.
+      POLICYDESK_DESK_TOKEN: ${POLICYDESK_DESK_TOKEN:-}
+      # Without a key the agent says it cannot reach its model rather than inventing
+      # an answer about someone's policy.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      POLICYDESK_MODEL: ${POLICYDESK_MODEL:-gpt-5.6-luna}
     ports:
       - "8100:8100"
+
+  # Corpus ingestion, run on demand rather than at startup: it fetches 1.19 GB from
+  # the insurer and takes about twenty minutes.
+  #
+  #   docker compose run --rm ingest
+  #
+  # It mounts ./data read-write because that is where the PDFs land. The desk service
+  # deliberately does not mount it — the desk reads contracts out of Postgres, and a
+  # container holding members' national IDs has no reason to also hold the corpus.
+  ingest:
+    build: .
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://policydesk:policydesk@postgres:5432/policydesk
     volumes:
-      # The contract corpus is 1.19 GB of the insurer's copyright, so it stays out of
-      # the image and is mounted from the host.
-      - ./data:/app/data:ro
+      - ./data:/app/data
+    command: >
+      python -c "
+      import asyncio; from pathlib import Path;
+      from policydesk.core.db import Database;
+      from policydesk.ingest.cathay import fetch_all;
+      from policydesk.ingest.to_postgres import copy_corpus, build_catalog;
+      asyncio.run(fetch_all(Path('/app/data/cathay')))
+      "
 
 volumes:
   pgdata:
