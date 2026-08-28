@@ -38,7 +38,7 @@ dependencies = [
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.7"]
 
 [project.scripts]
-policydesk = "policydesk.server:main"
+policydesk = "policydesk.web.server:main"
 
 [build-system]
 requires = ["hatchling"]
