@@ -50,7 +50,10 @@ if TYPE_CHECKING:
 STATUTE_SCOPE: list[str] = ["insurance_act", "insurance_act_rules", "financial_consumer_protection_act"]
 """Which statutes a complaint may be answered from."""
 
-CITATION = re.compile(r"〔([\u4e00-\u9fff]{2,12})\s*第\s*(\d{1,3})(?:-(\d))?\s*條(?:第\s*(\d{1,2})\s*項)?(?:第\s*(\d{1,2})\s*款)?〕")
+CITATION = re.compile(
+    r"〔([\u4e00-\u9fff]{2,12})\s*第\s*(\d{1,3})(?:[-之]\s*(\d{1,2}))?\s*條"
+    r"(?:第\s*(\d{1,2})\s*項)?(?:第\s*(\d{1,2})\s*款)?〕"
+)
 """How a statute citation is written in a reply: 〔保險法 第64條第2項〕.
 
 Deliberately not the `art.64.2` shape the clause corpus uses. The executor extracts
@@ -61,6 +64,16 @@ collision the reader cannot see and the checker cannot resolve.
 
 It is also the form a Taiwanese reader recognises, which is the other half of the point:
 a customer who wants to check what he has been told can type it into 全國法規資料庫.
+
+The branch takes two digits, not one. 保險法 runs to 第149-11條, and a single-digit
+pattern read 第149-10條 as no citation at all — which is the dangerous direction of the
+failure: an unreadable citation is not a citation the checker rejects, it is one the
+checker never sees, so an invented 第149-10條 would have passed. Found by formatting all
+1,212 provisions and reading each one back; 15 did not round-trip.
+
+之 is accepted beside the hyphen because that is how the statute writes it in its own
+cross-references (第六十四條第三項, 第一百四十九條之十), and a model copying the corpus
+will sometimes copy that.
 """
 
 
