@@ -24,16 +24,17 @@ policy is always present: a portfolio that fails in every direction demonstrates
 broken system rather than a careful one.
 """
 
-import random
 from datetime import UTC, date, datetime, timedelta
-from hashlib import blake2b
 from typing import TYPE_CHECKING
 
 from msgspec import Struct
 
 from policydesk.bootloader import logger
+from policydesk.synthetic.seed import rng_for
 
 if TYPE_CHECKING:
+    import random
+
     from policydesk.core.db import Database
     from policydesk.synthetic.person import Person
 
@@ -65,19 +66,6 @@ class PlannedPolicy(Struct, frozen=True):
     fault: Fault | None = None
 
 
-def _rng_for(name: str) -> random.Random:
-    """
-    Build the portfolio generator for one name.
-
-    Args:
-        name: The display name as typed.
-
-    Returns:
-        A Random seeded so this name always gets the same history.
-
-    """
-    key = f"{name.strip()}|{_SEED_SALT}".encode()
-    return random.Random(int.from_bytes(blake2b(key, digest_size=8).digest(), "big"))
 
 
 def _policy_number(rng: random.Random) -> str:
@@ -108,7 +96,7 @@ async def plan(person: Person, db: Database, *, today: date | None = None) -> li
 
     """
     today = today or datetime.now(UTC).date()
-    rng = _rng_for(person.name)
+    rng = rng_for(person.name, _SEED_SALT)
     insurance_age = person.insurance_age_on(today)
 
     # Only products this person could actually have been sold: a portfolio holding a

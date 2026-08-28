@@ -23,14 +23,17 @@ generated together so they stay consistent with each other; an applicant whose
 occupation cannot buy the product the demo needs is a broken demo, not a realistic one.
 """
 
-import random
 from datetime import UTC, date, datetime
 from enum import IntEnum, StrEnum
-from hashlib import blake2b
+from typing import TYPE_CHECKING
 
 from msgspec import Struct
 
 from policydesk.gov.identity import Sex, issue
+from policydesk.synthetic.seed import rng_for
+
+if TYPE_CHECKING:
+    import random
 
 # Same string, same person, across restarts and across rehearsals. Change this and
 # every demo user changes with it.
@@ -255,19 +258,6 @@ class Person(Struct, frozen=True):
         return years + 1 if months_past > 6 else years
 
 
-def _rng_for(name: str) -> random.Random:
-    """
-    Build the generator for one name.
-
-    Args:
-        name: The display name as typed.
-
-    Returns:
-        A Random seeded so that this name always yields the same person.
-
-    """
-    key = f"{name.strip()}|{_SEED_SALT}".encode()
-    return random.Random(int.from_bytes(blake2b(key, digest_size=8).digest(), "big"))
 
 
 def _pick_occupation(rng: random.Random, *, allow_uninsurable: bool) -> tuple[str, OccupationClass]:
@@ -355,7 +345,7 @@ def generate(name: str, serial: int, *, today: date | None = None, valid_id: boo
         The applicant. The same name always returns the same one.
 
     """
-    rng = _rng_for(name)
+    rng = rng_for(name, _SEED_SALT)
     today = today or datetime.now(UTC).date()
 
     sex = rng.choice([Sex.MALE, Sex.FEMALE])
