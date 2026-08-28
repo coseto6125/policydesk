@@ -939,8 +939,11 @@
         <div style="display:grid;gap:var(--s3);align-content:start">
           <div class="card">
             <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-book"/></svg>名下保單</h3><span class="spacer"></span><span class="count" id="profilePolicyCount"></span></header>
-            <div class="body flush scroll-x"><table>
-              <thead><tr><th style="width:118px">保單號碼</th><th>商品</th><th style="width:84px" class="num">保險金額</th><th style="width:84px" class="num">年繳保費</th><th style="width:92px">生效日</th></tr></thead>
+            <!-- Its own floor, under the 620px the .scroll-x default sets: this table
+                 lives in the narrower half of a split, and the shared floor pushed the
+                 生效日 column out of the box on every load. -->
+            <div class="body flush scroll-x"><table style="min-width:470px">
+              <thead><tr><th style="width:106px">保單號碼</th><th>商品</th><th style="width:76px" class="num">保險金額</th><th style="width:76px" class="num">年繳保費</th><th style="width:82px">生效日</th></tr></thead>
               <tbody id="profilePolicies"><tr><td colspan="5" class="empty">尚無保單</td></tr></tbody>
             </table></div>
           </div>
@@ -1016,12 +1019,12 @@
       </div>
       <div class="card">
         <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-coins"/></svg>情境用量</h3><span class="spacer"></span><span class="count" id="tokenCount"></span></header>
-        <div class="body flush scroll-x"><table style="min-width:800px">
+        <div class="body flush scroll-x"><table>
           <thead><tr>
             <th>情境</th><th style="width:58px" class="num">呼叫</th>
             <th style="width:80px" class="num">prompt</th><th style="width:92px" class="num">completion</th>
             <th style="width:78px" class="num">cached</th><th style="width:112px" class="num">總 token</th>
-            <th style="width:122px" class="num">延遲 p50 / p95</th><th style="width:74px" class="num">成本</th>
+            <th style="width:104px" class="num">延遲 ms p50/p95</th><th style="width:64px" class="num">成本</th>
           </tr></thead>
           <tbody id="tokenBody"><tr><td colspan="8" class="empty">載入中</td></tr></tbody>
         </table></div>
@@ -1655,6 +1658,7 @@ function ago(iso) {
   return String(iso).slice(0, 10);
 }
 
+const round = (v) => (v === null || v === undefined ? "—" : String(Math.round(v)));
 const ms = (v) => (v === null || v === undefined ? "—" : `${Math.round(v)}ms`);
 const usd = (v) => (v === null || v === undefined ? "—" : `$${Number(v).toFixed(4)}`);
 
@@ -2000,7 +2004,7 @@ async function loadTokens() {
           <span>${money(r.total_tokens)}</span>
           <span class="track"><i style="width:${(100 * Number(r.total_tokens || 0) / top).toFixed(1)}%"></i></span>
         </div></td>
-        <td class="num mono tight">${r.p50_ms === null ? "—" : Math.round(r.p50_ms)} / ${ms(r.p95_ms)}</td>
+        <td class="num mono tight">${round(r.p50_ms)} / ${round(r.p95_ms)}</td>
         <td class="num mono">${usd(r.cost_usd)}</td>
       </tr>`).join("") : `<tr><td colspan="8" class="empty">尚無紀錄</td></tr>`;
   } catch (err) { fail(body, err); }

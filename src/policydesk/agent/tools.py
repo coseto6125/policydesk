@@ -47,27 +47,30 @@ def requires_identity(fn: Callable[..., Any]) -> Callable[..., Any]:
     return fn
 
 
-def reads_identity(tool_names: Iterable[str]) -> bool:
+def reads_identity(tool_names: Iterable[str], *, owner: Any = None) -> bool:
     """
     Say whether any of these tools reads the customer's own record.
 
     Args:
         tool_names: Tool names, as a scenario lists them.
+        owner: The module holding the scenario's own tools in a `TOOLS` mapping, when
+            the scenario has one. None resolves every name against this module.
 
     Returns:
-        True when at least one is marked, and True for a name this module does not
-        define.
+        True when at least one is marked, and True for a name neither place defines.
 
-    The unknown name is the important half. Names are resolved against this module, so
-    a tool written in `agent/scenarios/` resolves to nothing — and reading that as
-    「不需核對」 would let a scenario read member data before the customer has proved
-    who they are, silently, with no line of code saying so. Unknown therefore means
-    gated, and a scenario whose tools genuinely read nothing about the member is
-    dispatched before the gate rather than exempted by it.
+    The unknown name is the important half. A tool written in `agent/scenarios/` does
+    not exist in this module's globals, and reading that absence as 「不需核對」 would
+    let a scenario read member data before the customer has proved who they are —
+    silently, with no line of code saying so. Unknown therefore means gated, so the
+    mistake that gets made is the one that asks for an ID it did not need.
 
     """
+    catalogue: dict[str, Any] = dict(getattr(owner, "TOOLS", {}))
     return any(
-        getattr(known, "requires_identity", False) if (known := globals().get(name)) else True
+        getattr(known, "requires_identity", False)
+        if (known := catalogue.get(name, globals().get(name))) is not None
+        else True
         for name in tool_names
     )
 

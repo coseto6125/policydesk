@@ -23,6 +23,7 @@ import asyncio
 import re
 import time
 from datetime import UTC, date, datetime
+from importlib import import_module
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -30,8 +31,16 @@ import etoon
 from msgspec import DecodeError, json
 
 from policydesk.agent import memory, tools
-from policydesk.agent.scenario import BY_NAME, CATALOGUE, OPENERS, ROUTER_INSTRUCTIONS, Emit, Scenario, tool_schema
-from policydesk.agent.scenarios import soothe
+from policydesk.agent.scenario import (
+    BY_NAME,
+    CATALOGUE,
+    OPENERS,
+    ROUTER_INSTRUCTIONS,
+    WRITING,
+    Emit,
+    Scenario,
+    tool_schema,
+)
 from policydesk.bootloader import logger
 from policydesk.llm.provider import Completion, Phase, Provider, ProviderError
 from policydesk.skills.calculator import TOOL_SCHEMA, CalculationError, calculate
@@ -247,16 +256,20 @@ async def _gather(
         Everything the tools returned, by tool name. Unconfirmed, only the public ones.
 
     """
-    if scenario.name == "soothe":
-        # Dispatched before the gate, not exempted by it. Its tools read the statute and
-        # the complaint channel, both public, and neither resolves through `tools` — so
-        # `reads_identity` would call them unknown and gate them, which is the right
-        # default for an unknown name and the wrong answer for these two. The empty
-        # `_allowed_clauses` is not an omission: statute citations carry their own
-        # 〔保險法 第64條第2項〕 syntax and are checked against `statute_article`, so the
-        # `art.NN` checker has nothing here to allow.
-        facts = await soothe.gather(db, params, retriever=index)
-        facts["_allowed_clauses"] = frozenset()
+    if scenario.tools_module:
+        # A scenario whose tools live in their own module is dispatched there, and its
+        # gate is derived from that module's `TOOLS` rather than from `agent.tools` —
+        # where the names are not defined, and would be gated as unknown. The two halves
+        # have to move together: resolving the gate somewhere the dispatch does not look
+        # is how a scenario ends up demanding an ID for a question about public law.
+        owner = import_module(scenario.tools_module)
+        if not confirmed and tools.reads_identity(scenario.tools, owner=owner):
+            return await _public_only(db, scenario, params)
+        facts = await owner.gather(db, params, member_id=turn.member_id, today=today, retriever=index)
+        # Empty rather than absent. A scenario module citing contract clauses returns its
+        # own allow-list; one citing statute carries the 〔保險法 第64條第2項〕 syntax,
+        # which the `art.NN` checker never sees, so it has nothing here to allow.
+        facts.setdefault("_allowed_clauses", frozenset())
         return facts
     if not confirmed and tools.reads_identity(scenario.tools):
         return await _public_only(db, scenario, params)
@@ -495,7 +508,7 @@ async def run_turn(
         # figures into prose from the material it had been handed, and nothing checked
         # them. A tool the model cannot reach is a claim, not a guarantee.
         completion = await provider.complete(
-            instructions=f"{ROUTER_INSTRUCTIONS}\n\n{scenario.injection}",
+            instructions=f"{ROUTER_INSTRUCTIONS}\n\n{scenario.injection}\n\n{WRITING}",
             user_input=f"{past}# 本次訊息\n{text}\n\n# 工具回傳\n{material}",
             tools=[TOOL_SCHEMA],
         )

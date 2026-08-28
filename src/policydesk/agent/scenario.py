@@ -20,7 +20,7 @@ customer being helped and is the customer being asked nothing.
 
 from policydesk.agent.scenario_base import Emit, Param, Scenario, tool_schema
 
-__all__ = ["BY_NAME", "CATALOGUE", "OPENERS", "ROUTER_INSTRUCTIONS", "Emit", "Param", "Scenario", "tool_schema"]
+__all__ = ["BY_NAME", "CATALOGUE", "OPENERS", "ROUTER_INSTRUCTIONS", "WRITING", "Emit", "Param", "Scenario", "tool_schema"]
 
 
 POLICY_OVERVIEW = Scenario(
@@ -255,6 +255,23 @@ ROUTER_INSTRUCTIONS = """\
 這些都由確定性工具產生，你只負責把工具回傳的內容說清楚。
 
 若保戶的訴求不屬於任何情境，直接以繁體中文回答，並說明本櫃台可以協助的範圍。\
+"""
+
+
+WRITING = """\
+寫給保戶看的排版規則：
+
+一句話講一件事，講完就用句號收掉，不要用逗號一路串到底。
+換一個主題就空一行分段，一段最多三句。
+逐張保單、逐項給付、逐份文件這種可以列的東西就列成一行一項，不要塞進同一段。
+金額與日期單獨成句，不要夾在長句中間。
+
+保戶是在手機上讀這段字，一整片沒有斷點的文字他要自己找哪裡是重點。\
+"""
+"""How a reply is laid out, appended to the answering instructions only.
+
+Not part of the router's instructions: the router calls a tool and writes nothing a
+customer reads, so laying out prose is a rule with no work to do there.
 """
 
 

@@ -56,6 +56,14 @@ class Scenario(Struct, frozen=True):
     """Scenarios reachable from this one."""
     requires_stage: str | None = None
     """The case stage this scenario needs. Refused with an explanation otherwise."""
+    tools_module: str = ""
+    """The dotted path of the module whose `TOOLS` and `gather` serve this scenario.
+
+    Empty means `agent.tools`, where the desk's own tools live. A scenario written in its
+    own module names that module here, and the executor then dispatches to it and derives
+    its gate from it — rather than resolving the tool names against `agent.tools`, where
+    they are not defined and would read as needing no 資料核對.
+    """
     quick_replies: tuple[str, ...] = ()
     """Offered to the customer as one-tap follow-ups after this scenario answers.
 
