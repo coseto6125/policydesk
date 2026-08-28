@@ -50,11 +50,38 @@ if TYPE_CHECKING:
 STATUTE_SCOPE: list[str] = ["insurance_act", "insurance_act_rules", "financial_consumer_protection_act"]
 """Which statutes a complaint may be answered from."""
 
-CITATION = re.compile(
-    r"〔([\u4e00-\u9fff]{2,12})\s*第\s*(\d{1,3})(?:[-之]\s*(\d{1,2}))?\s*條"
-    r"(?:第\s*(\d{1,2})\s*項)?(?:第\s*(\d{1,2})\s*款)?〕"
+_LEAD = r"(?:依|依據|依照|按|按照|根據|參照|見|據)?"
+"""Particles a sentence puts in front of a citation. Stripped rather than allowed into the
+name, because the name is half the key the recheck looks up — 依保險法 matches no statute,
+so a real citation would be reported as invented."""
+
+_STATUTE_NAME = r"[\u4e00-\u9fff]{2,10}?(?:法|細則|辦法|準則|條例|規則)"
+
+_INT = r"\d{1,3}|[一二三四五六七八九十百]{1,10}?"
+_SMALL = r"\d{1,2}|[一二三四五六七八九十]{1,3}"
+
+_NUMBER = (
+    # The branch sits before 條 in digits (第8-1條) and after it in Chinese (第八條之一).
+    # Both appear in the corpus: the statute cross-references itself in words and the
+    # index writes ids in figures, and a model reading both will write either.
+    rf"第\s*({_INT})\s*(?:[-之]\s*({_SMALL}))?\s*條(?:\s*之\s*({_SMALL}))?"
+    rf"(?:\s*第\s*({_SMALL})\s*項)?"
+    rf"(?:\s*第\s*({_SMALL})\s*款)?"
 )
-"""How a statute citation is written in a reply: 〔保險法 第64條第2項〕.
+
+CITATION = re.compile(rf"[〔（(\[]?\s*{_LEAD}\s*({_STATUTE_NAME})\s*{_NUMBER}\s*[〕）)\]]?")
+"""How a statute citation is read *out of* a reply: 〔保險法 第64條第2項〕 and its variants.
+
+Written one way and read many. `_readable` emits the bracketed form and the model is told
+to copy it, but what the checker must catch is everything a model might write instead —
+because a citation the pattern misses is not one the checker rejects, it is one it never
+sees. Brackets optional, full-width or half-width or absent; the number in digits or in
+Chinese numerals, since the statute writes its own cross-references as 第六十四條第三項
+and a model reading the corpus will echo that.
+
+The name must end in 法/細則/辦法/準則/條例/規則. Without that anchor the pattern reads
+「合約第3條」 in a sentence about the customer's own contract as a statute citation, and
+the recheck then voids a reply for a statute nobody cited.
 
 Deliberately not the `art.64.2` shape the clause corpus uses. The executor extracts
 `art.NN` from replies and voids any that no contract contains, and `art.64.2` contains
@@ -77,6 +104,38 @@ will sometimes copy that.
 """
 
 
+_CN_DIGITS = "零一二三四五六七八九"
+
+
+def _number(raw: str) -> int:
+    """
+    Read an article number written either way.
+
+    Args:
+        raw: `64` or `六十四`.
+
+    Returns:
+        Its value.
+
+    Chinese numerals are here because the statute cites itself that way — 第六十四條第三
+    項 appears verbatim inside 第68條 — so a model quoting the corpus will reproduce it,
+    and a citation the reader cannot parse is one the checker never gets to reject.
+    """
+    if raw.isdigit():
+        return int(raw)
+    total = section = 0
+    for char in raw:
+        if char == "百":
+            section = (section or 1) * 100
+            total += section
+            section = 0
+        elif char == "十":
+            section = (section or 1) * 10
+        elif char in _CN_DIGITS:
+            section += _CN_DIGITS.index(char)
+    return total + section
+
+
 def cited(text: str) -> list[tuple[str, str]]:
     """
     Read the statute citations out of a reply.
@@ -89,12 +148,14 @@ def cited(text: str) -> list[tuple[str, str]]:
 
     """
     out: list[tuple[str, str]] = []
-    for name, article, branch, paragraph, item in CITATION.findall(text):
-        doc_id = f"art.{article}-{branch}" if branch else f"art.{article}"
+    for name, article, before, after, paragraph, item in CITATION.findall(text):
+        doc_id = f"art.{_number(article)}"
+        if branch := before or after:
+            doc_id += f"-{_number(branch)}"
         if paragraph:
-            doc_id += f".{paragraph}"
+            doc_id += f".{_number(paragraph)}"
             if item:
-                doc_id += f".{item}"
+                doc_id += f".{_number(item)}"
         pair = (name, doc_id)
         if pair not in out:
             out.append(pair)
