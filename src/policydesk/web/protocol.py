@@ -55,13 +55,20 @@ class Decide(Struct, tag="decide", tag_field="type"):
     """
     A caseworker approved or rejected a case under review.
 
-    `reason` is required on a rejection and shown to the customer verbatim: a refusal
-    the customer cannot read is a refusal they will phone about.
+    A rejection carries its reason, shown to the customer verbatim: a refusal the
+    customer cannot read is a refusal they will phone about. The invariant is enforced
+    here rather than left to the docstring, because a default of "" would otherwise
+    let an empty rejection through the wire and reach the customer as a blank.
     """
 
     case_id: str
     approved: bool
     reason: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.approved and not self.reason.strip():
+            msg = f"case {self.case_id} was rejected with no reason; the customer would be shown a blank"
+            raise ValueError(msg)
 
 
 DeskMessage = Decide
