@@ -424,53 +424,72 @@ async def find_articles(
 
 _CJK = re.compile(r"[\u4e00-\u9fff]{2,}")
 
-_STOP = frozenset({"你們", "我們", "為什麼", "憑什麼", "怎麼", "這樣", "可以", "不可以", "應該", "什麼", "這個", "那個"})
-"""Runs a complaint is made of that no provision is about.
+_STOP = frozenset({
+    "你們", "我們", "為什麼", "憑什麼", "怎麼", "這樣", "可以", "不可以", "應該", "什麼",
+    "這個", "那個", "已經", "根本", "當初", "知道", "想要", "我要", "沒有", "還有", "現在",
+    "公司", "你們公司", "貴公司",
+})
+"""Words a complaint is made of that no provision is about.
 
-Not a general stop list — 保險, 契約 and 解除 are all common and all load-bearing here.
-These are the words of complaining rather than the words of insurance.
+Not a general stop list — 保險, 契約 and 解除 are common and load-bearing here. These are
+the words of complaining rather than the words of insurance.
+
+公司 is in the list for a reason worth stating: in a customer's sentence it is a pronoun
+meaning *you*, and in the statute it is a corporate entity the regulator licenses. 公司說
+要解除我的契約 therefore ranked 第164-1條 — 命公司解除經理人或職員之職務 — above 第64條,
+matching on 公司 and 解除 while answering nothing. The customer's word for the insurer is
+第2條的保險人, and he will never type that.
 """
 
+_TOKENISER = None
 
-def _keywords(topic: str) -> list[str]:
+
+def _tokenise(text: str) -> list[str]:
     """
-    Break a complaint into the phrases a provision might contain.
+    Cut a complaint into the words a provision might contain.
 
     Args:
-        topic: What the customer said, in their own words.
+        text: What the customer said, in their own words.
 
     Returns:
-        Candidate 2- to 4-character phrases, longest first.
+        Content words, two characters or longer, deduplicated in order.
 
-    A complaint arrives as a sentence — 你們憑什麼解除我的契約 — and no provision contains
-    that string, so a substring search over the whole thing returns nothing while the
-    provision that answers it sits in the table. Cutting into overlapping n-grams finds
-    解除 and 契約 without a tokeniser, at the cost of nonsense phrases that simply match
-    nothing.
+    Overlapping n-grams were tried first and are wrong in a way that only shows on real
+    sentences. They manufacture phrases that cross word boundaries — 已經 out of 我已經繳,
+    會申 out of 金管會申訴 — and those match provisions about nothing the customer said:
+    金管會申訴 reached 第149-7條, an article about a receivership transfer免依公平交易法,
+    because 會申 appears inside 公平交易委員會申報. A fabricated phrase is indistinguishable
+    from a real one at ranking time, and the shorter it is the more it matches.
 
-    This is the fallback. The shared BM25 index does this properly, with the corpus
-    dictionary; what matters here is that the fallback answers rather than silently
-    returning an empty list, which reads to the customer as the law having nothing to say.
+    jieba is already in the project for the clause index, and it is loaded here with the
+    statute's own vocabulary for the reason the clause corpus needed the same fix: the
+    bundled dictionary is Simplified, and 據實說明義務 cut by it matches nothing.
     """
-    grams: list[str] = []
-    for run in _CJK.findall(topic):
-        for size in (4, 3, 2):
-            for start in range(len(run) - size + 1):
-                gram = run[start : start + size]
-                if gram not in _STOP and gram not in grams:
-                    grams.append(gram)
-    return grams
+    global _TOKENISER
+    if _TOKENISER is None:
+        import jieba_next
+
+        _TOKENISER = jieba_next.Tokenizer()
+        for term in _STATIC_TERMS:
+            _TOKENISER.add_word(term)
+    words: list[str] = []
+    for word in _TOKENISER.cut(text):
+        if len(word) >= 2 and _CJK.fullmatch(word) and word not in _STOP and word not in words:
+            words.append(word)
+    return words
 
 
-# A stance boost was tried here and removed, which is worth recording because it looks
-# obviously right. 保險法 is two statutes wearing one number: the contract law a customer
-# lives under, and the supervisory law telling the regulator how to license and fine an
-# insurer. Scoring provisions dense in 要保人 / 保險契約 above ones dense in 主管機關 /
-# 罰鍰 therefore seems free — and it answered 你們憑什麼解除我的契約 with 第123條 保險人
-# 破產 and 第138-2條 保險金信託, which are thick with those words and say nothing about
-# rescission. Vocabulary is not stance, and a proxy that outranks relevance replaces a
-# wrong answer with a differently wrong one. The real fix is the shared BM25 index, where
-# IDF already discounts 保險契約 for being everywhere.
+_STATIC_TERMS = (
+    "要保人", "被保險人", "受益人", "保險人", "保險費", "保險金", "保險契約", "保險金額",
+    "保險利益", "保單價值準備金", "據實說明", "解除契約", "終止契約", "復效", "停效",
+    "等待期", "除外責任", "告知義務", "業務員", "評議", "申訴", "金管會", "主管機關",
+)
+"""Vocabulary the tokeniser must not split.
+
+Seeded rather than read from the database because tokenising must not need a query — the
+words here are the ones a complaint is actually made of. `statute_terms` supplies the
+fuller list to the shared BM25 dictionary, which is where it belongs.
+"""
 
 
 async def search_statute(
@@ -495,28 +514,54 @@ async def search_statute(
     including it would return every match twice and spend half the budget saying the
     same thing. A citation to a whole article still resolves through `find_articles`.
 
-    Ranked by how many of the complaint's phrases a provision contains, longest phrase
-    first, shorter provision as the tie-break — a 30-word paragraph that mentions 契約 is
-    a worse answer than a 12-word one that does. This is the fallback ranking. The shared
-    BM25 index takes over when the retrieval refactor lands, which is the same arrangement
-    `find_clause` already has: a desk that ranks worse still answers, one that will not
-    start does not.
+    Ranked by how many of the complaint's words a provision contains, then by their summed
+    weight (length times rarity). Both orderings were arrived at by watching the other one
+    fail on a real sentence:
+
+    - Weight alone rewards a rare word that happens to appear. 公司說要解除我的契約，但我
+      已經繳了五年 put 第166-1條 first — 散布流言損害保險業信用者處**五年**以下有期徒刑 —
+      because 五年 is rare in the corpus, while the provisions matching both 解除 and 契約
+      scored lower.
+    - Count alone rewards common words. 公司 plus 解除 put 第164-1條 (the regulator
+      ordering a company to dismiss an officer) above 第64條.
+
+    Coverage first, weight as the tie-break, is what BM25 does with saturation and IDF and
+    does properly. This is the fallback that has to answer until the shared index lands, on
+    the same terms `find_clause` already has: a desk that ranks worse still answers, one
+    that will not start does not.
     """
-    grams = _keywords(topic)
+    grams = _tokenise(topic)
     if not grams:
         return []
     rows = await db.fetch(
-        """SELECT a.statute_id, s.name AS statute_name, a.doc_id, a.article, a.branch, a.paragraph,
+        """WITH gram AS (SELECT DISTINCT word FROM unnest($1::text[]) AS g(word)),
+                weighted AS (
+                  SELECT g.word,
+                         -- Rarity, the cheap stand-in for IDF. 公司 is in a tenth of the
+                         -- statute and 據實說明 in two provisions; counting them equally
+                         -- is what let 第164-1條 (主管機關 may order a company to dismiss
+                         -- an officer) beat 第64條 on 憑什麼解除我的契約, on the strength
+                         -- of 公司 plus 解除 and a shorter body.
+                         ln(1 + (SELECT count(*) FROM statute_article a2
+                                  WHERE a2.paragraph IS NOT NULL
+                                    AND ($2::text[] IS NULL OR a2.statute_id = ANY($2::text[])))
+                              / greatest(1.0, (SELECT count(*) FROM statute_article a3
+                                                WHERE a3.paragraph IS NOT NULL
+                                                  AND ($2::text[] IS NULL OR a3.statute_id = ANY($2::text[]))
+                                                  AND a3.verbatim LIKE '%' || g.word || '%'))
+                            ) * length(g.word) AS weight
+                  FROM gram g)
+           SELECT a.statute_id, s.name AS statute_name, a.doc_id, a.article, a.branch, a.paragraph,
                   a.subparagraph, a.chapter, a.verbatim, s.amended_at, s.source_url,
-                  (SELECT count(*) FROM unnest($1::text[]) AS g(word) WHERE a.verbatim LIKE '%' || g.word || '%') AS hits,
-                  (SELECT max(length(g.word)) FROM unnest($1::text[]) AS g(word)
-                    WHERE a.verbatim LIKE '%' || g.word || '%') AS longest
+                  (SELECT count(*) FROM weighted w WHERE a.verbatim LIKE '%' || w.word || '%') AS covered,
+                  (SELECT coalesce(sum(w.weight), 0) FROM weighted w
+                    WHERE a.verbatim LIKE '%' || w.word || '%') AS score
            FROM statute_article a
            JOIN statute s USING (statute_id)
            WHERE a.paragraph IS NOT NULL
              AND ($2::text[] IS NULL OR a.statute_id = ANY($2::text[]))
-             AND EXISTS (SELECT 1 FROM unnest($1::text[]) AS g(word) WHERE a.verbatim LIKE '%' || g.word || '%')
-           ORDER BY longest DESC, hits DESC, length(a.verbatim),
+             AND EXISTS (SELECT 1 FROM weighted w WHERE a.verbatim LIKE '%' || w.word || '%')
+           ORDER BY covered DESC, score DESC, length(a.verbatim),
                     a.statute_id, a.article, a.branch, a.paragraph, a.subparagraph
            LIMIT $3::int""",
         [grams, statute_ids, limit],

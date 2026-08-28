@@ -233,3 +233,57 @@ async def test_siblings_exclude_the_whole_article_row(loaded):
     hit = (await statute.find_articles(loaded, ["art.64.2"], ["insurance_act"]))[0]
     rows = await statute.with_siblings(loaded, [hit])
     assert all(r["paragraph"] is not None for r in rows)
+
+
+def test_tokenise_does_not_manufacture_phrases_across_word_boundaries():
+    # Overlapping n-grams were tried first: 金管會申訴 produced 會申, which matches
+    # 公平交易委員會申報 inside an article about a receivership transfer. A fabricated
+    # phrase is indistinguishable from a real one at ranking time.
+    words = statute._tokenise("我要去金管會申訴你們")
+    assert "會申" not in words
+    assert "金管會" in words
+    assert "申訴" in words
+
+
+def test_tokenise_drops_the_words_of_complaining():
+    assert statute._tokenise("你們憑什麼這樣") == []
+
+
+def test_tokenise_drops_company_because_it_is_the_customers_word_for_you():
+    # In the customer's sentence 公司 means *you*; in the statute it is a corporate entity
+    # the regulator licenses. Keeping it ranked 第164-1條 命公司解除經理人職務 above 第64條.
+    assert "公司" not in statute._tokenise("公司說要解除我的契約")
+
+
+def test_tokenise_keeps_statutory_compounds_whole():
+    # The bundled dictionary is Simplified; 據實說明 cut by it matches nothing.
+    assert "據實說明" in statute._tokenise("我明明有據實說明")
+    assert "等待期" in statute._tokenise("沒人跟我說有等待期")
+
+
+async def test_search_ranks_the_rescission_provision_above_the_regulators_one(loaded):
+    # 第164-1條第1項第2款 命公司解除經理人或職員之職務 is short and contains 解除. Counting
+    # matches equally put it first for a customer asking why his policy is being rescinded.
+    rows = await statute.search_statute(
+        loaded, "公司說要解除我的契約，但我已經繳了五年", ["insurance_act"], limit=4, siblings=False
+    )
+    found = [r["doc_id"] for r in rows]
+    assert not any(f.startswith("art.164-1") for f in found), found
+    assert any(f.startswith(("art.64", "art.68", "art.25", "art.57")) for f in found), found
+
+
+async def test_two_phrasings_of_one_complaint_reach_the_same_provision(loaded):
+    # 公司說要解除我的契約 and 你們憑什麼解除我的契約 are the same customer on two days.
+    for phrasing in ("公司說要解除我的契約，但我已經繳了五年", "你們憑什麼解除我的契約"):
+        rows = await statute.search_statute(loaded, phrasing, ["insurance_act"], limit=4)
+        assert "art.64.3" in {r["doc_id"] for r in rows}, phrasing
+
+
+async def test_search_does_not_reward_a_rare_word_that_merely_appears(loaded):
+    # 第166-1條 punishes 散布流言 with 五年以下有期徒刑. 五年 is rare, so weight alone put
+    # it above every provision matching both 解除 and 契約 for a customer who said 我繳了
+    # 五年. Coverage has to outrank weight.
+    rows = await statute.search_statute(
+        loaded, "公司說要解除我的契約，但我已經繳了五年", ["insurance_act"], limit=4, siblings=False
+    )
+    assert "art.166-1.1" not in {r["doc_id"] for r in rows}
