@@ -362,6 +362,32 @@ async def ingest(db: Database, statute_ids: Iterable[str] = ()) -> dict[str, int
     return written
 
 
+_NOT_A_TERM = re.compile(r"^(?:之|以|依|予|其|該|前|本|各|由|自|為|於|所|並|及|或|但|者|不|無|有)")
+"""Openers that mean the match started mid-phrase.
+
+之損害賠償 and 依超過部份 are fragments of a sentence the modal happened to sit in front
+of, not things anyone does. A dictionary entry nobody will ever type is not free: it is a
+decision the tokeniser makes on every query, forever.
+"""
+
+_TERM_TAIL = re.compile(r"[之的與和及或者]$")
+
+
+def _is_term(candidate: str) -> bool:
+    """
+    Say whether a modal's object is a thing somebody does.
+
+    Args:
+        candidate: The characters after 應 / 得 / 不得 / 負.
+
+    Returns:
+        True when it reads as a complete act — 據實說明, 解除契約, 終止契約 — rather than a
+        sentence fragment.
+
+    """
+    return not (_NOT_A_TERM.match(candidate) or _TERM_TAIL.search(candidate))
+
+
 async def statute_terms(db: Database) -> list[str]:
     """
     Statute vocabulary for the shared tokeniser dictionary.
@@ -370,24 +396,38 @@ async def statute_terms(db: Database) -> list[str]:
         db: The database.
 
     Returns:
-        Chapter titles and the defined terms the statute introduces.
+        Chapter titles, the terms the statute defines, and the acts it names.
 
-    The general dictionary is Simplified and cuts 據實說明義務 into pieces that match
-    nothing, so the corpus supplies its own words — the same fix the clause corpus needed,
-    over vocabulary the clause corpus does not contain.
+    The general dictionary is Simplified and cuts 據實說明 into pieces that match nothing,
+    so the corpus supplies its own words — the same fix the clause corpus needed, over
+    vocabulary the clause corpus does not contain.
 
-    A statute defines its terms in a fixed sentence: 本法所稱X，指… / 稱X者，謂…. Those
-    are exactly the words the customer will type, so they are read out of the text rather
-    than listed by hand.
+    Three sources, because a statute's vocabulary is not all in one place:
+
+    - **Definitions.** 本法所稱X，指… / 稱X者，謂…. These are the nouns: 要保人, 被保險人,
+      保險業務員.
+    - **Chapter titles.** 保險利益, 複保險, 特約條款 — a whole 節 is named after the concept
+      it governs, and nothing else in the text introduces the word.
+    - **The acts the statute regulates**, read out of 得/應/不得 + verb-object. This is the
+      half the first two miss and the half a complaint is made of: nobody types 要保人之據
+      實說明義務, they type 我有據實說明. 據實說明 appears **once** in 保險法, so frequency
+      cannot find it and the pattern must.
+
+    Length is bounded at 6 because past that the match is a clause, not a term, and a
+    dictionary entry nobody will ever type costs a tokeniser decision on every query.
     """
-    rows = await db.fetch("SELECT chapter, verbatim FROM statute_article WHERE paragraph IS NULL")
+    rows = await db.fetch("SELECT chapter, verbatim FROM statute_article")
     terms: set[str] = set()
     defined = re.compile(r"(?:本法|本細則)?(?:所)?稱([\u4e00-\u9fff]{2,10})[者]?[，,]\s*(?:指|謂|係指)")
+    # 應據實說明 / 得解除契約 / 不得終止契約. The modal is the anchor: it marks the next few
+    # characters as the thing the law requires, permits or forbids somebody to do.
+    acted = re.compile(r"(?:不得|應|得|負)([\u4e00-\u9fff]{2,6}?)(?=[，,。；、）]|$)")
     for row in rows:
         if chapter := row["chapter"]:
             # 第 一 章 總則 -> 總則
             terms.add(chapter.split()[-1] if " " in chapter else chapter)
         terms.update(defined.findall(row["verbatim"]))
+        terms.update(term for term in acted.findall(row["verbatim"]) if _is_term(term))
     return sorted(t for t in terms if len(t) >= 2)
 
 
