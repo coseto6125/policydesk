@@ -20,7 +20,7 @@ def test_both_sides_cut_with_the_same_function():
     Cut the documents one way and the queries another and recall collapses silently:
     every query still returns something, just never the right thing.
     """
-    build = SOURCE[SOURCE.index("async def build("):SOURCE.index("class ClauseIndex:")]
+    build = SOURCE[SOURCE.index("async def build("):SOURCE.index("class BM25Retriever:")]
     search = SOURCE[SOURCE.index("    def search("):SOURCE.index("def _grams(")]
     assert "cut(heading)" in build
     assert "cut(query)" in search
@@ -31,7 +31,7 @@ def test_the_ngram_field_is_fed_uncut_text():
     The ngram analyser re-tokenises raw text. Handing it the sentinel-joined form grams
     across the separator and produces tokens nothing matches.
     """
-    build = SOURCE[SOURCE.index("async def build("):SOURCE.index("class ClauseIndex:")]
+    build = SOURCE[SOURCE.index("async def build("):SOURCE.index("class BM25Retriever:")]
     ngram_line = build[build.index("F_NGRAM:"):build.index("\n", build.index("F_NGRAM:"))]
     assert "cut(" not in ngram_line
 
@@ -49,15 +49,59 @@ def test_the_boolean_is_assembled_rather_than_parsed():
     assert "tantivy.Occur.Should" in code
 
 
-def test_the_product_filter_is_a_must_not_a_post_filter():
+def test_the_scope_filter_is_a_must_not_a_post_filter():
     """
     Scoring the whole corpus and then discarding what the customer does not own spends
-    the limit on clauses they will never be shown.
+    the limit on documents they will never be shown.
     """
     search = SOURCE[SOURCE.index("    def search("):SOURCE.index("def _grams(")]
-    scoped = search.index("scoped = tantivy.Query.boolean_query")
-    must = search.index("(tantivy.Occur.Must, scoped)")
-    assert scoped < must
+    assert "tantivy.Occur.Must, tantivy.Query.term_query(SCHEMA, F_CORPUS, corpus)" in search
+    assert "tantivy.Query.term_query(SCHEMA, F_SCOPE, s)" in search
+    assert search.index("must: list") < search.index("must.append((tantivy.Occur.Must, tantivy.Query.boolean_query(text)))")
+
+
+def test_one_index_holds_both_corpora():
+    """
+    Two indexes means two dictionaries built from two vocabularies, and the same query
+    then cuts differently on each side — a miss that returns something every time and
+    the right thing never.
+    """
+    from policydesk.retrieval.base import CLAUSE, STATUTE
+    from policydesk.retrieval.index import _SOURCES
+
+    assert set(_SOURCES) == {CLAUSE, STATUTE}
+    assert "FROM clause" in _SOURCES[CLAUSE]
+    assert "FROM statute_article" in _SOURCES[STATUTE]
+
+
+def test_fusion_is_by_rank_not_by_score():
+    """
+    A BM25 score is unbounded in term frequency; a cosine is bounded to [-1, 1]. Adding
+    them mixes units, and normalising per query makes the weights depend on how good the
+    best hit happened to be.
+    """
+    from policydesk.retrieval.base import CLAUSE, Hit, rrf
+
+    a = [Hit(CLAUSE, "art.1", "p", 900.0), Hit(CLAUSE, "art.2", "p", 12.0)]
+    b = [Hit(CLAUSE, "art.2", "p", 0.61), Hit(CLAUSE, "art.3", "p", 0.60)]
+    fused = rrf([a, b], limit=3)
+    assert next(h.doc_id for h in fused) == "art.2", "found by both channels wins"
+    assert {h.doc_id for h in fused} == {"art.1", "art.2", "art.3"}
+
+
+def test_a_single_channel_hybrid_is_that_channel():
+    """It is what makes the embedding half optional rather than structural."""
+    from policydesk.retrieval.base import CLAUSE, Hit, HybridRetriever
+
+    class Only:
+        name = "only"
+
+        def search(self, query, *, corpus, scope, limit):
+            return [Hit(CLAUSE, "art.9", "p", 1.0), Hit(CLAUSE, "art.8", "p", 0.5)]
+
+    hybrid = HybridRetriever([Only()])
+    assert [h.doc_id for h in hybrid.search("x", corpus=CLAUSE, scope=[], limit=2)] == ["art.9", "art.8"]
+    assert hybrid.channels == ["only"]
 
 
 @pytest.mark.parametrize(("text", "expected"), [("住院日額", ["住院", "院日", "日額"]), ("癌", []), ("", [])])
@@ -86,7 +130,7 @@ def test_cut_drops_nothing_but_blanks():
 
 def test_the_corpus_supplies_its_own_vocabulary():
     """
-    jieba's bundled dictionary is Simplified. On this corpus it cuts 住院日額保險金給付
+    Jieba's bundled dictionary is Simplified. On this corpus it cuts 住院日額保險金給付
     into 住院日 / 額保險 / 金給付 — three tokens, none of them a word, none of them
     anything a customer types. The headings, benefit names and 附表1 procedure names are
     the terms the questions are made of, and they are already in the database.
@@ -102,10 +146,10 @@ def test_the_dictionary_travels_with_the_index():
     A query cut with a different dictionary than the documents misses, and it misses
     silently: something comes back every time and the right thing never does.
     """
-    build = SOURCE[SOURCE.index("async def build("):SOURCE.index("class ClauseIndex:")]
+    build = SOURCE[SOURCE.index("async def build("):SOURCE.index("class BM25Retriever:")]
     assert "TERMS_FILE" in build
     assert "load_terms(path)" in build
-    opened = SOURCE[SOURCE.index("class ClauseIndex:"):SOURCE.index("    def search(")]
+    opened = SOURCE[SOURCE.index("class BM25Retriever:"):SOURCE.index("    def search(")]
     assert "self.terms = load_terms(path)" in opened
 
 
@@ -145,6 +189,6 @@ def test_the_keys_are_bound_as_parallel_arrays():
 def test_the_index_is_opened_once_per_process():
     """A directory walk and an analyzer registration per turn is a turn's worth of it."""
     server = Path("src/policydesk/web/server.py").read_text()
-    assert "application.ctx.clauses = await open_index(application.ctx.db)" in server
-    assert server.count("open_index(") == 1, "one call site, in the lifecycle"
+    assert "open_index(application.ctx.db), open_vectors(application.ctx.db)" in server
+    assert "HybridRetriever(channels) if channels else None" in server
     assert "open_index" not in server[server.index("async def customer_socket"):]

@@ -17,6 +17,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from policydesk.bootloader import logger
+from policydesk.retrieval.base import CLAUSE, Retriever
 from policydesk.synthetic.person import insurance_age
 
 if TYPE_CHECKING:
@@ -24,7 +25,6 @@ if TYPE_CHECKING:
     from datetime import date
 
     from policydesk.core.db import Database
-    from policydesk.retrieval.index import ClauseIndex
 
 
 def requires_identity(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -55,10 +55,21 @@ def reads_identity(tool_names: Iterable[str]) -> bool:
         tool_names: Tool names, as a scenario lists them.
 
     Returns:
-        True when at least one is marked.
+        True when at least one is marked, and True for a name this module does not
+        define.
+
+    The unknown name is the important half. Names are resolved against this module, so
+    a tool written in `agent/scenarios/` resolves to nothing — and reading that as
+    「不需核對」 would let a scenario read member data before the customer has proved
+    who they are, silently, with no line of code saying so. Unknown therefore means
+    gated, and a scenario whose tools genuinely read nothing about the member is
+    dispatched before the gate rather than exempted by it.
 
     """
-    return any(getattr(globals().get(name), "requires_identity", False) for name in tool_names)
+    return any(
+        getattr(known, "requires_identity", False) if (known := globals().get(name)) else True
+        for name in tool_names
+    )
 
 
 @requires_identity
@@ -128,7 +139,7 @@ async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict
 
 @requires_identity
 async def find_clause(
-    db: Database, product_ids: list[str], topic: str, limit: int = 6, index: ClauseIndex | None = None
+    db: Database, product_ids: list[str], topic: str, limit: int = 6, index: Retriever | None = None
 ) -> list[dict[str, Any]]:
     """
     Find clauses of given products that bear on a topic.
@@ -146,16 +157,18 @@ async def find_clause(
     match the words. A customer asking what their policy covers is answered wrongly by
     a grant clause alone, and those three are exactly what a keyword search buries.
 
-    Ranked by BM25 when the index is open, by ILIKE when it is not. The difference is
-    not subtle on this corpus: 換工作會不會影響保險 shares no substring with 職業變更,
-    so a LIKE finds nothing and BM25 finds the clause. The fallback exists because a
-    desk whose ranking is worse still answers, and one that will not start does not.
+    Ranked by the retriever when one is open, by ILIKE when none is. The difference is
+    not subtle on this corpus: ILIKE returned the same three clauses for three unrelated
+    questions, because the words a customer uses are not substrings of the words a
+    contract uses and the `kind IN (exclusion, carve_back, waiting)` arm caught every
+    query. The fallback stays because a desk whose ranking is worse still answers, and
+    one that will not start does not.
 
     """
     if not product_ids:
         return []
-    if index is not None and (hits := index.search(topic, product_ids, limit=limit)):
-        return await _clauses_by_id(db, [(h["product_id"], h["clause_id"]) for h in hits])
+    if index is not None and (hits := index.search(topic, corpus=CLAUSE, scope=product_ids, limit=limit)):
+        return await _clauses_by_id(db, [(h.scope_id, h.doc_id) for h in hits])
     return await db.fetch(
         """SELECT c.product_id, c.clause_id, c.kind, c.heading, c.verbatim, c.page, p.name AS product_name
            FROM clause c JOIN product p USING (product_id)

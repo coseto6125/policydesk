@@ -11,8 +11,8 @@ on the sentinel and gets word-level tokens. `cjk_ngram` emits 1-2 grams as a fal
 for the vocabulary jieba does not know — 附加條款, 豁免保費, product names — where a
 partial match is better than none.
 
-**Both sides cut the same way, with the same dictionary.** jieba ships a Simplified
-Chinese dictionary and cuts 住院日額保險金給付 into 住院日 / 額保險 / 金給付 — three
+**Both sides cut the same way, with the same dictionary.** `jieba-next` — the Rust-backed
+rewrite enoract standardised on, same API — ships a Simplified Chinese dictionary and cuts 住院日額保險金給付 into 住院日 / 額保險 / 金給付 — three
 tokens, none of them a word, none of them anything a customer will type. So the corpus
 supplies its own vocabulary: clause headings, benefit names and the 17,866 procedure
 names out of 附表1 are exactly the terms a customer asks about, and they are already in
@@ -35,12 +35,15 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import jieba
+import jieba_next as jieba
 import tantivy
 
 from policydesk.bootloader import logger
+from policydesk.retrieval.base import CLAUSE, STATUTE, Hit
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from policydesk.core.db import Database
 
 INDEX_DIR = Path("data/bm25")
@@ -50,8 +53,9 @@ ANALYZER_JIEBA = "cjk_jieba"
 ANALYZER_NGRAM = "cjk_ngram"
 
 F_KEY = "key"
-F_PRODUCT = "product_id"
-F_CLAUSE = "clause_id"
+F_CORPUS = "corpus"
+F_SCOPE = "scope_id"
+F_DOC = "doc_id"
 F_KIND = "kind"
 F_HEADING = "heading"
 F_BODY = "body"
@@ -76,6 +80,18 @@ _MIN_TERM = 2
 _MAX_TERM = 12
 
 
+_SOURCES: dict[str, str] = {
+    CLAUSE: """SELECT product_id AS scope_id, clause_id AS doc_id, kind, heading, verbatim
+               FROM clause ORDER BY product_id, clause_id LIMIT $1::int OFFSET $2::int""",
+    # The statute half is written by another session. Absent, the query returns nothing
+    # and the index holds one corpus — which is exactly what it held before, so the
+    # ordering between the two sessions does not matter.
+    STATUTE: """SELECT statute_id AS scope_id, doc_id, 'article' AS kind, heading, verbatim
+                FROM statute_article ORDER BY statute_id, article, paragraph
+                LIMIT $1::int OFFSET $2::int""",
+}
+
+
 async def collect_terms(db: Database) -> list[str]:
     """
     Read the corpus's own vocabulary.
@@ -90,6 +106,11 @@ async def collect_terms(db: Database) -> list[str]:
     procedure list names what a surgeon did. Those three are the words a customer's
     question is made of, and they are the words jieba's general dictionary does not have.
 
+    The statute corpus is the fourth source. 被保險人, 據實說明, 保險利益 and 複保險 are
+    words a complaint is made of and no contract heading contains, so a query carrying
+    them was cut into pieces that matched nothing. One dictionary serves both corpora,
+    which is why this reads them together rather than building a second one.
+
     """
     rows = await db.fetch(
         """SELECT DISTINCT heading AS term FROM clause WHERE heading <> ''
@@ -101,7 +122,30 @@ async def collect_terms(db: Database) -> list[str]:
         for piece in _split_term(row["term"]):
             if _MIN_TERM <= len(piece) <= _MAX_TERM:
                 terms.add(piece)
+    terms.update(await _statute_terms(db))
     return sorted(terms, key=len, reverse=True)
+
+
+async def _statute_terms(db: Database) -> set[str]:
+    """
+    Read the statute corpus's own vocabulary.
+
+    Args:
+        db: The database.
+
+    Returns:
+        The terms, empty when the statute tables are not there. A database without them
+        is one this index still serves, over clauses alone.
+
+    """
+    from policydesk.agent import statute
+
+    try:
+        found = await statute.statute_terms(db)
+    except Exception as exc:
+        logger.info("statute_terms_skipped", error=str(exc))
+        return set()
+    return {t for t in found if _MIN_TERM <= len(t) <= _MAX_TERM}
 
 
 def _split_term(raw: str) -> list[str]:
@@ -171,8 +215,9 @@ def schema() -> tantivy.Schema:
     """
     sb = tantivy.SchemaBuilder()
     sb.add_text_field(F_KEY, stored=True, tokenizer_name="raw")
-    sb.add_text_field(F_PRODUCT, stored=True, tokenizer_name="raw")
-    sb.add_text_field(F_CLAUSE, stored=True, tokenizer_name="raw")
+    sb.add_text_field(F_CORPUS, stored=True, tokenizer_name="raw")
+    sb.add_text_field(F_SCOPE, stored=True, tokenizer_name="raw")
+    sb.add_text_field(F_DOC, stored=True, tokenizer_name="raw")
     sb.add_text_field(F_KIND, stored=True, tokenizer_name="raw")
     sb.add_text_field(F_HEADING, stored=False, tokenizer_name=ANALYZER_JIEBA)
     sb.add_text_field(F_BODY, stored=False, tokenizer_name=ANALYZER_JIEBA)
@@ -208,7 +253,7 @@ def _register(index: tantivy.Index) -> None:
 
 async def build(db: Database, *, path: Path = INDEX_DIR, batch: int = 2000) -> int:
     """
-    Rebuild the index from the clause table.
+    Rebuild the index from every corpus.
 
     Args:
         db: The database, which is the only source of truth here.
@@ -216,16 +261,17 @@ async def build(db: Database, *, path: Path = INDEX_DIR, batch: int = 2000) -> i
         batch: Rows per commit.
 
     Returns:
-        How many clauses were indexed.
+        How many documents were indexed.
 
-    Rebuilt rather than updated. The corpus changes when the corpus is re-ingested,
-    which is a batch event; an incremental writer would be machinery guarding against a
-    thing that does not happen.
+    One index, two corpora, one dictionary. Two indexes would mean two term lists built
+    from two vocabularies, and the same query would then be cut differently on each side
+    — a miss that returns something every time and the right thing never.
+
+    Rebuilt rather than updated. A corpus changes when it is re-ingested, which is a
+    batch event; an incremental writer would guard against something that does not
+    happen.
 
     """
-    # Blocking filesystem work in an async function, deliberately: this runs once at
-    # startup before the first request, and a thread hop to create one directory buys
-    # nothing.
     await asyncio.to_thread(shutil.rmtree, path, ignore_errors=True)
     await asyncio.to_thread(path.mkdir, parents=True, exist_ok=True)
 
@@ -240,50 +286,63 @@ async def build(db: Database, *, path: Path = INDEX_DIR, batch: int = 2000) -> i
     writer = index.writer()
 
     total = 0
-    offset = 0
-    while True:
-        rows = await db.fetch(
-            """SELECT product_id, clause_id, kind, heading, verbatim FROM clause
-               ORDER BY product_id, clause_id LIMIT $1::int OFFSET $2::int""",
-            [batch, offset],
-        )
-        if not rows:
-            break
-        for row in rows:
-            heading = row["heading"] or ""
-            body = row["verbatim"] or ""
-            writer.add_document(
-                tantivy.Document(
-                    **{
-                        F_KEY: f"{row['product_id']}|{row['clause_id']}",
-                        F_PRODUCT: row["product_id"],
-                        F_CLAUSE: row["clause_id"],
-                        F_KIND: row["kind"],
-                        F_HEADING: cut(heading),
-                        F_BODY: cut(f"{heading} {body}"),
-                        # The ngram analyser re-tokenises raw text, so it gets the text
-                        # uncut. Feeding it the sentinel-joined form would ngram across
-                        # the separator and produce tokens nothing matches.
-                        F_NGRAM: f"{heading} {body}",
-                    }
-                )
-            )
-        writer.commit()
-        total += len(rows)
-        offset += batch
+    for corpus, sql in _SOURCES.items():
+        offset = 0
+        while True:
+            rows = await db.fetch(sql, [batch, offset])
+            if not rows:
+                break
+            for row in rows:
+                _add(writer, corpus, row)
+            writer.commit()
+            total += len(rows)
+            offset += batch
 
     writer.wait_merging_threads()
-    logger.info("bm25_built", clauses=total, terms=len(terms), path=str(path))
+    logger.info("bm25_built", documents=total, terms=len(terms), path=str(path))
     return total
 
 
-class ClauseIndex:
+def _add(writer: tantivy.IndexWriter, corpus: str, row: dict[str, Any]) -> None:
     """
-    An opened index, held for the life of the process.
+    Write one document.
+
+    Args:
+        writer: The open writer.
+        corpus: Which corpus the row belongs to.
+        row: scope_id, doc_id, kind, heading and verbatim.
+
+    """
+    heading = row["heading"] or ""
+    body = row["verbatim"] or ""
+    writer.add_document(
+        tantivy.Document(
+            **{
+                F_KEY: f"{corpus}|{row['scope_id']}|{row['doc_id']}",
+                F_CORPUS: corpus,
+                F_SCOPE: row["scope_id"],
+                F_DOC: row["doc_id"],
+                F_KIND: row["kind"] or "",
+                F_HEADING: cut(heading),
+                F_BODY: cut(f"{heading} {body}"),
+                # The ngram analyser re-tokenises raw text, so it gets the text uncut.
+                # Feeding it the sentinel-joined form would ngram across the separator
+                # and produce tokens nothing matches.
+                F_NGRAM: f"{heading} {body}",
+            }
+        )
+    )
+
+
+class BM25Retriever:
+    """
+    The lexical channel, held open for the life of the process.
 
     Opening costs a directory walk and an analyzer registration; a searcher costs a
     segment reload. Neither belongs on the path a customer is waiting on.
     """
+
+    name = "bm25"
 
     def __init__(self, path: Path = INDEX_DIR) -> None:
         self.terms = load_terms(path)
@@ -295,7 +354,7 @@ class ClauseIndex:
     @property
     def size(self) -> int:
         """
-        Give how many clauses are indexed.
+        Give how many documents are indexed.
 
         Returns:
             The document count.
@@ -303,36 +362,46 @@ class ClauseIndex:
         """
         return self._searcher.num_docs
 
-    def search(self, query: str, product_ids: list[str], limit: int = 6) -> list[dict[str, Any]]:
+    def search(self, query: str, *, corpus: str = CLAUSE, scope: Sequence[str] = (), limit: int = 6) -> list[Hit]:
         """
-        Find the clauses of these contracts that bear on a query.
+        Find documents of this corpus bearing on a query.
 
         Args:
             query: What the customer asked about, uncut.
-            product_ids: The contracts the search is confined to.
+            corpus: CLAUSE or STATUTE.
+            scope: Which scope_ids to search. Empty means the whole corpus, which is
+                right for a statute and wrong for a contract — the caller decides.
             limit: Most hits to return.
 
         Returns:
-            Hits as product_id, clause_id, kind and score, best first. Empty for an
-            empty query or no contracts.
+            Hits, best first. Empty for an empty query.
 
         The boolean is assembled here rather than handed to `parse_query`. Given a
         sentinel-joined string the parser sees two tokens at adjacent positions and
         builds a **phrase** query — so 住院日額 only matched a clause containing those
-        two words side by side, and 不賠的情況 matched nothing at all. Term queries
-        under Should give the OR that BM25 scoring assumes; the ranking does the rest.
+        two words side by side, and 不賠的情況 matched nothing at all. Term queries under
+        Should give the OR that BM25 scoring assumes; the ranking does the rest.
 
-        The product filter is a Must over an Or of term queries rather than a filter
-        applied afterwards: scoring the whole corpus and then discarding everything the
-        customer does not own wastes the limit on clauses they will never be shown.
+        The scope filter is a Must rather than a filter applied afterwards: scoring the
+        whole corpus and then discarding everything the customer does not own wastes the
+        limit on documents they will never be shown.
 
         """
-        if not query.strip() or not product_ids:
+        if not query.strip():
             return []
 
-        scoped = tantivy.Query.boolean_query(
-            [(tantivy.Occur.Should, tantivy.Query.term_query(SCHEMA, F_PRODUCT, pid)) for pid in product_ids]
-        )
+        must: list[tuple[Any, Any]] = [
+            (tantivy.Occur.Must, tantivy.Query.term_query(SCHEMA, F_CORPUS, corpus))
+        ]
+        if scope:
+            must.append(
+                (
+                    tantivy.Occur.Must,
+                    tantivy.Query.boolean_query(
+                        [(tantivy.Occur.Should, tantivy.Query.term_query(SCHEMA, F_SCOPE, s)) for s in scope]
+                    ),
+                )
+            )
 
         text: list[tuple[Any, Any]] = []
         for token in cut(query).split(_SEP):
@@ -347,20 +416,15 @@ class ClauseIndex:
         if not text:
             return []
 
-        combined = tantivy.Query.boolean_query(
-            [
-                (tantivy.Occur.Must, scoped),
-                (tantivy.Occur.Must, tantivy.Query.boolean_query(text)),
-            ]
-        )
-        hits = self._searcher.search(combined, limit=limit).hits
+        must.append((tantivy.Occur.Must, tantivy.Query.boolean_query(text)))
+        hits = self._searcher.search(tantivy.Query.boolean_query(must), limit=limit).hits
         return [
-            {
-                "product_id": (doc := self._searcher.doc(addr))[F_PRODUCT][0],
-                "clause_id": doc[F_CLAUSE][0],
-                "kind": doc[F_KIND][0],
-                "score": float(score),
-            }
+            Hit(
+                corpus=(doc := self._searcher.doc(addr))[F_CORPUS][0],
+                doc_id=doc[F_DOC][0],
+                scope_id=doc[F_SCOPE][0],
+                score=float(score),
+            )
             for score, addr in hits
         ]
 
@@ -387,7 +451,7 @@ def _grams(text: str, minimum: int = 2, maximum: int = 2) -> list[str]:
     return list(dict.fromkeys(g.lower() for g in grams))
 
 
-async def open_index(db: Database, *, path: Path = INDEX_DIR) -> ClauseIndex | None:
+async def open_index(db: Database, *, path: Path = INDEX_DIR) -> BM25Retriever | None:
     """
     Open the index, building it first when it is not there.
 
@@ -404,9 +468,9 @@ async def open_index(db: Database, *, path: Path = INDEX_DIR) -> ClauseIndex | N
     try:
         if not await asyncio.to_thread((path / "meta.json").is_file):
             await build(db, path=path)
-        index = ClauseIndex(path)
+        index = BM25Retriever(path)
     except (OSError, ValueError) as exc:
         logger.warning("bm25_unavailable", error=str(exc), path=str(path))
         return None
-    logger.info("bm25_ready", clauses=index.size, terms=index.terms)
+    logger.info("bm25_ready", documents=index.size, terms=index.terms)
     return index

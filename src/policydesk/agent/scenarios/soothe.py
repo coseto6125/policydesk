@@ -42,7 +42,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute
-from policydesk.agent.scenario import Param, Scenario
+from policydesk.agent.scenario_base import Param, Scenario
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
