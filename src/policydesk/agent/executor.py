@@ -20,6 +20,7 @@ which is what makes the trace view a record rather than a diagram.
 """
 
 import re
+import time
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -50,6 +51,31 @@ class Turn:
         self.scenario: str | None = None
         self.citations: tuple[str, ...] = ()
         self.faults: tuple[str, ...] = ()
+
+
+async def _record_failure(db: Database, turn: Turn, phase: Phase, scenario: str | None, error: str, latency_ms: int) -> None:
+    """
+    Record a model call that never returned.
+
+    Args:
+        db: The database.
+        turn: The turn it belonged to.
+        phase: Where in the turn it sat.
+        scenario: Which scenario was active, if one had been chosen.
+        error: What the provider said.
+        latency_ms: How long the attempt took before giving up.
+
+    An outage is the entry the trail most needs. Recording only successes leaves an
+    auditor unable to distinguish "the desk never tried" from "the desk tried and the
+    provider was silent", and the FSC guidance asks for the second.
+
+    """
+    await db.execute(
+        """INSERT INTO llm_usage (case_id, turn_id, phase, scenario, provider, model, latency_ms, request, response)
+           VALUES ($1::bigint,$2::text,$3::text,$4::text,$5::text,$6::text,$7::int,$8::jsonb,$9::jsonb)""",
+        [turn.case_id, turn.turn_id, phase.value, scenario, "openai", "", latency_ms,
+         {"scenario": scenario}, {"error": error[:2000]}],
+    )
 
 
 async def _record(db: Database, turn: Turn, phase: Phase, completion: Completion, scenario: str | None) -> None:
@@ -197,10 +223,13 @@ async def run_turn(
     today = today or datetime.now(UTC).date()
     turn = Turn(case_id, member_id)
 
+    started = time.perf_counter()
     try:
         scenario = await _route(provider, db, turn, text)
     except ProviderError as exc:
+        latency = int((time.perf_counter() - started) * 1000)
         logger.warning("turn_unrouted", case_id=case_id, error=str(exc))
+        await _record_failure(db, turn, Phase.ROUTE, None, str(exc), latency)
         turn.reply = "櫃台的語言服務目前無回應，請稍候再試，或改由專人與您聯繫。"
         return turn
 
@@ -216,13 +245,16 @@ async def run_turn(
         return turn
 
     material = json.encode({k: _short(v) for k, v in facts.items()}).decode()
+    answering = time.perf_counter()
     try:
         completion = await provider.complete(
             instructions=f"{ROUTER_INSTRUCTIONS}\n\n{scenario.injection}",
             user_input=f"# 保戶說\n{text}\n\n# 工具回傳\n{material}",
         )
     except ProviderError as exc:
+        latency = int((time.perf_counter() - answering) * 1000)
         logger.warning("turn_unanswered", case_id=case_id, scenario=scenario.name, error=str(exc))
+        await _record_failure(db, turn, Phase.ANSWER, scenario.name, str(exc), latency)
         turn.reply = "櫃台的語言服務目前無回應，本次查詢已記錄，請稍候再試。"
         return turn
 
