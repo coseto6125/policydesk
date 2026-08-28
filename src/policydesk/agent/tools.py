@@ -297,6 +297,39 @@ async def benefit_headings(db: Database, product_ids: list[str], limit: int = 40
     )
 
 
+async def catalogue_sample(db: Database, line: str, limit: int = 5) -> list[dict[str, Any]]:
+    """
+    List what is on sale in a line, for anyone.
+
+    Args:
+        db: The database.
+        line: Which line, one of LINES.
+        limit: Most products to name.
+
+    Returns:
+        Products with their unit premium and issue-age band, cheapest first. Empty for
+        a line this desk does not sell from.
+
+    Deliberately ungated. The catalogue is a public document — an insurer publishes it —
+    so a visitor who has not proved who they are can still be told what exists. What they
+    cannot be told is which of it fits *them*, because that reads their age, their
+    occupation class and their existing cover. So the desk introduces the products and
+    asks for the number in the same breath, instead of refusing to speak.
+
+    """
+    if line not in LINES:
+        return []
+    return await db.fetch(
+        """SELECT p.product_id, p.name, p.line, ce.unit_premium, ce.unit_label,
+                  ce.issue_age_min, ce.issue_age_max, ce.requires_main
+           FROM catalog_entry ce JOIN product p USING (product_id)
+           WHERE ce.on_sale AND p.line = $1::text
+           ORDER BY ce.unit_premium ASC
+           LIMIT $2::int""",
+        [line, limit],
+    )
+
+
 @requires_identity
 async def member_underwriting(db: Database, member_id: int, *, today: date) -> dict[str, Any]:
     """

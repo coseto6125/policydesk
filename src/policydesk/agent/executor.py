@@ -59,6 +59,9 @@ class Turn:
         self.quick_replies: tuple[str, ...] = OPENERS
         """One-tap follow-ups, all of them questions. A scenario that ran replaces the
         openers with its own; one that did not leaves the customer somewhere to start."""
+        self.awaiting_identity = False
+        """The gate stopped this turn. The socket reads it to know that the next thing
+        the customer types is probably the number, not a new question."""
         self.params: dict[str, str] = {}
         """What the router filled from the conversation. Empty before a scenario runs."""
         self.computations: tuple[tuple[str, int], ...] = ()
@@ -118,8 +121,28 @@ async def _record(db: Database, turn: Turn, phase: Phase, completion: Completion
     )
 
 
+def reachable(stage: str) -> tuple[Scenario, ...]:
+    """
+    List the scenarios a case at this stage can actually enter.
+
+    Args:
+        stage: The case's current stage.
+
+    Returns:
+        The catalogue minus anything whose `requires_stage` is not met.
+
+    The router picks from what it is offered, so a scenario it must not choose is one it
+    must not see. 那我適合哪一張 was being routed to the signing-stage 身分驗證 scenario,
+    which answered 請輸入身分證字號完成驗證。驗證通過後，本案才會送交核保人員審核 — a
+    sentence about an application that did not exist. `requires_stage` was declared on
+    two scenarios and read by nothing; this is where it is read.
+
+    """
+    return tuple(s for s in CATALOGUE if s.requires_stage in (None, stage))
+
+
 async def _route(
-    provider: Provider, db: Database, turn: Turn, text: str, past: str
+    provider: Provider, db: Database, turn: Turn, text: str, past: str, stage: str
 ) -> tuple[Scenario | None, dict[str, str]]:
     """
     Ask the model which scenario this turn belongs to, and with what.
@@ -130,6 +153,7 @@ async def _route(
         turn: The turn.
         text: What the customer said.
         past: The transcript of the case so far.
+        stage: The case's stage, which decides what the router may choose from.
 
     Returns:
         The chosen scenario and the parameters the model filled from the conversation,
@@ -144,7 +168,7 @@ async def _route(
     completion = await provider.complete(
         instructions=ROUTER_INSTRUCTIONS,
         user_input=f"{past}# 本次訊息\n{text}",
-        tools=[tool_schema(s) for s in CATALOGUE],
+        tools=[tool_schema(s) for s in reachable(stage)],
     )
     await _record(db, turn, Phase.ROUTE, completion, None)
 
@@ -193,7 +217,7 @@ def _as_budget(raw: str) -> int | None:
 
 
 async def _gather(
-    db: Database, scenario: Scenario, turn: Turn, *, today: date, params: dict[str, str]
+    db: Database, scenario: Scenario, turn: Turn, *, today: date, params: dict[str, str], confirmed: bool = True
 ) -> dict[str, Any]:
     """
     Run the scenario's tools, on what the model collected.
@@ -204,11 +228,16 @@ async def _gather(
         turn: The turn.
         today: The date to judge currency against.
         params: The scenario parameters the router filled from the conversation.
+        confirmed: Whether this session has passed 資料核對. Unconfirmed, every tool
+            marked `requires_identity` is skipped — the query never runs, so there is
+            nothing read and then withheld.
 
     Returns:
-        Everything the tools returned, by tool name.
+        Everything the tools returned, by tool name. Unconfirmed, only the public ones.
 
     """
+    if not confirmed and tools.reads_identity(scenario.tools):
+        return await _public_only(db, scenario, params)
     # list_policies first, because everything else needs its product_ids.
     policies = await tools.list_policies(db, turn.member_id, today=today)
     product_ids = [p["product_id"] for p in policies]
@@ -223,6 +252,8 @@ async def _gather(
         pending["find_clause"] = tools.find_clause(db, product_ids, params.get("topic", ""))
     if "find_multiplier" in scenario.tools:
         pending["find_multiplier"] = tools.find_multiplier(db, product_ids, params.get("event", turn.procedure_hint))
+    if "catalogue_sample" in scenario.tools:
+        pending["catalogue_sample"] = tools.catalogue_sample(db, params.get("line", "health"))
     if "benefit_headings" in scenario.tools:
         pending["benefit_headings"] = tools.benefit_headings(db, product_ids)
     if "required_documents" in scenario.tools:
@@ -267,6 +298,31 @@ async def _gather(
                 "line": params.get("line", ""),
             }
 
+    return facts
+
+
+async def _public_only(db: Database, scenario: Scenario, params: dict[str, str]) -> dict[str, Any]:
+    """
+    Gather what can be said to someone who has not proved who they are.
+
+    Args:
+        db: The database.
+        scenario: Which scenario is running.
+        params: What the router collected.
+
+    Returns:
+        Public material only, plus a marker the injection reads. No member row is
+        touched, so the decorator's promise holds at the query and not merely in the
+        prose written afterwards.
+
+    """
+    # No member, so no contracts, so no clause id is legitimately citable. A citation
+    # written here fails the recheck and the reply is withheld — which is the correct
+    # outcome: an unverified session being told a clause number from someone's policy is
+    # the leak this whole gate exists to prevent.
+    facts: dict[str, Any] = {"_identity_required": True, "_allowed_clauses": frozenset()}
+    if {"suitable_products", "catalogue_sample"} & set(scenario.tools):
+        facts["catalogue_sample"] = await tools.catalogue_sample(db, params.get("line", "health"))
     return facts
 
 
@@ -338,6 +394,7 @@ async def run_turn(
     #
     # The customer's own message is already written, so the window drops its last row
     # and never repeats what the router is reading as this turn.
+    stage = await db.fetch_val('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id]) or "inquiry"
     messages, profile, brief = await asyncio.gather(
         memory.recent(db, case_id),
         memory.card(db, member_id=member_id, case_id=case_id),
@@ -351,17 +408,23 @@ async def run_turn(
         # Told to the model, so the ask arrives in the conversation rather than as a
         # system refusal, and enforced below, so a model that ignores it still reads
         # nothing. The prompt makes it natural; the gate makes it true.
+        #
+        # Note what it does not say: "ask for the number". A greeting is not a request
+        # for anyone's policy data, and answering 嗨 with 請提供您的身分證字號 is a desk
+        # frisking someone at the door. The check belongs to the question that needs it.
         known = (
             "# 本次連線尚未完成身分核對\n"
-            "保戶還沒輸入身分證字號核對身分，所以你看不到他的任何保單資料。"
-            "不要猜、不要說任何關於他保單的內容，也不要說你查不到。"
-            "請他直接在對話中提供身分證字號，你收到後就會完成核對並接著回答他原本的問題。\n\n"
+            "保戶還沒核對身分，所以你看不到他的任何保單資料。\n"
+            "打招呼、詢問服務範圍、詢問一般保險常識這類不涉及他個人資料的問題，照常回答。\n"
+            "一旦他問到自己的保單、保費、保額、理賠或投保規劃，就需要先核對身分——"
+            "那時再請他提供身分證字號，不要提早要。\n"
+            "任何情況下都不要猜測或編造他的保單內容。\n\n"
         )
     past = f"{known}{profile}{memory.transcript(messages[:-1])}"
 
     started = time.perf_counter()
     try:
-        scenario, params = await _route(provider, db, turn, text, past)
+        scenario, params = await _route(provider, db, turn, text, past, stage)
     except ProviderError as exc:
         latency = int((time.perf_counter() - started) * 1000)
         logger.warning("turn_unrouted", case_id=case_id, error=str(exc))
@@ -373,23 +436,19 @@ async def run_turn(
         return turn
 
     if not confirmed and tools.reads_identity(scenario.tools):
-        # Refused before the gather, so no member row is read at all. Refusing after
-        # would mean the data had already been fetched and the only thing withheld was
-        # the sentence about it.
+        # The gate withholds the member queries, not the conversation. Refusing the whole
+        # scenario made the desk answer 我想加保 with nothing but a demand for a number;
+        # what it should do is say what exists and ask for the number to judge the fit.
+        # `_gather` skips every tool marked `requires_identity`, so no member row is read
+        # — the withholding happens before the query, not after it.
         logger.info("scenario_gated", case_id=case_id, scenario=scenario.name)
-        turn.scenario = scenario.name
-        turn.quick_replies = ()
-        turn.reply = (
-            "您好，為了確保您的個人資料安全，我們需要先協助核對您的身分，"
-            "請提供您的身分證字號。核對完成後我會立刻為您查詢。"
-        )
-        return turn
+        turn.awaiting_identity = True
 
     turn.scenario = scenario.name
     turn.quick_replies = scenario.quick_replies or OPENERS
     turn.procedure_hint = text
     turn.params = params
-    facts = await _gather(db, scenario, turn, today=today, params=params)
+    facts = await _gather(db, scenario, turn, today=today, params=params, confirmed=confirmed)
     allowed: frozenset[str] = facts.pop("_allowed_clauses")
 
     if scenario.emit is Emit.TEMPLATE:

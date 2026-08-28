@@ -73,7 +73,13 @@ def test_the_queue_read_takes_a_member_and_has_no_default():
 
 
 def test_the_contract_route_serves_only_what_the_viewer_holds():
-    """The catalogue is public; which contract this visitor may open is not."""
+    """
+    The catalogue is public; which contract this visitor may open is not.
+
+    No desk token here — /doc/<id> is gated because it renders an applicant's national
+    ID and address, and a contract PDF renders neither. The member scope is what does
+    the work.
+    """
     body = SERVER[SERVER.index("async def contract("):SERVER.index('@app.get("/api/llm-turns")')]
     assert "EXISTS (SELECT 1 FROM policy po WHERE po.product_id = p.product_id AND po.member_id = $2::bigint)" in body
     assert "contract_out_of_scope" in body

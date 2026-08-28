@@ -25,7 +25,7 @@ from msgspec import DecodeError, json
 from sanic import Request, Sanic, Websocket, html, response
 
 from policydesk.agent import memory
-from policydesk.agent.executor import run_turn
+from policydesk.agent.executor import Turn, run_turn
 from policydesk.agent.scenario import OPENERS
 from policydesk.bootloader import logger
 from policydesk.core import commands as cmd
@@ -55,6 +55,9 @@ DESK_TOKEN = os.environ.get("POLICYDESK_DESK_TOKEN") or secrets.token_urlsafe(16
 # customer name was several hundred characters, which no pane can render and no
 # caseworker can search for.
 MAX_NAME = 40
+
+ID_LENGTH = 10
+"""A Taiwanese national ID, exactly. One letter and nine digits."""
 
 MAX_CONFIRM_ATTEMPTS = 3
 """Tries at 資料核對 before the session is handed to a person. Three is what a call
@@ -368,53 +371,48 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     }).decode())
                     await _push_case(db, ws, request.app, case_id)
 
-                case "say" if case_id is not None and not confirmed:
-                    text = (message.get("text") or "").strip()
-                    if not text:
-                        continue
-
-                    # No routing while unconfirmed. The desk's only job here is to take
-                    # the number or ask for it, so this costs no model call — and the
-                    # failed attempts never reach a scenario. A near-miss national ID
-                    # was being routed to the enrolment-stage 身分驗證 scenario, which
-                    # answered with its own template and made the customer think the
-                    # check had moved on.
+                case "say" if case_id is not None and not confirmed and len(
+                    (message.get("text") or "").strip()
+                ) == ID_LENGTH:
+                    # An unconfirmed session typing exactly ten characters is answering
+                    # the one question this desk asks before anything else. Routing it
+                    # would send a national ID to a model and answer it as a question,
+                    # which is how a near-miss ended up replayed as "the thing they
+                    # wanted to know". Not gated on having asked first: the desk may not
+                    # have asked yet, and the number is still the number.
+                    #
+                    # Length, not shape: this project answers every other question with a
+                    # prompt rather than a pattern, and the identity mechanism is the one
+                    # stated exception. A Taiwanese national ID is exactly ten characters.
+                    given = (message.get("text") or "").strip().upper()
                     held = await db.fetch_val(
                         'SELECT national_id FROM member WHERE member_id = ('
                         'SELECT member_id FROM "case" WHERE case_id = $1::bigint)',
                         [case_id],
                     )
                     attempts += 1
-                    if text.upper() != held:
-                        # Not stored in conversation_message. A wrong number is auth
-                        # traffic, not conversation, and a near-miss national ID in the
-                        # transcript is one the next prompt carries.
-                        await db.execute(
-                            """INSERT INTO audit_event (case_id, actor, action, detail, case_version)
-                               VALUES ($1::bigint,'customer','identity_attempt',$2::jsonb,
-                                       (SELECT case_version FROM "case" WHERE case_id = $1::bigint))""",
-                            [case_id, {"attempts": attempts}],
-                        )
-                        # The first thing they asked is the thing to come back to, so it
-                        # is captured once and never overwritten by a later attempt.
-                        pending_question = pending_question or text
+                    await db.execute(
+                        """INSERT INTO audit_event (case_id, actor, action, detail, case_version)
+                           VALUES ($1::bigint,'customer',$2::text,$3::jsonb,
+                                   (SELECT case_version FROM "case" WHERE case_id = $1::bigint))""",
+                        [
+                            case_id,
+                            "identity_confirmed" if given == held else "identity_attempt",
+                            {"attempts": attempts, "channel": "chat"},
+                        ],
+                    )
+                    # Written to the audit trail, never to the transcript. A near-miss
+                    # national ID is one character from the real one, and either would
+                    # ride in the history block of every later prompt.
+                    if given != held:
                         await ws.send(json.encode({
                             "type": "reply",
-                            "text": (
-                                "您好，為了確保您的個人資料安全，我們需要先協助核對您的身分，"
-                                "請提供您的身分證字號。核對完成後我會立刻為您查詢。"
-                            ),
+                            "text": "這組號碼與檔案不符，請再確認一次您的身分證字號。",
                             "scenario": None, "citations": [], "faults": [], "params": {}, "quick": [],
                         }).decode())
                         continue
 
                     confirmed = True
-                    await db.execute(
-                        """INSERT INTO audit_event (case_id, actor, action, detail, case_version)
-                           VALUES ($1::bigint,'customer','identity_confirmed',$2::jsonb,
-                                   (SELECT case_version FROM "case" WHERE case_id = $1::bigint))""",
-                        [case_id, {"attempts": attempts, "channel": "chat"}],
-                    )
                     logger.info("identity_confirmed", case_id=case_id, attempts=attempts)
                     await ws.send(json.encode({"type": "confirmed"}).decode())
                     await _push_case(db, ws, request.app, case_id)
@@ -429,15 +427,20 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         continue
 
                     # Answer what they actually asked, before the check interrupted them.
-                    text = pending_question
-                    pending_question = None
+                    text, pending_question = pending_question, None
                     await _answer(request, ws, db, case_id=case_id, text=text, confirmed=True)
 
                 case "say" if case_id is not None:
                     text = (message.get("text") or "").strip()
                     if not text:
                         continue
-                    await _answer(request, ws, db, case_id=case_id, text=text, confirmed=True)
+                    await _answer(request, ws, db, case_id=case_id, text=text, confirmed=confirmed)
+                    if not confirmed:
+                        # The latest question, not the first. Keeping the first replayed
+                        # 嗨 after the check passed; the thing worth coming back to is
+                        # whatever they were asking when the desk stopped them. The ID
+                        # attempts cannot overwrite it — they never reach this branch.
+                        pending_question = text
 
                 case "upload" if case_id is not None:
                     document_id = int(message.get("document_id") or 0)
@@ -501,7 +504,9 @@ async def _push_case(db: Database, ws: Websocket, application: Sanic, case_id: i
     await _broadcast_desk(application, payload)
 
 
-async def _answer(request: Request, ws: Websocket, db: Database, *, case_id: int, text: str, confirmed: bool) -> None:
+async def _answer(
+    request: Request, ws: Websocket, db: Database, *, case_id: int, text: str, confirmed: bool
+) -> Turn:
     """
     Run one turn and send it, recording both halves of the exchange.
 
@@ -512,6 +517,9 @@ async def _answer(request: Request, ws: Websocket, db: Database, *, case_id: int
         case_id: Which case.
         text: What the customer said.
         confirmed: Whether this session has passed 資料核對.
+
+    Returns:
+        The turn, so the caller can read whether the identity gate stopped it.
 
     """
     await db.execute(
@@ -545,6 +553,7 @@ async def _answer(request: Request, ws: Websocket, db: Database, *, case_id: int
         "faults": list(turn.faults),
     }).decode())
     await _push_case(db, ws, request.app, case_id)
+    return turn
 
 
 @app.websocket("/ws/desk")
@@ -651,9 +660,12 @@ async def contract(request: Request, product_id: str):
     a figure quoted in the chat can be checked against the page it came from, which is
     the difference between a citation and a claim.
 
+    No desk token. A contract is the insurer's own published document — /doc/<id> is
+    gated because it renders an applicant's national ID and address, and this route
+    renders neither. The member scope stays: which contract this visitor may open is
+    still decided by the policies in their own name.
+
     """
-    if request.args.get("token", "") != DESK_TOKEN:
-        return response.text("需要授權", status=403)
     try:
         viewer = int(request.args.get("member", ""))
     except (TypeError, ValueError):
