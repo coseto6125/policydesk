@@ -31,6 +31,7 @@ is a statute the customer cannot check, and being checkable is the entire reason
 quote law at a person who is already angry.
 """
 
+import asyncio
 import re
 import ssl
 from datetime import date
@@ -493,7 +494,13 @@ fuller list to the shared BM25 dictionary, which is where it belongs.
 
 
 async def search_statute(
-    db: Database, topic: str, statute_ids: list[str] | None = None, limit: int = 5, *, siblings: bool = True
+    db: Database,
+    topic: str,
+    statute_ids: list[str] | None = None,
+    limit: int = 5,
+    *,
+    siblings: bool = True,
+    retriever: Any | None = None,
 ) -> list[dict[str, Any]]:
     """
     Find statute provisions bearing on a topic.
@@ -506,6 +513,8 @@ async def search_statute(
             is longer than this.
         siblings: Whether to bring each hit's neighbouring 項 with it. See `with_siblings`
             for why the default is yes.
+        retriever: A `policydesk.retrieval.base.Retriever` over the shared index. Given
+            one, it does the ranking and the SQL below is not run; None falls back to it.
 
     Returns:
         Provision rows, best first.
@@ -530,6 +539,9 @@ async def search_statute(
     the same terms `find_clause` already has: a desk that ranks worse still answers, one
     that will not start does not.
     """
+    if retriever is not None and (ranked := await _ranked_by(db, retriever, topic, statute_ids, limit)):
+        return await with_siblings(db, ranked) if siblings else ranked
+
     grams = _tokenise(topic)
     if not grams:
         return []
@@ -577,6 +589,50 @@ them about company structure, and a hit on one of those drags the other seven in
 a customer is reading while angry. Two either side reaches 第64條第3項 from 第64條第2項,
 which is the case this exists for.
 """
+
+
+async def _ranked_by(
+    db: Database, retriever: Any, topic: str, statute_ids: list[str] | None, limit: int
+) -> list[dict[str, Any]]:
+    """
+    Rank through the shared index, then read the provisions it named.
+
+    Args:
+        db: The database.
+        retriever: Anything satisfying the `Retriever` protocol.
+        topic: The complaint.
+        statute_ids: Statutes to restrict to, or None for all of them.
+        limit: Most provisions to rank.
+
+    Returns:
+        Provision rows in the retriever's order. Empty when it found nothing, which sends
+        the caller to the SQL fallback rather than to an empty reply.
+
+    The index holds both corpora, so the corpus filter is what keeps a customer's own
+    contract clauses out of an answer about the law. Whole-article rows are dropped for
+    the reason they are dropped everywhere: the text is its paragraphs concatenated.
+    """
+    from policydesk.retrieval.base import STATUTE
+
+    hits = await asyncio.to_thread(
+        retriever.search, topic, corpus=STATUTE, scope=tuple(statute_ids or ()), limit=limit * 2
+    )
+    keys = [(h.scope_id, h.doc_id) for h in hits]
+    if not keys:
+        return []
+    rows = await db.fetch(
+        """SELECT a.statute_id, s.name AS statute_name, a.doc_id, a.article, a.branch, a.paragraph,
+                  a.subparagraph, a.chapter, a.verbatim, s.amended_at, s.source_url
+           FROM statute_article a
+           JOIN statute s USING (statute_id)
+           JOIN unnest($1::text[], $2::text[]) AS want(statute_id, doc_id)
+             ON want.statute_id = a.statute_id AND want.doc_id = a.doc_id
+           WHERE a.paragraph IS NOT NULL""",
+        [[k[0] for k in keys], [k[1] for k in keys]],
+    )
+    rank = {key: position for position, key in enumerate(keys)}
+    rows.sort(key=lambda r: rank.get((r["statute_id"], r["doc_id"]), len(rank)))
+    return rows[:limit]
 
 
 async def with_siblings(db: Database, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
