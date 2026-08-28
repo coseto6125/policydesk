@@ -362,3 +362,46 @@ async def test_siblings_still_apply_when_a_retriever_ranked(loaded):
     ranked = _FakeRetriever([_hit("insurance_act", "art.64.2", 9.0)])
     rows = await statute.search_statute(loaded, "解除契約", ["insurance_act"], limit=1, retriever=ranked)
     assert "art.64.3" in {r["doc_id"] for r in rows}
+
+
+async def test_terms_include_the_acts_a_complaint_is_made_of(loaded):
+    # The half definitions and chapter titles both miss. Nobody types 要保人之據實說明義務;
+    # they type 我有據實說明. It appears once in 保險法, so frequency cannot find it either
+    # — the modal (應/得/不得/負) is what marks it.
+    terms = set(await statute.statute_terms(loaded))
+    assert {"據實說明", "解除契約", "終止契約"} <= terms
+
+
+async def test_terms_include_concepts_only_a_chapter_title_names(loaded):
+    # 保險利益 and 複保險 head a 節 and are never introduced by a definition sentence.
+    terms = set(await statute.statute_terms(loaded))
+    assert {"保險利益", "複保險", "特約條款"} <= terms
+
+
+def test_a_modal_object_that_starts_mid_phrase_is_not_a_term():
+    # 之損害賠償 and 依超過部份 are pieces of a sentence the modal happened to precede, not
+    # things anyone does. A dictionary entry nobody types is a tokeniser decision on every
+    # query, forever.
+    assert not statute._is_term("之損害賠償")
+    assert not statute._is_term("依超過部份")
+    assert not statute._is_term("予以限制")
+    assert not statute._is_term("保險人之")
+
+
+def test_a_complete_act_is_a_term():
+    assert statute._is_term("據實說明")
+    assert statute._is_term("解除契約")
+    assert statute._is_term("負賠償責任")
+
+
+async def test_the_modal_pattern_contributes_no_fragments(loaded):
+    # Asserted on the modal's output specifically. The full term list legitimately holds
+    # 其他財產保險 and 金融消費者, which come from a chapter title and a definition — the
+    # rule is about where a term came from, not about the characters it starts with.
+    import re
+
+    rows = await loaded.fetch("SELECT verbatim FROM statute_article")
+    acted = re.compile(r"(?:不得|應|得|負)([\u4e00-\u9fff]{2,6}?)(?=[，,。；、）]|$)")
+    kept = {t for row in rows for t in acted.findall(row["verbatim"]) if statute._is_term(t)}
+    assert not [t for t in kept if t.startswith(("之", "依", "予", "其", "該", "前"))]
+    assert "據實說明" in kept

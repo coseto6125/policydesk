@@ -268,3 +268,41 @@ async def test_the_looser_pattern_still_catches_an_invented_provision(db):
     assert await recheck_citations(db, "依保險法第999條第1項") == [("保險法", "art.999.1")]
     assert await recheck_citations(db, "依保險法施行細則第64條第2項") == [("保險法施行細則", "art.64.2")]
     assert await recheck_citations(db, "依保險法第64條第2項") == []
+
+
+def test_a_scenario_module_imports_cleanly_from_any_entry_point():
+    # The cycle this guards against was entry-point dependent: importing through
+    # `scenario` worked and importing `scenarios.soothe` directly raised ImportError on a
+    # name that was plainly there. A test inside an already-imported process cannot see
+    # that, so each entry point gets a cold interpreter.
+    import subprocess
+    import sys
+
+    for entry in (
+        "policydesk.agent.scenarios.soothe",
+        "policydesk.agent.scenario",
+        "policydesk.agent.scenario_base",
+        "policydesk.agent.executor",
+    ):
+        done = subprocess.run(  # noqa: S603  (argv is built here, from a literal tuple)
+            [sys.executable, "-c", f"import {entry}"], capture_output=True, text=True, check=False
+        )
+        assert done.returncode == 0, f"{entry}: {done.stderr.strip().splitlines()[-1:]}"
+
+
+def test_the_scenarios_package_pulls_in_nothing():
+    # `scenario_base` broke the cycle, so this package needs no import to order it. Adding
+    # one would rebuild the cycle in a quieter place: every scenario module would drag in
+    # the catalogue, and a scenario wanting only `Scenario` would load all the others.
+    # Read as source, not as attributes: importing a submodule binds its name on the
+    # package, so `vars()` reports `soothe` whether or not this file imported anything.
+    import inspect
+
+    from policydesk.agent import scenarios as package
+
+    body = [
+        line
+        for line in inspect.getsource(package).splitlines()
+        if line.startswith(("import ", "from ")) and "__future__" not in line
+    ]
+    assert not body, body
