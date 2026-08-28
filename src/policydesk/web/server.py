@@ -98,6 +98,13 @@ async def download_document(request: Request, document_id: int):
     the image for no gain the applicant can see.
 
     """
+    # Same guard as the desk socket. document_id is a sequential bigserial, so without
+    # it `for i in $(seq 1 30)` walks every applicant's national ID, birth date,
+    # address and declared conditions — which is exactly what an acceptance run did.
+    if request.args.get("token", "") != DESK_TOKEN:
+        logger.warning("document_access_rejected", document_id=document_id, peer=str(request.ip))
+        return response.text("需要授權", status=403)
+
     row = await request.app.ctx.db.fetch_one(
         """SELECT d.document_id, d.kind, d.title, d.sha, d.signed_at,
                   m.display_name, m.national_id, m.birth_date, m.occupation, m.occupation_class,

@@ -261,21 +261,33 @@ async def record_signature(db: Database, case_id: int, *, document_id: int, part
         return Refusal(reason="該文件不屬於本案件，不得簽署")
 
     await db.execute(
-        "UPDATE case_document SET signed_at = now() WHERE document_id = $1::bigint AND case_id = $2::bigint",
-        [document_id, case_id],
-    )
-    await db.execute(
         """INSERT INTO authorization_grant (case_id, stage, scope, document_sha)
            VALUES ($1::bigint,$2::text,$3::text,$4::text)""",
         [case_id, Stage.SIGNED.value, f"{party} 簽署文件 {document_id}", document_sha],
     )
+
+    # 要保人 and 被保險人 must each sign personally or the contract may be void, so a
+    # document counts as signed only once both grants exist. Marking it on the first
+    # signature let a case reach SIGNED on one party's, with the other's absence
+    # visible nowhere: the party was recorded only inside a grant's scope text, which
+    # nothing read.
+    signed_parties = await db.fetch_val(
+        """SELECT count(DISTINCT split_part(scope, ' ', 1)) FROM authorization_grant
+           WHERE case_id = $1::bigint AND scope LIKE '%' || $2::text""",
+        [case_id, f"簽署文件 {document_id}"],
+    )
+    if int(signed_parties or 0) >= len(SIGNING_PARTIES):
+        await db.execute(
+            "UPDATE case_document SET signed_at = now() WHERE document_id = $1::bigint AND case_id = $2::bigint",
+            [document_id, case_id],
+        )
 
     outstanding = await db.fetch(
         "SELECT kind FROM case_document WHERE case_id = $1::bigint AND signed_at IS NULL",
         [case_id],
     )
     if outstanding:
-        return Refusal(reason="尚有文件未簽署", missing=tuple(r["kind"] for r in outstanding))
+        return Refusal(reason="尚有文件未經要保人及被保險人雙方簽署", missing=tuple(r["kind"] for r in outstanding))
 
     case = await db.fetch_one('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
     if case is None or not may_advance(Stage(case["stage"]), Stage.SIGNED):
@@ -302,6 +314,27 @@ async def verify_identity(db: Database, case_id: int, *, national_id: str, verif
     leave no trace cannot be audited.
 
     """
+    case = await db.fetch_one(
+        """SELECT c.stage, m.national_id AS member_national_id
+           FROM "case" c JOIN member m USING (member_id) WHERE c.case_id = $1::bigint""",
+        [case_id],
+    )
+    if case is None:
+        return Refusal(reason="查無此案件")
+
+    # The stage gate runs before the row is written. Writing first put verified=true
+    # rows on cases still at INQUIRY, and submit_for_review reads bool_or(verified) —
+    # so a check taken before any document existed satisfied the identity leg forever.
+    if not may_advance(Stage(case["stage"]), Stage.VERIFIED):
+        return Refusal(reason="案件尚未完成簽署，不可進行身分驗證")
+
+    # A well-formed number is not the case owner's number. The provider answers
+    # "is this a valid identity"; only this system knows whose case it is, and an
+    # acceptance run passed two strangers' IDs on someone else's case because nothing
+    # here compared them.
+    if verified and national_id != case["member_national_id"]:
+        verified, reason = False, "所輸入身分證字號與本案要保人不符"
+
     await db.execute(
         """INSERT INTO identity_check (case_id, national_id, verified, reason, latency_ms)
            VALUES ($1::bigint,$2::text,$3::bool,$4::text,$5::int)""",
@@ -310,9 +343,6 @@ async def verify_identity(db: Database, case_id: int, *, national_id: str, verif
     if not verified:
         return Refusal(reason=reason or "身分驗證未通過")
 
-    case = await db.fetch_one('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
-    if case is None or not may_advance(Stage(case["stage"]), Stage.VERIFIED):
-        return Refusal(reason="案件尚未完成簽署，不可進行身分驗證")
     return await _bump(db, case_id, Stage.VERIFIED, "gov:mock", "identity_verified", {"national_id": national_id})
 
 
