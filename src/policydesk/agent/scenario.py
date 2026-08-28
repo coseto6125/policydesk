@@ -103,6 +103,26 @@ def tool_schema(scenario: Scenario) -> dict:
     }
 
 
+POLICY_OVERVIEW = Scenario(
+    name="policy_overview",
+    display_name="保單總覽",
+    description=(
+        "保戶問自己保了什麼、手上有哪些保單、目前的保障範圍、有沒有保到某一類時使用。"
+        "這個情境不需要任何參數，保戶只要問了就直接查。"
+    ),
+    injection=(
+        "你正在向保戶說明他名下每一張保單保什麼。"
+        "工具已經回傳他持有的保單與每張保單的給付條款，直接照著說明，不要反問他想了解哪一項。"
+        "逐張列出：商品名稱、保單號碼、保險金額、狀態（有效或已停效），"
+        "以及該張保單的給付項目，每一項後面標註 clause_id，例如 [art.5]。"
+        "已停效的保單要明講目前不提供保障。"
+        "不要說任何未經工具回傳的金額或條款。"
+    ),
+    tools=("list_policies", "benefit_headings"),
+    quick_replies=("這些保障有哪些不賠的情況？", "我想了解保額夠不夠", "想確認有沒有重複投保"),
+    transitions=("explain_cover", "recommend", "claim_checklist"),
+)
+
 EXPLAIN_COVER = Scenario(
     name="explain_cover",
     display_name="查詢保障內容",
@@ -116,7 +136,16 @@ EXPLAIN_COVER = Scenario(
         "不要說任何金額，金額由計算工具產生。"
     ),
     tools=("find_clause", "list_policies"),
-    params=(Param(name="topic", description="保戶想了解的保障主題", example="住院日額"),),
+    params=(
+        Param(
+            name="topic",
+            description=(
+                "保戶想了解的保障主題。保戶沒有指明主題時填「全部」，工具會回傳整份條款，"
+                "不要為了這個參數回頭問保戶"
+            ),
+            example="住院日額",
+        ),
+    ),
     transitions=("recommend", "claim_checklist"),
     quick_replies=("這張有哪些不賠的情況？", "等待期是多久？", "我想了解目前的保障夠不夠"),
 )
@@ -136,7 +165,7 @@ RECOMMEND = Scenario(
         "結尾必須載明：本推介由登錄業務員具名負責。"
     ),
     quick_replies=("這幾張的等待期差在哪？", "我想了解各張的除外責任", "想確認保費怎麼算出來的"),
-    tools=("suitable_products",),
+    tools=("suitable_products", "member_underwriting"),
     params=(
         Param(name="need", description="保戶自己說的保障需求，照原話填", example="想加保壽險"),
         Param(
@@ -227,6 +256,7 @@ COVERAGE = Scenario(
 )
 
 CATALOGUE: tuple[Scenario, ...] = (
+    POLICY_OVERVIEW,
     EXPLAIN_COVER,
     RECOMMEND,
     ISSUE_DOCUMENTS,
@@ -241,8 +271,20 @@ BY_NAME: dict[str, Scenario] = {s.name: s for s in CATALOGUE}
 ROUTER_INSTRUCTIONS = """\
 你是台灣壽險公司的保險櫃台助理，面對的是保戶本人。
 
-選擇一個最符合保戶當下訴求的情境工具並呼叫它。工具的每個參數都必須從對話中取得，
-取不到就先向保戶詢問，不要自行填入。
+選擇一個最符合保戶當下訴求的情境工具並呼叫它。
+
+**能查的先查完，查完還缺才問。** 保戶的保單、保額、繳費紀錄、職業等級、年齡、
+既有保障範圍、條款內容，這些系統全都查得到，一律先呼叫情境工具讓它去查，
+不要為了「想了解哪一項」「哪一張保單」這種可以自己查出來的事回頭問保戶。
+保戶說「我想了解目前的保單保什麼」時，正確動作是呼叫 policy_overview 把答案查出來，
+不是反問他想了解哪一項。
+
+只有系統真的查不到的事才問：保戶的預算、事故日期、就醫情形、他本人的意願與選擇。
+每次最多問兩件事。工具的參數能從對話或已知資訊推出來就自己填，填不出來才問。
+
+**要問的時候，先把查到的東西攤出來再問。**「這位保戶的現況」區塊列了他名下每一張保單、
+每張保單的給付項目、以及他可投保各商品線的最低年繳保費。要問哪一項保障，就把那幾項列給他選；
+要問預算，就先講最低保費是多少再問他能負擔多少。不要問一個保戶還要自己回去翻保單才答得出來的問題。
 
 「先前對話」區塊是本次案件已經說過的話。保戶在稍早任何一則訊息裡給過的資訊就是已知，
 直接填進參數，不要再問一次。只有整段對話都找不到的參數才需要開口問。

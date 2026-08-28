@@ -479,13 +479,15 @@ async def snapshot(db: Database, case_id: int) -> dict | None:
     # was true and there was nowhere to check it.
     case["policies"] = await db.fetch(
         """SELECT po.policy_id, po.policy_number, po.product_id, po.sum_insured, po.effective_at, po.lapsed_at,
-                  po.main_policy_ref, pr.name AS product_name, pr.line,
+                  po.main_policy_id, main.policy_number AS main_policy_number,
+                  pr.name AS product_name, pr.line,
                   round(coalesce(ce.unit_premium, 0) * po.sum_insured / 1000.0) AS annual_premium
            FROM policy po
            JOIN product pr USING (product_id)
            LEFT JOIN catalog_entry ce USING (product_id)
+           LEFT JOIN policy main ON main.policy_id = po.main_policy_id
            WHERE po.member_id = $1::bigint
-           ORDER BY po.main_policy_ref NULLS FIRST, po.policy_id""",
+           ORDER BY po.main_policy_id NULLS FIRST, po.policy_id""",
         [case["member_id"]],
     )
     case["generated_at"] = datetime.now(UTC).isoformat()

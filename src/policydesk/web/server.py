@@ -26,6 +26,7 @@ from sanic import Request, Sanic, Websocket, html, response
 
 from policydesk.agent import memory
 from policydesk.agent.executor import run_turn
+from policydesk.agent.scenario import OPENERS
 from policydesk.bootloader import logger
 from policydesk.core import commands as cmd
 from policydesk.core.db import Database
@@ -33,7 +34,7 @@ from policydesk.gov.identity import Sex, verify
 from policydesk.llm.provider import build_provider
 from policydesk.synthetic.alias import mint
 from policydesk.synthetic.person import generate, insurance_age, occupation_catalogue
-from policydesk.synthetic.portfolio import enrol
+from policydesk.synthetic.portfolio import DEFAULT_PRESET, enrol, preset_catalogue
 from policydesk.web.session import Registry
 
 STATIC = Path(__file__).parent / "static"
@@ -54,6 +55,24 @@ DESK_TOKEN = os.environ.get("POLICYDESK_DESK_TOKEN") or secrets.token_urlsafe(16
 # customer name was several hundred characters, which no pane can render and no
 # caseworker can search for.
 MAX_NAME = 40
+
+MAX_CONFIRM_ATTEMPTS = 3
+"""Tries at 資料核對 before the session is handed to a person. Three is what a call
+centre allows, and an unbounded retry is an offline guessing machine."""
+
+def _mask(national_id: str) -> str:
+    """
+    Show enough of an ID to prompt for it, never enough to pass the check.
+
+    Args:
+        national_id: The full number.
+
+    Returns:
+        The first two characters and the last, with the middle hidden.
+
+    """
+    return f"{national_id[:2]}{'*' * max(0, len(national_id) - 3)}{national_id[-1:]}"
+
 
 CORPUS = Path(os.environ.get("POLICYDESK_CORPUS", "data/cathay"))
 """Where the insurer's own PDFs live, named by digest. The desk serves a contract from
@@ -225,6 +244,16 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
     previous_name: str = ""
     session = None
     case_id: int | None = None
+    member_id: int | None = None
+
+    # Session state, and the reason it is a session and not a row: this is 資料核對, the
+    # check a call centre runs before it will discuss anything about your policies. It
+    # proves the person on this connection is the customer. It is not the 投保身分驗證
+    # that `identity_check` holds — that one runs once, against the government mock, at
+    # the signing stage, and stays valid for the case. This one expires with the socket,
+    # because the next connection is a different person until it proves otherwise.
+    confirmed = False
+    attempts = 0
 
     try:
         async for raw in ws:
@@ -272,7 +301,10 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         await ws.send(json.encode({
                             "type": "profile",
                             "name": name,
-                            "national_id": existing["national_id"],
+                            # Masked. A returning session has proved nothing yet, and
+                            # sending the number to the browser before the check is
+                            # sending the answer along with the question.
+                            "national_id": _mask(existing["national_id"]),
                             "sex": existing["sex"],
                             "birth_date": existing["birth_date"].isoformat(),
                             "insurance_age": insurance_age(existing["birth_date"], datetime.now(UTC).date()),
@@ -292,6 +324,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         "age": draft.age_on(datetime.now(UTC).date()),
                         "occupation": draft.occupation,
                         "occupations": occupation_catalogue(),
+                        "presets": preset_catalogue(),
                     }).decode())
 
                 case "enrol" if name is not None and case_id is None:
@@ -310,7 +343,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         age=chosen_age or None,
                         occupation=str(message.get("occupation") or ""),
                     )
-                    member_id = await enrol(person, db)
+                    member_id = await enrol(person, db, preset=str(message.get("preset") or DEFAULT_PRESET))
                     case_id = (await cmd.open_case(db, member_id)).case_id
 
                     await ws.send(json.encode({
@@ -338,6 +371,66 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                            VALUES ($1::bigint,'customer',$2::text)""",
                         [case_id, text],
                     )
+                    # 資料核對, taken in the conversation rather than in a form. The
+                    # comparison is an equality test against the member's own number —
+                    # the one deliberate exception to this desk's no-regex rule, because
+                    # an identity check is exactly the case where a fuzzy match is worse
+                    # than no match. Nothing is read until it passes.
+                    if not confirmed:
+                        held = await db.fetch_val(
+                            'SELECT national_id FROM member WHERE member_id = ('
+                            'SELECT member_id FROM "case" WHERE case_id = $1::bigint)',
+                            [case_id],
+                        )
+                        if text.strip().upper() == held:
+                            confirmed = True
+                            attempts += 1
+                            await db.execute(
+                                """INSERT INTO audit_event (case_id, actor, action, detail, case_version)
+                                   VALUES ($1::bigint,'customer','identity_confirmed',$2::jsonb,
+                                           (SELECT case_version FROM "case" WHERE case_id = $1::bigint))""",
+                                [case_id, {"attempts": attempts, "channel": "chat"}],
+                            )
+                            logger.info("identity_confirmed", case_id=case_id, attempts=attempts)
+                            # The number itself never enters the transcript. It would sit
+                            # in the history block of every later prompt, and a national
+                            # ID in a model's context is a national ID that leaves.
+                            await db.execute(
+                                """INSERT INTO conversation_message (case_id, speaker, text)
+                                   VALUES ($1::bigint,'customer','（已提供身分證字號完成核對）')""",
+                                [case_id],
+                            )
+                            await ws.send(json.encode({"type": "confirmed"}).decode())
+                            await _push_case(db, ws, request.app, case_id)
+
+                            # Answer what they actually asked. They asked it before the
+                            # check interrupted them, and making them type it again is
+                            # the desk forgetting the thing it just asked them to wait for.
+                            pending_question = await db.fetch_val(
+                                """SELECT text FROM conversation_message
+                                   WHERE case_id = $1::bigint AND speaker = 'customer'
+                                     AND text <> '（已提供身分證字號完成核對）'
+                                   ORDER BY message_id DESC LIMIT 1""",
+                                [case_id],
+                            )
+                            if not pending_question:
+                                await ws.send(json.encode({
+                                    "type": "reply",
+                                    "text": "感謝您的耐心核對，身分已確認。請問需要什麼協助？",
+                                    "scenario": None, "citations": [], "faults": [],
+                                    "params": {}, "quick": list(OPENERS),
+                                }).decode())
+                                continue
+                            text = pending_question
+                        else:
+                            attempts += 1
+                            await db.execute(
+                                """INSERT INTO audit_event (case_id, actor, action, detail, case_version)
+                                   VALUES ($1::bigint,'customer','identity_attempt',$2::jsonb,
+                                           (SELECT case_version FROM "case" WHERE case_id = $1::bigint))""",
+                                [case_id, {"attempts": attempts}],
+                            )
+
                     # The profile freezes on the first message, as specified.
                     await db.execute(
                         """UPDATE member SET profile_frozen_at = coalesce(profile_frozen_at, now())
@@ -349,7 +442,8 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         'SELECT member_id FROM "case" WHERE case_id = $1::bigint', [case_id]
                     )
                     turn = await run_turn(
-                        request.app.ctx.provider, db, case_id=case_id, member_id=member_id, text=text
+                        request.app.ctx.provider, db,
+                        case_id=case_id, member_id=member_id, text=text, confirmed=confirmed,
                     )
                     await db.execute(
                         """INSERT INTO conversation_message (case_id, speaker, text, turn_id)
