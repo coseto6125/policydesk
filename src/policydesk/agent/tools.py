@@ -15,6 +15,8 @@ lookup rather than reaching a customer.
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from policydesk.bootloader import logger
+
 if TYPE_CHECKING:
     from datetime import date
 
@@ -87,8 +89,13 @@ async def find_clause(db: Database, product_ids: list[str], topic: str, limit: i
     )
 
 
+LINES: frozenset[str] = frozenset({"health", "life", "accident", "annuity", "investment"})
+"""The product lines a customer can be sold from. `other` is everything the catalogue
+could not classify, so it is never offered."""
+
+
 async def suitable_products(
-    db: Database, *, insurance_age: int, occupation_class: int, budget: int, limit: int = 5
+    db: Database, *, insurance_age: int, occupation_class: int, budget: int, line: str, limit: int = 5
 ) -> list[dict[str, Any]]:
     """
     Select products this person could actually be sold.
@@ -98,10 +105,14 @@ async def suitable_products(
         insurance_age: 保險年齡, not the plain age.
         occupation_class: 1 to 7.
         budget: Annual premium the customer can carry.
+        line: Which line to select from, one of LINES. A customer asking about 壽險 was
+            being shown health products only, because this was pinned to 'health' — the
+            88 life products on sale could not be reached from any conversation.
         limit: Most products to return.
 
     Returns:
-        Products within the issue-age band, the occupation ceiling and the budget.
+        Products within the issue-age band, the occupation ceiling and the budget, or
+        an empty list when the line is not one this desk sells from.
 
     The selection is a query, not a judgement. That is deliberate: asked how the desk
     avoids steering a customer to a product that pays it more, the answer is that the
@@ -111,19 +122,48 @@ async def suitable_products(
     # Decimal, not int: psqlpy binds a numeric parameter from Decimal only, and an int
     # fails with a wire-protocol error that names neither the parameter nor the type.
     # Converted here so no caller has to know.
+    if line not in LINES:
+        logger.warning("unsellable_line", line=line)
+        return []
     return await db.fetch(
-        """SELECT p.product_id, p.name, p.attachment, ce.unit_premium, ce.unit_label,
+        """SELECT p.product_id, p.name, p.attachment, p.line, ce.unit_premium, ce.unit_label,
                   ce.issue_age_min, ce.issue_age_max, ce.max_occupation, ce.requires_main
            FROM catalog_entry ce JOIN product p USING (product_id)
            WHERE ce.on_sale
-             AND p.line = 'health'
+             AND p.line = $5::text
              AND $1::int BETWEEN ce.issue_age_min AND ce.issue_age_max
              AND $2::int <= ce.max_occupation
              AND ce.unit_premium <= $3::numeric
            ORDER BY ce.unit_premium ASC
            LIMIT $4::int""",
-        [insurance_age, occupation_class, Decimal(budget), limit],
+        [insurance_age, occupation_class, Decimal(budget), limit, line],
     )
+
+
+async def history(db: Database, case_id: int, limit: int = 10) -> list[dict[str, Any]]:
+    """
+    Read back what has already been said on this case.
+
+    Args:
+        db: The database.
+        case_id: Which case.
+        limit: How many of the most recent messages to carry.
+
+    Returns:
+        Messages oldest-first, so the model reads them in the order they happened.
+
+    Every turn was already being written here and none was ever read, so the desk
+    asked a customer for a budget they had stated two turns earlier. The window is
+    bounded because a case runs long and the router only needs what is still open.
+
+    """
+    rows = await db.fetch(
+        """SELECT speaker, text FROM conversation_message
+           WHERE case_id = $1::bigint ORDER BY message_id DESC LIMIT $2::int""",
+        [case_id, limit],
+    )
+    rows.reverse()
+    return rows
 
 
 async def required_documents(db: Database, product_ids: list[str]) -> list[dict[str, Any]]:

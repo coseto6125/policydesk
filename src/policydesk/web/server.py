@@ -268,6 +268,10 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         "type": "reply",
                         "text": turn.reply,
                         "scenario": turn.scenario,
+                        # What the router carried over from earlier turns. Shown in the
+                        # chat so a reader can see the desk answered from the whole
+                        # conversation rather than from the last sentence.
+                        "params": turn.params,
                         "citations": list(turn.citations),
                         "faults": list(turn.faults),
                     }).decode())

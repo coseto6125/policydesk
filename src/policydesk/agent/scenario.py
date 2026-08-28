@@ -125,8 +125,16 @@ RECOMMEND = Scenario(
     ),
     tools=("suitable_products",),
     params=(
-        Param(name="need", description="保戶的保障需求", example="住院醫療"),
-        Param(name="budget", description="保戶可負擔的年繳保費", example="20000"),
+        Param(name="need", description="保戶自己說的保障需求，照原話填", example="想加保壽險"),
+        Param(
+            name="line",
+            description=(
+                "把上述需求歸到一個商品線，只填下列其中一個英文字："
+                "health 醫療、life 壽險、accident 意外、annuity 年金、investment 投資型"
+            ),
+            example="life",
+        ),
+        Param(name="budget", description="保戶可負擔的年繳保費，只填阿拉伯數字", example="20000"),
     ),
     transitions=("issue_documents",),
 )
@@ -219,6 +227,9 @@ ROUTER_INSTRUCTIONS = """\
 
 選擇一個最符合保戶當下訴求的情境工具並呼叫它。工具的每個參數都必須從對話中取得，
 取不到就先向保戶詢問，不要自行填入。
+
+「先前對話」區塊是本次案件已經說過的話。保戶在稍早任何一則訊息裡給過的資訊就是已知，
+直接填進參數，不要再問一次。只有整段對話都找不到的參數才需要開口問。
 
 你不得自行判斷賠不賠、不得承諾任何金額、不得撰寫或改寫條款文字。
 這些都由確定性工具產生，你只負責把工具回傳的內容說清楚。
