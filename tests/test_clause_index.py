@@ -1,4 +1,5 @@
-"""The two traps in section-one of the index module are the reason this file exists.
+"""
+The two traps in section-one of the index module are the reason this file exists.
 
 Both were found in a real contract, so both are asserted against that contract rather
 than against a hand-written sample that would only prove the regex matches itself.
@@ -10,7 +11,7 @@ import pytest
 from msgspec import ValidationError  # noqa: F401  (kept: msgspec import proves env wiring)
 
 from policydesk.clauses.index import build_index, cn_to_int
-from policydesk.core.models import Citation, ClauseKind, Money
+from policydesk.core.models import Citation, ClauseKind, Money, Stage, may_advance
 
 FIXTURE = Path(__file__).parent.parent / "data" / "clauses" / "cathay-inpatient-daily.pdf"
 needs_pdf = pytest.mark.skipif(not FIXTURE.exists(), reason="run scripts/fetch_fixtures.sh first")
@@ -90,3 +91,26 @@ def test_cite_unknown_clause_raises_rather_than_inventing():
 def test_cn_to_int_arabic_returns_same_number():
     """113 年起修正的條款改印阿拉伯數字條號，兩套都要讀得懂。"""
     assert cn_to_int("19") == 19
+
+
+def test_may_advance_one_step_forward_is_allowed():
+    assert may_advance(Stage.INQUIRY, Stage.PROPOSED)
+
+
+def test_may_advance_skipping_a_stage_is_refused():
+    """驗證身分前不得送審，否則簽署不具本人親簽的推定效力。"""
+    assert not may_advance(Stage.SIGNED, Stage.REVIEW)
+
+
+def test_may_advance_backwards_is_refused():
+    assert not may_advance(Stage.REVIEW, Stage.PROPOSED)
+
+
+def test_may_advance_decision_requires_review():
+    assert may_advance(Stage.REVIEW, Stage.APPROVED)
+    assert not may_advance(Stage.VERIFIED, Stage.APPROVED)
+
+
+def test_may_advance_from_decided_case_is_refused():
+    assert not may_advance(Stage.REJECTED, Stage.INQUIRY)
+    assert not may_advance(Stage.APPROVED, Stage.REVIEW)

@@ -1,4 +1,5 @@
-"""Collect Cathay Life's published contract documents.
+"""
+Collect Cathay Life's published contract documents.
 
 The insurer lists every public document in its own sitemap — 711 PDFs at the time of
 writing, about 1.5 GB — so there is no scraping of product pages and no guessing at
@@ -17,11 +18,15 @@ A product about following the rules cannot source its data by breaking them.
 import asyncio
 import re
 from hashlib import blake2b
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import aiohttp
-from loguru import logger
 from msgspec import Struct, json
+
+from policydesk.bootloader import logger
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 SITEMAP = "https://www.cathaylife.com.tw/cathaylife/sitemap.xml"
 ROBOTS = "https://www.cathaylife.com.tw/robots.txt"
@@ -57,30 +62,35 @@ class Manifest(Struct):
     """Keyed by url."""
 
     @classmethod
-    def load(cls, path: Path) -> "Manifest":
-        """Read a manifest, or start an empty one.
+    def load(cls, path: Path) -> Manifest:
+        """
+        Read a manifest, or start an empty one.
 
         Args:
             path: Where the manifest lives.
 
         Returns:
             The stored manifest, or a fresh one when the file is absent.
+
         """
         if not path.exists():
             return cls()
         return json.decode(path.read_bytes(), type=cls)
 
     def save(self, path: Path) -> None:
-        """Write the manifest.
+        """
+        Write the manifest.
 
         Args:
             path: Where to write it.
+
         """
         path.write_bytes(json.format(json.encode(self), indent=2))
 
 
 async def _text(session: aiohttp.ClientSession, url: str) -> str:
-    """Fetch a URL as text.
+    """
+    Fetch a URL as text.
 
     Args:
         session: An open client session.
@@ -88,6 +98,7 @@ async def _text(session: aiohttp.ClientSession, url: str) -> str:
 
     Returns:
         The response body.
+
     """
     async with session.get(url, ssl=_VERIFY_SSL) as resp:
         resp.raise_for_status()
@@ -95,13 +106,15 @@ async def _text(session: aiohttp.ClientSession, url: str) -> str:
 
 
 async def discover(session: aiohttp.ClientSession) -> list[str]:
-    """List the contract PDFs the insurer publishes, minus the ones it excludes.
+    """
+    List the contract PDFs the insurer publishes, minus the ones it excludes.
 
     Args:
         session: An open client session.
 
     Returns:
         PDF URLs in sitemap order.
+
     """
     robots = await _text(session, ROBOTS)
     blocked = tuple(p for p in _DISALLOW.findall(robots) if p.endswith(".pdf"))
@@ -110,7 +123,7 @@ async def discover(session: aiohttp.ClientSession) -> list[str]:
     urls = [u.replace("&amp;", "&") for u in _LOC.findall(sitemap) if ".pdf" in u]
     keep = [u for u in urls if not any(b in u for b in blocked)]
 
-    logger.info("sitemap lists {} PDFs; robots.txt excludes {}", len(urls), len(urls) - len(keep))
+    logger.info("sitemap_read", pdfs=len(urls), excluded_by_robots=len(urls) - len(keep))
     return keep
 
 
@@ -120,7 +133,8 @@ async def _fetch_one(
     out_dir: Path,
     gate: asyncio.Semaphore,
 ) -> Document | None:
-    """Fetch one document to disk.
+    """
+    Fetch one document to disk.
 
     Args:
         session: An open client session.
@@ -131,6 +145,7 @@ async def _fetch_one(
     Returns:
         Its manifest entry, or None when the fetch failed. A failure is logged and
         skipped rather than raised: one dead link must not abandon 710 good ones.
+
     """
     async with gate:
         await asyncio.sleep(DELAY_SECONDS)
@@ -139,17 +154,20 @@ async def _fetch_one(
                 resp.raise_for_status()
                 body = await resp.read()
         except (aiohttp.ClientError, TimeoutError) as exc:
-            logger.warning("skip {}: {}", url, exc)
+            logger.warning("fetch_skipped", url=url, error=str(exc))
             return None
 
     sha = blake2b(body, digest_size=16).hexdigest()
     filename = f"{sha}.pdf"
-    (out_dir / filename).write_bytes(body)
+    # Off the loop: these run 1-5 MB each, four at a time, and a synchronous write
+    # stalls every other download in flight for the duration of the disk write.
+    await asyncio.to_thread((out_dir / filename).write_bytes, body)
     return Document(url=url, filename=filename, sha=sha, bytes=len(body))
 
 
 async def fetch_all(out_dir: Path, limit: int = 0) -> Manifest:
-    """Fetch the corpus, skipping documents already on disk.
+    """
+    Fetch the corpus, skipping documents already on disk.
 
     Args:
         out_dir: Corpus directory. Created if absent.
@@ -158,10 +176,11 @@ async def fetch_all(out_dir: Path, limit: int = 0) -> Manifest:
 
     Returns:
         The updated manifest.
+
     """
-    out_dir.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(out_dir.mkdir, parents=True, exist_ok=True)
     manifest_path = out_dir / "manifest.json"
-    manifest = Manifest.load(manifest_path)
+    manifest = await asyncio.to_thread(Manifest.load, manifest_path)
 
     timeout = aiohttp.ClientTimeout(total=120)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -169,7 +188,7 @@ async def fetch_all(out_dir: Path, limit: int = 0) -> Manifest:
         pending = [u for u in urls if u not in manifest.documents]
         if limit:
             pending = pending[:limit]
-        logger.info("{} already held, {} to fetch", len(manifest.documents), len(pending))
+        logger.info("corpus_state", held=len(manifest.documents), pending=len(pending))
 
         gate = asyncio.Semaphore(CONCURRENCY)
         tasks = [_fetch_one(session, u, out_dir, gate) for u in pending]
@@ -178,8 +197,8 @@ async def fetch_all(out_dir: Path, limit: int = 0) -> Manifest:
                 manifest.documents[doc.url] = doc
             if i % 25 == 0:
                 manifest.save(manifest_path)
-                logger.info("{}/{} fetched", i, len(pending))
+                logger.info("fetch_progress", done=i, total=len(pending))
 
     manifest.save(manifest_path)
-    logger.info("corpus holds {} documents", len(manifest.documents))
+    logger.info("corpus_complete", documents=len(manifest.documents))
     return manifest
