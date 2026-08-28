@@ -249,6 +249,17 @@ async def record_signature(db: Database, case_id: int, *, document_id: int, part
     if party not in SIGNING_PARTIES:
         return Refusal(reason=f"{party} 非要保人或被保險人，不得代簽")
 
+    # Ownership first. Without this the UPDATE below silently affects no row for a
+    # document belonging to another case, and the grant is written anyway — an
+    # authorisation record pointing at a document the case does not contain.
+    owner = await db.fetch_val(
+        "SELECT case_id FROM case_document WHERE document_id = $1::bigint", [document_id]
+    )
+    if owner is None:
+        return Refusal(reason="查無此文件")
+    if int(owner) != int(case_id):
+        return Refusal(reason="該文件不屬於本案件，不得簽署")
+
     await db.execute(
         "UPDATE case_document SET signed_at = now() WHERE document_id = $1::bigint AND case_id = $2::bigint",
         [document_id, case_id],
