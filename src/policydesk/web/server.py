@@ -171,6 +171,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
     db: Database = request.app.ctx.db
     registry: Registry = request.app.ctx.registry
     name: str | None = None
+    previous_name: str = ""
     session = None
     case_id: int | None = None
 
@@ -191,7 +192,15 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         }).decode())
                         continue
 
+                    # One socket may say hello twice, under two names. Without
+                    # releasing the first, its entry stays in the registry pointing at
+                    # a socket that has since renamed itself, and the finally below
+                    # only releases the last name — so the first is held until the
+                    # process restarts and nobody can claim it again.
+                    if session is not None and name != previous_name:
+                        registry.release(previous_name, session)
                     session = await registry.claim(name, ws.send, ws.close)
+                    previous_name = name
                     person = generate(name, await _next_serial(db))
                     member_id = await enrol(person, db)
                     opened = await cmd.open_case(db, member_id)
