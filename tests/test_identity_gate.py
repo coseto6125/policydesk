@@ -77,10 +77,23 @@ def test_the_model_is_told_as_well_as_blocked():
 
 def test_the_number_is_compared_on_the_server():
     """A check the browser performs is a check anyone skips with the console open."""
-    assert "text.strip().upper() == held" in SERVER
+    assert "text.upper() != held" in SERVER
     page = Path("src/policydesk/web/static/index.html").read_text()
     assert "== held" not in page
     assert "national_id ===" not in page, "the page must not compare the number itself"
+
+
+def test_an_unconfirmed_turn_reaches_no_model_at_all():
+    """
+    A near-miss ID was being routed, and the enrolment-stage 身分驗證 scenario answered
+    it with its own template — so the customer read 請輸入身分證字號完成驗證 and thought
+    the check had moved on. While unconfirmed the desk only takes the number or asks for
+    it, which is also four model calls it no longer spends on failed attempts.
+    """
+    branch = SERVER[SERVER.index('case "say" if case_id is not None and not confirmed:'):
+                    SERVER.index('case "say" if case_id is not None:')]
+    assert "run_turn" not in branch
+    assert "_answer(" in branch, "the replay after a pass still runs a real turn"
 
 
 def test_a_returning_session_is_not_handed_the_number_it_must_supply():
@@ -90,22 +103,32 @@ def test_a_returning_session_is_not_handed_the_number_it_must_supply():
     assert 'existing["national_id"],' not in returning
 
 
-def test_the_number_never_enters_the_transcript():
+def test_no_identity_attempt_enters_the_transcript():
     """
-    It would sit in the history block of every later prompt.
+    Right or wrong, the number is never written as a message.
 
-    A national ID in a model's context is a national ID that leaves.
+    It would sit in the history block of every later prompt, and a national ID in a
+    model's context is a national ID that leaves. A near-miss is no better: it is one
+    character from the real one.
     """
-    assert "（已提供身分證字號完成核對）" in SERVER
-    stored = SERVER[SERVER.index("if text.strip().upper() == held:"):SERVER.index("pending_question")]
-    assert "VALUES ($1::bigint,'customer','（已提供身分證字號完成核對）')" in stored
+    branch = SERVER[SERVER.index('case "say" if case_id is not None and not confirmed:'):
+                    SERVER.index('case "say" if case_id is not None:')]
+    assert "INSERT INTO conversation_message" not in branch
+    assert "identity_attempt" in branch, "a refused attempt is still audited"
 
 
 def test_the_question_they_asked_first_is_the_one_answered():
-    """Making them retype it is the desk forgetting what it just asked them to wait for."""
-    body = SERVER[SERVER.index("pending_question = await db.fetch_val"):]
-    assert "speaker = 'customer'" in body[:600]
-    assert "text = pending_question" in body[:1400]
+    """
+    Making them retype it is the desk forgetting what it just asked them to wait for.
+
+    Captured once and never overwritten, because the messages after it are wrong
+    numbers — reading the transcript for "the last thing they said" replayed a failed
+    ID attempt as the question.
+    """
+    branch = SERVER[SERVER.index('case "say" if case_id is not None and not confirmed:'):
+                    SERVER.index('case "say" if case_id is not None:')]
+    assert "pending_question = pending_question or text" in branch
+    assert "text = pending_question" in branch
 
 
 def test_both_outcomes_reach_the_audit_trail():
