@@ -136,7 +136,7 @@ async def _bump(db: Database, case_id: int, stage: Stage, actor: str, action: st
 
 async def open_case(db: Database, member_id: int, kind: str = "enrolment") -> Applied:
     """
-    Start a case for a member.
+    Start a case for a member, or return the one already open.
 
     Args:
         db: The database.
@@ -144,9 +144,25 @@ async def open_case(db: Database, member_id: int, kind: str = "enrolment") -> Ap
         kind: enrolment, claim or service.
 
     Returns:
-        The new case at INQUIRY.
+        The member's live case of this kind, opening one at INQUIRY when none is live.
 
+    A customer who reconnects is the same customer mid-application, not a new
+    applicant. Opening a case per connection filled the queue with a row per reload,
+    each one holding the signatures and identity checks the previous row had already
+    collected, and an underwriter could not tell which of them was the real case.
+    A case stays live until it is decided, and the furthest-advanced one wins: an
+    application already at 人工審核 outranks a fresh enquiry the same person opened.
     """
+    live = await db.fetch_one(
+        """SELECT case_id, stage, case_version FROM "case"
+           WHERE member_id = $1::bigint AND kind = $2::text AND stage NOT IN ('approved','rejected')
+           ORDER BY case_version DESC, case_id DESC LIMIT 1""",
+        [member_id, kind],
+    )
+    if live is not None:
+        logger.info("case_resumed", case_id=live["case_id"], member_id=member_id, stage=live["stage"])
+        return Applied(case_id=live["case_id"], stage=Stage(live["stage"]), case_version=live["case_version"])
+
     case_id = await db.fetch_val(
         """INSERT INTO "case" (member_id, kind, stage) VALUES ($1::bigint,$2::text,$3::text) RETURNING case_id""",
         [member_id, kind, Stage.INQUIRY.value],
@@ -456,6 +472,21 @@ async def snapshot(db: Database, case_id: int) -> dict | None:
     case["audit"] = await db.fetch(
         "SELECT actor, action, detail, case_version, created_at FROM audit_event WHERE case_id = $1::bigint ORDER BY event_id",
         [case_id],
+    )
+    # The member's own book, scoped by member_id like every other read here. The agent
+    # tells a customer 各張保單明細請見左側後台的保單清單, and until this was here that
+    # sentence pointed at a panel the back office did not have — the figure it quoted
+    # was true and there was nowhere to check it.
+    case["policies"] = await db.fetch(
+        """SELECT po.policy_id, po.policy_number, po.sum_insured, po.effective_at, po.lapsed_at,
+                  po.main_policy_ref, pr.name AS product_name, pr.line,
+                  round(coalesce(ce.unit_premium, 0) * po.sum_insured / 1000.0) AS annual_premium
+           FROM policy po
+           JOIN product pr USING (product_id)
+           LEFT JOIN catalog_entry ce USING (product_id)
+           WHERE po.member_id = $1::bigint
+           ORDER BY po.main_policy_ref NULLS FIRST, po.policy_id""",
+        [case["member_id"]],
     )
     case["generated_at"] = datetime.now(UTC).isoformat()
     return case
