@@ -213,6 +213,12 @@ COVERAGE = Scenario(
 # and `Param` from this module. The registry is the cycle: a scenario needs the type,
 # and the catalogue needs the scenario. Below the type definitions is the one place
 # both halves are satisfied.
+from policydesk.agent.scenarios.beneficiary import BENEFICIARY
+from policydesk.agent.scenarios.cooling_off import COOLING_OFF
+from policydesk.agent.scenarios.disclosure import DISCLOSURE
+from policydesk.agent.scenarios.quote import QUOTE
+from policydesk.agent.scenarios.reinstate import REINSTATE
+from policydesk.agent.scenarios.review import REVIEW
 from policydesk.agent.scenarios.soothe import SOOTHE
 
 CATALOGUE: tuple[Scenario, ...] = (
@@ -226,6 +232,12 @@ CATALOGUE: tuple[Scenario, ...] = (
     BILLING,
     COVERAGE,
     SOOTHE,
+    REVIEW,
+    REINSTATE,
+    DISCLOSURE,
+    BENEFICIARY,
+    QUOTE,
+    COOLING_OFF,
 )
 
 BY_NAME: dict[str, Scenario] = {s.name: s for s in CATALOGUE}
