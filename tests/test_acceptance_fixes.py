@@ -156,23 +156,60 @@ def test_surgery_multipliers_are_reachable_from_a_scenario():
     assert "find_multiplier" in CLAIM_CHECKLIST.tools
 
 
-def test_unverifiable_reply_is_withheld_rather_than_annotated():
-    """
-    Appending a caveat still put the invented clause number in front of the customer.
+@pytest.fixture(scope="module")
+async def db():
+    from policydesk.core.db import Database
 
-    tools.py claims a fabricated citation "fails a lookup rather than reaching a
-    customer". That is only true if the text carrying it is withheld.
-    """
-    from pathlib import Path
+    pool = Database()
+    try:
+        await pool.fetch_val("SELECT 1")
+    except Exception:
+        pytest.skip("policydesk-pg is not up")
+    return pool
 
-    source = Path("src/policydesk/agent/executor.py").read_text()
-    # The branch itself, up to its own return. Slicing to the function's last line
-    # instead swept in every guard added after it, and the test then failed on code
-    # that had nothing to do with the withholding it checks.
-    start = source.index("if not checked.trustworthy:")
-    block = source[start:source.index("return turn", start)]
-    assert "completion.text" not in block, "the unverifiable text must not be forwarded"
-    assert "轉由專人" in block
+
+@pytest.fixture(scope="module")
+async def live_case(db):
+    row = await db.fetch_one('SELECT case_id, member_id FROM "case" ORDER BY case_id DESC LIMIT 1')
+    if row is None:
+        pytest.skip("no case to run a turn against")
+    return row
+
+
+@pytest.mark.asyncio
+async def test_an_invented_statute_provision_never_reaches_the_customer(db, live_case):
+    """
+    Four scenarios tell the model to cite 保險法, and until this check ran, nothing read
+    those citations back.
+
+    The clause checker matches `art.NN` and compares against the member's own contracts.
+    A statute citation matches none of that, so an invented 〔保險法 第999條第2項〕 was the
+    one kind of citation that shipped unexamined — and the worst kind, because a customer
+    can check `art.12` against the contract in their hand and cannot check a provision
+    against anything but the law.
+
+    Asserted by running a real turn against a provider that writes the fabrication, rather
+    than by reading the source for a branch: a string search cannot tell whether the
+    branch is reached.
+    """
+    from policydesk.agent.executor import WITHHELD, run_turn
+    from policydesk.llm.provider import Completion
+
+    invented = "依〔保險法 第999條第2項〕，您的保單一定可以復效。"
+
+    class Fabricating:
+        name = "stub"
+
+        async def complete(self, **_: object) -> Completion:
+            return Completion(text=invented, model="stub", provider="stub")
+
+    turn = await run_turn(
+        Fabricating(), db, case_id=live_case["case_id"], member_id=live_case["member_id"],
+        text="保單停效可以復效嗎", confirmed=True,
+    )
+    assert turn.reply == WITHHELD
+    assert invented not in turn.reply
+    assert "第999條" not in turn.reply
 
 
 def test_the_model_session_is_reused_and_closed():
@@ -216,3 +253,27 @@ def test_the_desk_snapshot_carries_the_member_own_policies():
     assert '"policies"' in body
     policies = body[body.index('case["policies"]'):]
     assert "po.member_id = $1::bigint" in policies, "one member's book, never another's"
+
+
+@pytest.mark.asyncio
+async def test_a_real_provision_is_not_withheld(db, live_case):
+    # The other direction. A gate that withholds everything is not a gate, and this one
+    # runs on the free-answer path too — where every reply the router writes itself goes
+    # through it.
+    from policydesk.agent.executor import WITHHELD, run_turn
+    from policydesk.llm.provider import Completion
+
+    real = "依〔保險法 第64條第3項〕，契約訂立超過兩年就不能再解除。"
+
+    class Truthful:
+        name = "stub"
+
+        async def complete(self, **_: object) -> Completion:
+            return Completion(text=real, model="stub", provider="stub")
+
+    turn = await run_turn(
+        Truthful(), db, case_id=live_case["case_id"], member_id=live_case["member_id"],
+        text="公司可以解除我的契約嗎", confirmed=True,
+    )
+    assert turn.reply != WITHHELD
+    assert "第64條" in turn.reply

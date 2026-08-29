@@ -664,6 +664,147 @@ async def _ranked_by(
     return rows[:limit]
 
 
+_LEAD = r"(?:依|依據|依照|按|按照|根據|參照|見|據)?"
+"""Particles a sentence puts in front of a citation. Stripped rather than allowed into the
+name, because the name is half the key the recheck looks up — 依保險法 matches no statute,
+so a real citation would be reported as invented."""
+
+_STATUTE_NAME = r"[\u4e00-\u9fff]{2,10}?(?:法|細則|辦法|準則|條例|規則)"
+
+_INT = r"\d{1,3}|[一二三四五六七八九十百]{1,10}?"
+_SMALL = r"\d{1,2}|[一二三四五六七八九十]{1,3}"
+
+_CITED_NUMBER = (
+    # The branch sits before 條 in digits (第8-1條) and after it in Chinese (第八條之一).
+    # Both appear in the corpus: the statute cross-references itself in words and the
+    # index writes ids in figures, and a model reading both will write either.
+    rf"第\s*({_INT})\s*(?:[-之]\s*({_SMALL}))?\s*條(?:\s*之\s*({_SMALL}))?"
+    rf"(?:\s*第\s*({_SMALL})\s*項)?"
+    rf"(?:\s*第\s*({_SMALL})\s*款)?"
+)
+
+CITATION = re.compile(rf"[〔（(\[]?\s*{_LEAD}\s*({_STATUTE_NAME})\s*{_CITED_NUMBER}\s*[〕）)\]]?")
+"""How a statute citation is read *out of* a reply: 〔保險法 第64條第2項〕 and its variants.
+
+Written one way and read many. `_readable` emits the bracketed form and the model is told
+to copy it, but what the checker must catch is everything a model might write instead —
+because a citation the pattern misses is not one the checker rejects, it is one it never
+sees. Brackets optional, full-width or half-width or absent; the number in digits or in
+Chinese numerals, since the statute writes its own cross-references as 第六十四條第三項
+and a model reading the corpus will echo that.
+
+The name must end in 法/細則/辦法/準則/條例/規則. Without that anchor the pattern reads
+「合約第3條」 in a sentence about the customer's own contract as a statute citation, and
+the recheck then voids a reply for a statute nobody cited.
+
+Deliberately not the `art.64.2` shape the clause corpus uses. The executor extracts
+`art.NN` from replies and voids any that no contract contains, and `art.64.2` contains
+`art.64` — so a statute written that way would be read as a clause citation, found in no
+policy, and the whole reply withheld. Two corpora sharing one citation syntax is a
+collision the reader cannot see and the checker cannot resolve.
+
+It is also the form a Taiwanese reader recognises, which is the other half of the point:
+a customer who wants to check what he has been told can type it into 全國法規資料庫.
+
+The branch takes two digits, not one. 保險法 runs to 第149-11條, and a single-digit
+pattern read 第149-10條 as no citation at all — which is the dangerous direction of the
+failure: an unreadable citation is not a citation the checker rejects, it is one the
+checker never sees, so an invented 第149-10條 would have passed. Found by formatting all
+1,212 provisions and reading each one back; 15 did not round-trip.
+
+之 is accepted beside the hyphen because that is how the statute writes it in its own
+cross-references (第六十四條第三項, 第一百四十九條之十), and a model copying the corpus
+will sometimes copy that.
+"""
+
+
+_CN_DIGITS = "零一二三四五六七八九"
+
+
+def _number(raw: str) -> int:
+    """
+    Read an article number written either way.
+
+    Args:
+        raw: `64` or `六十四`.
+
+    Returns:
+        Its value.
+
+    Chinese numerals are here because the statute cites itself that way — 第六十四條第三
+    項 appears verbatim inside 第68條 — so a model quoting the corpus will reproduce it,
+    and a citation the reader cannot parse is one the checker never gets to reject.
+    """
+    if raw.isdigit():
+        return int(raw)
+    total = section = 0
+    for char in raw:
+        if char == "百":
+            section = (section or 1) * 100
+            total += section
+            section = 0
+        elif char == "十":
+            section = (section or 1) * 10
+        elif char in _CN_DIGITS:
+            section += _CN_DIGITS.index(char)
+    return total + section
+
+
+def cited(text: str) -> list[tuple[str, str]]:
+    """
+    Read the statute citations out of a reply.
+
+    Args:
+        text: What the model wrote.
+
+    Returns:
+        (statute name, doc_id) pairs in order of appearance, deduplicated.
+
+    """
+    out: list[tuple[str, str]] = []
+    for name, article, before, after, paragraph, item in CITATION.findall(text):
+        doc_id = f"art.{_number(article)}"
+        if branch := before or after:
+            doc_id += f"-{_number(branch)}"
+        if paragraph:
+            doc_id += f".{_number(paragraph)}"
+            if item:
+                doc_id += f".{_number(item)}"
+        pair = (name, doc_id)
+        if pair not in out:
+            out.append(pair)
+    return out
+
+
+async def unresolved(db: Database, text: str) -> list[tuple[str, str]]:
+    """
+    Name the statute citations in a reply that do not exist.
+
+    Args:
+        db: The database.
+        text: The reply.
+
+    Returns:
+        The (statute name, doc_id) pairs with no matching row. Empty means every
+        citation resolves.
+
+    Checked by *name as written* as well as by doc_id, because 保險法 §64 and 保險法施行
+    細則 §64 are different sentences and a reply that attributes one to the other is wrong
+    in the way hardest for a reader to catch.
+    """
+    pairs = cited(text)
+    if not pairs:
+        return []
+    rows = await db.fetch(
+        """SELECT s.name, a.doc_id
+           FROM statute_article a JOIN statute s USING (statute_id)
+           WHERE a.doc_id = ANY($1::text[])""",
+        [[doc_id for _, doc_id in pairs]],
+    )
+    real = {(row["name"], row["doc_id"]) for row in rows}
+    return [pair for pair in pairs if pair not in real]
+
+
 def citation(row: dict[str, Any]) -> str:
     """
     Write one provision's citation the way it is cited in Chinese.

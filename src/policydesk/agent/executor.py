@@ -30,7 +30,7 @@ from uuid import uuid4
 import etoon
 from msgspec import DecodeError, json
 
-from policydesk.agent import memory, tools
+from policydesk.agent import memory, statute, tools
 from policydesk.agent.scenario import (
     BY_NAME,
     CATALOGUE,
@@ -51,6 +51,18 @@ if TYPE_CHECKING:
     from policydesk.retrieval.base import Retriever
 
 # "art.17", "art.17.carve1", "waiting" — the ids the clause index actually mints.
+WITHHELD = (
+    "本次查詢的回覆引用了無法查證的條款或法條，為避免提供錯誤資訊，"
+    "已保留該回覆並轉由專人與您確認。"
+)
+"""What the customer reads instead of a reply whose citations do not resolve.
+
+A constant rather than a literal inside the branch, so a test can assert the customer got
+exactly this and not the model's prose with a caveat appended. Appending a caveat still
+puts the invented clause number in front of them, which is the opposite of what the check
+is for.
+"""
+
 _CITATION = re.compile(r"\b(?:art\.\d{1,3}(?:\.carve\d)?|waiting)\b")
 
 
@@ -483,6 +495,11 @@ async def run_turn(
         return turn
 
     if scenario is None:
+        # The router answers directly when nothing fits — `ROUTER_INSTRUCTIONS` says so in
+        # as many words — and that answer used to be the one reply nothing checked. It has
+        # no tools behind it, so no clause id is allowed and any citation in it is one the
+        # model invented.
+        await _unverifiable(db, turn, turn.reply, frozenset())
         return turn
 
     if not confirmed and tools.reads_identity(scenario.tools):
@@ -531,27 +548,7 @@ async def run_turn(
     await _record(db, turn, Phase.ANSWER, completion, scenario.name)
     turn.computations = _run_calculations(completion)
 
-    # Read the citations OUT of the reply, then check them against what the tools
-    # returned. Intersecting `allowed` with the text instead would only ever find ids
-    # that exist, so it would pass every time and prove nothing — the failure this
-    # guards against is a clause number the model wrote and no contract contains.
-    cited = tuple(dict.fromkeys(_CITATION.findall(completion.text)))
-    checked = recheck(
-        Verdict(passed=True, reason="", cited_clauses=cited),
-        subject={},
-        allowed_clauses=allowed,
-    )
-    turn.citations = cited
-    turn.faults = checked.faults
-    if not checked.trustworthy:
-        logger.warning("citation_unresolved", case_id=case_id, faults=list(checked.faults))
-        # The unverifiable text is withheld, not annotated. Appending a caveat to it
-        # still put the invented clause number in front of the customer, which is the
-        # opposite of what this check exists to prevent.
-        turn.reply = (
-            "本次查詢的回覆引用了無法在您保單中查得的條款，為避免提供錯誤資訊，"
-            "已保留該回覆並轉由專人與您確認。"
-        )
+    if await _unverifiable(db, turn, completion.text, allowed):
         return turn
     if not completion.text.strip():
         # A model that answered with tool calls and no prose leaves the customer
@@ -561,6 +558,44 @@ async def run_turn(
         return turn
     turn.reply = completion.text
     return turn
+
+
+async def _unverifiable(db: Database, turn: Turn, text: str, allowed: frozenset[str]) -> bool:
+    """
+    Withhold a reply whose citations do not resolve.
+
+    Args:
+        db: The database, for the statute corpus.
+        turn: The turn, whose `citations`, `faults` and `reply` this sets.
+        text: What the model wrote.
+        allowed: The clause ids the tools actually returned for this member.
+
+    Returns:
+        True when the reply was withheld, so the caller stops.
+
+    Two corpora, two syntaxes, one gate. Clause ids are read out of the text and checked
+    against what the tools returned; statute citations are read out in their own bracketed
+    form and checked against `statute_article`. Both are read OUT of the reply rather than
+    intersected with what is allowed — intersecting would only ever find ids that exist,
+    so it would pass every time and prove nothing. The failure being guarded against is a
+    number the model wrote and no document contains.
+
+    The unverifiable text is withheld, not annotated. Appending a caveat still puts the
+    invented number in front of the customer, which is the opposite of the point.
+
+    """
+    cited = tuple(dict.fromkeys(_CITATION.findall(text)))
+    checked = recheck(Verdict(passed=True, reason="", cited_clauses=cited), subject={}, allowed_clauses=allowed)
+    fabricated = await statute.unresolved(db, text)
+    turn.citations = cited
+    turn.faults = checked.faults + tuple(f"{name}{doc_id}" for name, doc_id in fabricated)
+    if checked.trustworthy and not fabricated:
+        return False
+    logger.warning(
+        "citation_unresolved", case_id=turn.case_id, faults=list(checked.faults), statute=list(fabricated)
+    )
+    turn.reply = WITHHELD
+    return True
 
 
 def _run_calculations(completion: Completion) -> tuple[tuple[str, int], ...]:
