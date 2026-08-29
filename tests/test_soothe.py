@@ -21,7 +21,6 @@ import pytest
 from policydesk.agent import statute, tools
 from policydesk.agent.scenarios.soothe import (
     SOOTHE,
-    _readable,
     cited,
     complaint_channel,
     gather,
@@ -213,7 +212,7 @@ async def test_every_provision_in_the_corpus_round_trips_through_the_citation_fo
                   a.paragraph, a.subparagraph
            FROM statute_article a JOIN statute s USING (statute_id)"""
     )
-    bad = [r["doc_id"] for r in rows if cited(_readable(r)) != [(r["statute_name"], r["doc_id"])]]
+    bad = [r["doc_id"] for r in rows if cited(statute.citation(r)) != [(r["statute_name"], r["doc_id"])]]
     assert not bad, bad[:10]
 
 
@@ -271,7 +270,7 @@ async def test_every_provision_resolves_from_the_prose_form_too(db):
     )
     bad = []
     for row in rows:
-        prose = "依" + row["statute_name"] + _readable(row).strip("〔〕").split(" ", 1)[1]
+        prose = "依" + row["statute_name"] + statute.citation(row).strip("〔〕").split(" ", 1)[1]
         if cited(prose) != [(row["statute_name"], row["doc_id"])]:
             bad.append(row["doc_id"])
     assert not bad, bad[:10]

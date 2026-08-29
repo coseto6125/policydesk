@@ -215,7 +215,7 @@ async def statute_reference(
     rows = await statute.search_statute(db, concern, STATUTE_SCOPE, limit=limit, retriever=retriever)
     return [
         {
-            "citation": _readable(row),
+            "citation": statute.citation(row),
             "statute": row["statute_name"],
             "doc_id": row["doc_id"],
             "chapter": row["chapter"],
@@ -225,29 +225,6 @@ async def statute_reference(
     ]
 
 
-def _readable(row: dict[str, Any]) -> str:
-    """
-    Write one provision's citation the way it is cited in Chinese.
-
-    Args:
-        row: A `statute_article` row joined to its statute.
-
-    Returns:
-        e.g. `〔保險法 第64條第2項〕`, exactly the form `CITATION` reads back.
-
-    Handed to the model already formatted rather than described in the injection. A
-    citation format explained in prose is one the model approximates; one it can copy is
-    one the checker can verify.
-    """
-    number = f"第{row['article']}"
-    if row.get("branch"):
-        number += f"-{row['branch']}"
-    number += "條"
-    if row.get("paragraph"):
-        number += f"第{row['paragraph']}項"
-    if row.get("subparagraph"):
-        number += f"第{row['subparagraph']}款"
-    return f"〔{row['statute_name']} {number}〕"
 
 
 COMPLAINT_ROUTE: dict[str, str] = {

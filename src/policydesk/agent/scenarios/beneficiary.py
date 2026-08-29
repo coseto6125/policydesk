@@ -97,29 +97,6 @@ _RELATION_LABEL: dict[str, str] = {
 translates these — `web/server.py` and the console render the raw code."""
 
 
-def _readable(row: dict[str, Any]) -> str:
-    """
-    Write one provision's citation the way it is cited in Chinese.
-
-    Args:
-        row: A `statute_article` row joined to its statute, as `search_statute` returns.
-
-    Returns:
-        e.g. `〔保險法 第111條第2項〕`.
-
-    Duplicated from `soothe.py` for the same reason `disclosure.py` duplicates it: the
-    original is private to its own module, and the formatting is ten lines with no
-    logic worth importing a leading-underscore name across modules for.
-    """
-    number = f"第{row['article']}"
-    if row.get("branch"):
-        number += f"-{row['branch']}"
-    number += "條"
-    if row.get("paragraph"):
-        number += f"第{row['paragraph']}項"
-    if row.get("subparagraph"):
-        number += f"第{row['subparagraph']}款"
-    return f"〔{row['statute_name']} {number}〕"
 
 
 def _as_rows(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -134,7 +111,7 @@ def _as_rows(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     """
     return [
-        {"citation": _readable(row), "statute": row["statute_name"], "doc_id": row["doc_id"], "verbatim": row["verbatim"]}
+        {"citation": statute.citation(row), "statute": row["statute_name"], "doc_id": row["doc_id"], "verbatim": row["verbatim"]}
         for row in hits
     ]
 
