@@ -77,6 +77,13 @@ ranks §110 I/II and §111 I/II as the top four hits and nothing else, with or w
 customer's own words appended — unlike a search built from 改受益人 alone, which ranked
 an unrelated debtor-substitution provision (§123-2) above them."""
 
+_UNDESIGNATED = 113
+"""保險法 §113 — an undesignated death benefit becomes the estate."""
+
+_DESIGNATED = 112
+"""保險法 §112 — a designated one does not. One word apart in the text, opposite in
+effect, and both returned by the same query."""
+
 _FALLBACK_QUERY = "死亡保險契約未指定受益人者其保險金額作為被保險人之遺產"
 """§112-113's own vocabulary, kept as a separate query rather than merged into
 `_DESIGNATION_ANCHOR`: merging the two pulled §110/§111 out of the top ranks entirely
@@ -146,13 +153,46 @@ async def undesignated_fallback(db: Database, *, retriever: Any | None = None) -
         retriever: The shared BM25 index, when one is open.
 
     Returns:
-        Provision rows, best first — in practice §112 and §113: an undesignated death
-        benefit becomes 遺產, the statutory backing for a `legal_heir` record.
+        The provision for the undesignated case only — §113, an undesignated death benefit
+        becomes 遺產, which is the statutory backing for a `legal_heir` record.
 
     A fixed query, not the customer's words: this half is a background fact the desk
     supplies context with, not something a customer phrases their own way.
+
+    **§112 is filtered out here on purpose.** The query returns both, because they are
+    written as mirror images of each other — §112 is 指定了受益人的保險金不得作為遺產,
+    §113 is 未指定的作為遺產. Handed to the model under one key called
+    `undesignated_fallback`, the second one reads as more support for the first, and a
+    model being thorough cites 〔保險法 第112條第1項〕 for a claim that provision denies.
+    The citation checker cannot catch that: §112 exists, so the citation resolves. A real
+    provision cited for the opposite of what it says is the failure this scenario was
+    written to avoid, arriving through the material rather than through the model.
+
     """
-    return _as_rows(await statute.search_statute(db, _FALLBACK_QUERY, STATUTE_SCOPE, limit=2, retriever=retriever))
+    hits = await statute.search_statute(db, _FALLBACK_QUERY, STATUTE_SCOPE, limit=4, retriever=retriever)
+    return _as_rows([hit for hit in hits if hit["article"] == _UNDESIGNATED])
+
+
+async def designated_protection(db: Database, *, retriever: Any | None = None) -> list[dict[str, Any]]:
+    """
+    Find §112's provision on what designating a beneficiary protects.
+
+    Args:
+        db: The database.
+        retriever: The shared index, when one is open.
+
+    Returns:
+        §112's rows: a death benefit payable to a named beneficiary is not part of the
+        estate.
+
+    Its own tool rather than a second entry under the undesignated one, because it is the
+    other half of the same fact and the two are one word apart in the text. Separated here,
+    the model is handed each with the condition it applies to attached; merged, it had to
+    infer the condition from provisions that differ by 未.
+
+    """
+    hits = await statute.search_statute(db, _FALLBACK_QUERY, STATUTE_SCOPE, limit=4, retriever=retriever)
+    return _as_rows([hit for hit in hits if hit["article"] == _DESIGNATED])
 
 
 @requires_identity
@@ -185,6 +225,7 @@ TOOLS: dict[str, Any] = {
     "list_policies": tools.list_policies,
     "designation_rules": designation_rules,
     "undesignated_fallback": undesignated_fallback,
+    "designated_protection": designated_protection,
 }
 """The scenario's tools, for the executor's dispatch.
 
@@ -242,6 +283,8 @@ async def gather(
     pending: dict[str, Any] = {}
     if _can("designation_rules"):
         pending["designation_rules"] = designation_rules(db, params.get("concern", ""), retriever=retriever)
+    if _can("designated_protection"):
+        pending["designated_protection"] = designated_protection(db, retriever=retriever)
     if _can("undesignated_fallback"):
         pending["undesignated_fallback"] = undesignated_fallback(db, retriever=retriever)
     if member_id is not None:
@@ -274,9 +317,13 @@ BENEFICIARY = Scenario(
         "不得由他人代簽；新受益人如果是未成年人，申請書要一併附上法定代理人的身分證明，"
         "這是作業上的要求，不要幫這句話掛條號。文件送出、保險公司登記後才對保險人生效，"
         "不是講完這段對話就已經改好了，不可以說「已經幫您改好了」或類似的話。\n"
-        "工具回傳未指定受益人時保險金歸入遺產的條文時，如果保戶自己的紀錄目前顯示"
-        "「法定繼承人」，可以照那條說明這就是沒有指定受益人的法定結果；"
-        "但不要主動勸他要不要指定別人，他問到才說明。\n"
+        "工具回傳的兩條遺產規定分別放在兩個欄位，是因為它們講的是相反的情形，"
+        "不可以互相支援：undesignated_fallback 講的是沒有指定受益人時保險金歸入遺產，"
+        "designated_protection 講的是有指定受益人時保險金不歸入遺產。"
+        "說明哪一種情形，就只引用對應那個欄位裡的條號，"
+        "拿另一條去佐證同一句話會引到一條說相反內容的真實條文。\n"
+        "保戶自己的紀錄目前顯示「法定繼承人」時，可以照 undesignated_fallback "
+        "說明這就是沒有指定受益人的法定結果；但不要主動勸他要不要指定別人，他問到才說明。\n"
         "不可以說變更一定會核准，不可以承認公司過去做錯，不可以講任何金額——"
         "金額由計算工具產生，這個情境沒有那個工具。資格是否符合、變更何時登記完成，"
         "由保險公司核定。\n"
@@ -288,7 +335,13 @@ BENEFICIARY = Scenario(
         "以及會影響哪幾張保單，需要先核對身分，請他提供身分證字號。"
         "不要憑空講任何關於他保單或受益人的內容。"
     ),
-    tools=("current_beneficiary", "list_policies", "designation_rules", "undesignated_fallback"),
+    tools=(
+        "current_beneficiary",
+        "list_policies",
+        "designation_rules",
+        "undesignated_fallback",
+        "designated_protection",
+    ),
     tools_module="policydesk.agent.scenarios.beneficiary",
     params=(
         Param(
