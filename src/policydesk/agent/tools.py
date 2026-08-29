@@ -534,6 +534,34 @@ async def standing_brief(db: Database, member_id: int, *, today: date) -> dict[s
 
 
 @requires_identity
+async def pending_signatures(db: Database, case_id: int) -> dict[str, Any]:
+    """
+    List the documents this case still needs signed.
+
+    Args:
+        db: The database.
+        case_id: Which case.
+
+    Returns:
+        `count` and `names` — the two the 交付文件 template asks for.
+
+    The template had asked for them since it was written and nothing supplied them, so
+    `_render` fell through to its default branch and the customer read the literal
+    「已為您備妥應簽署文件共 {count} 份」. A placeholder is a promise the renderer makes on
+    the tool's behalf, and an unmade one reaches the customer looking like a bug in their
+    insurer.
+
+    """
+    rows = await db.fetch(
+        """SELECT title FROM case_document
+           WHERE case_id = $1::bigint AND signed_at IS NULL
+           ORDER BY document_id""",
+        [case_id],
+    )
+    return {"count": len(rows), "names": "\n".join(f"　{r['title']}" for r in rows)}
+
+
+@requires_identity
 async def required_documents(db: Database, product_ids: list[str]) -> list[dict[str, Any]]:
     """
     List what a claim on these products must be accompanied by.

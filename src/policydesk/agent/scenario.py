@@ -144,7 +144,7 @@ ISSUE_DOCUMENTS = Scenario(
         "請點選右上角「應簽署文件」逐份下載、簽名後上傳。\n"
         "要保人與被保險人均須親自簽名，不得由他人代簽。"
     ),
-    tools=("issue_documents_tool",),
+    tools=("pending_signatures",),
     transitions=("verify_identity",),
     requires_stage="proposed",
 )
@@ -155,7 +155,7 @@ VERIFY_IDENTITY = Scenario(
     description="文件簽署完成後進行身分驗證時使用。",
     emit=Emit.TEMPLATE,
     template="請輸入身分證字號完成驗證。驗證通過後，本案才會送交核保人員審核。",
-    tools=("verify_identity_tool",),
+    tools=(),
     params=(Param(name="national_id", description="身分證字號", example="A123456789"),),
     transitions=("submit",),
     requires_stage="signed",
