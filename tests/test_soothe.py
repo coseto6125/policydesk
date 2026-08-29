@@ -2,10 +2,18 @@
 The de-escalation scenario, and the two ways it can hurt a customer.
 
 The first is the obvious one: a statute citation the model invented. It reads as law,
-carries the authority of law, and points at a sentence that does not exist. `cited` and
-`recheck_citations` are what make that catchable, so they are tested against the real
-corpus rather than against a stub — a checker validated by a fixture it wrote itself
-proves nothing about the statute anyone can look up.
+carries the authority of law, and points at a sentence that does not exist.
+
+The checker for it lives in `agent/statute.py` and is exercised in `test_statute.py`,
+because where it lives turned out to matter more than whether it worked. It began in this
+module, correct and tested and never called: the executor read `art.NN` out of replies and
+compared it to the member's contracts, and a statute citation matched neither pattern nor
+corpus, so an invented 第999條 shipped verbatim past a check this file's docstring claimed
+was running. A checker a scenario owns is a checker the executor cannot reach.
+
+What is left here is the scenario's own behaviour, and the tests that assert an invented
+provision is withheld now run a turn through the executor rather than calling the checker
+directly — the earlier version would have passed unchanged on the day nothing called it.
 
 The second is quieter and worse: the desk quotes the provision that justifies the company
 and stops there. 保險法 §64 II is the insurer's right to rescind; §64 III is the two-year
@@ -316,3 +324,61 @@ def test_the_scenarios_package_pulls_in_nothing():
         if line.startswith(("import ", "from ")) and "__future__" not in line
     ]
     assert not body, body
+
+
+@pytest.fixture
+async def case(db):
+    """Open a case to run a real turn against."""
+    member_id = await db.fetch_val("SELECT member_id FROM member ORDER BY member_id LIMIT 1")
+    if member_id is None:
+        pytest.skip("no member to run a turn against")
+    return await db.fetch_val(
+        'INSERT INTO "case" (member_id, kind, stage) VALUES ($1::bigint, $2, $3) RETURNING case_id',
+        [member_id, "service", "inquiry"],
+    ), member_id
+
+
+class _Says:
+    """A provider that writes one fixed reply, to put a known citation on the real path."""
+
+    name = "stub"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    async def complete(self, **_: object):
+        from policydesk.llm.provider import Completion
+
+        return Completion(text=self.text, model="stub", provider="stub")
+
+
+async def test_an_invented_provision_is_withheld_on_the_soothe_route(db, case):
+    # The general case is covered elsewhere; this one pins the route that emits statute
+    # citations *by design*. The checker began in this module, correct and tested and
+    # never called — so what is asserted here is that the reply is withheld, not that the
+    # checker returns the right list.
+    from policydesk.agent.executor import WITHHELD, run_turn
+
+    case_id, member_id = case
+    invented = "我聽到您的不滿。依〔保險法 第999條第2項〕，保險人不得解除契約。"
+    turn = await run_turn(
+        _Says(invented), db, case_id=case_id, member_id=member_id,
+        text="你們憑什麼說要解除我的契約", confirmed=False,
+    )
+    assert turn.reply == WITHHELD
+    assert "第999條" not in turn.reply
+
+
+async def test_a_real_provision_survives_the_soothe_route(db, case):
+    # The other direction, and the one that fails if the checker is too strict: a
+    # withholding gate that also swallows correct citations answers nobody.
+    from policydesk.agent.executor import WITHHELD, run_turn
+
+    case_id, member_id = case
+    real = "我聽到您的不滿。依〔保險法 第64條第3項〕，解除權經過二年即不得行使。"
+    turn = await run_turn(
+        _Says(real), db, case_id=case_id, member_id=member_id,
+        text="你們憑什麼說要解除我的契約", confirmed=False,
+    )
+    assert turn.reply != WITHHELD
+    assert "第64條第3項" in turn.reply
