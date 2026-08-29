@@ -292,37 +292,54 @@ async def _gather(
         # which the `art.NN` checker never sees, so it has nothing here to allow.
         facts.setdefault("_allowed_clauses", frozenset())
         return facts
-    if not confirmed and tools.reads_identity(scenario.tools):
-        return await _public_only(db, scenario, params)
-    # list_policies first, because everything else needs its product_ids.
-    policies = await tools.list_policies(db, turn.member_id, today=today)
-    product_ids = [p["product_id"] for p in policies]
-    facts: dict[str, Any] = {"list_policies": policies}
-
-    # The rest depend on product_ids and member_id, not on each other, so they go out
-    # together rather than one round trip at a time. Two or three queries per turn on a
-    # local database is a few milliseconds; against a networked one it is a full round
-    # trip each, on the path a customer is waiting on.
-    pending: dict[str, Any] = {"_allowed_clauses": tools.clause_ids_for(db, product_ids)}
-    if "find_clause" in scenario.tools:
+    # Per tool, exactly as the `tools_module` branch does it. Asking the question per
+    # scenario let a scenario whose declared tools are all public — `browse_products`,
+    # whose only tool is `catalogue_sample` — fall through to the unconditional
+    # `list_policies` below and put an unverified visitor's whole book in the prompt.
+    allowed = tools.permitted(scenario.tools, confirmed=confirmed)
+    facts: dict[str, Any] = {}
+    if not confirmed:
+        # `list_policies` and `clause_ids_for` are member reads that no scenario declares,
+        # so `permitted` never sees them and they need saying out loud. With no book there
+        # is no citable clause either, which is the right answer: a clause id in a reply
+        # to an unverified session is one nothing can check.
+        facts["_identity_required"] = True
+        facts["_allowed_clauses"] = frozenset()
+        product_ids: list[str] = []
+        pending: dict[str, Any] = {}
+    else:
+        # list_policies first, because everything else needs its product_ids.
+        policies = await tools.list_policies(db, turn.member_id, today=today)
+        product_ids = [p["product_id"] for p in policies]
+        facts["list_policies"] = policies
+        # The rest depend on product_ids and member_id, not on each other, so they go out
+        # together rather than one round trip at a time. Two or three queries per turn on
+        # a local database is a few milliseconds; against a networked one it is a full
+        # round trip each, on the path a customer is waiting on.
+        pending = {"_allowed_clauses": tools.clause_ids_for(db, product_ids)}
+    if "find_clause" in allowed:
         pending["find_clause"] = tools.find_clause(db, product_ids, params.get("topic", ""), index=index)
-    if "find_multiplier" in scenario.tools:
+    if "find_multiplier" in allowed:
         pending["find_multiplier"] = tools.find_multiplier(db, product_ids, params.get("event", turn.procedure_hint))
-    if "catalogue_sample" in scenario.tools:
+    if "catalogue_sample" in allowed:
         pending["catalogue_sample"] = tools.catalogue_sample(db, params.get("line", "health"))
-    if "benefit_headings" in scenario.tools:
+    if "benefit_headings" in allowed:
         pending["benefit_headings"] = tools.benefit_headings(db, product_ids)
-    if "required_documents" in scenario.tools:
+    if "required_documents" in allowed:
         pending["required_documents"] = tools.required_documents(db, product_ids)
-    if "billing_summary" in scenario.tools:
+    if "billing_summary" in allowed:
         pending["billing_summary"] = tools.billing_summary(db, turn.member_id, today=today)
-    if "coverage_summary" in scenario.tools:
+    if "coverage_summary" in allowed:
         pending["coverage_summary"] = tools.coverage_summary(db, turn.member_id, today=today)
 
     results = await asyncio.gather(*pending.values())
     facts.update(dict(zip(pending, results, strict=True)))
 
-    if "suitable_products" in scenario.tools:
+    if "suitable_products" in allowed and confirmed:
+        # `suitable_products` reads the public catalogue and is rightly unmarked, but it
+        # needs the member's insurance age and occupation class to filter by — so the
+        # public tool is a door onto `member_underwriting`, which is marked. The gate has
+        # to see the tool a tool calls, and it cannot, so this one is named here.
         member = await tools.member_underwriting(db, turn.member_id, today=today)
         budget = _as_budget(params.get("budget", ""))
         if member and budget is not None:
@@ -517,6 +534,19 @@ async def run_turn(
     turn.params = params
     facts = await _gather(db, scenario, turn, today=today, params=params, confirmed=confirmed, index=index)
     allowed: frozenset[str] = facts.pop("_allowed_clauses")
+
+    if facts.get("_identity_required") and scenario.emit is Emit.TEMPLATE:
+        # A template fills from rows, and the withheld query has none — so 您名下有效保單
+        # 共 0 張 is what it renders. That is a false statement about the customer rather
+        # than a withheld one, and it is the exact failure the review scenario's own
+        # docstring names. The model path says the same thing correctly, because it reads
+        # `_identity_required`; this path has no model to read it.
+        turn.awaiting_identity = True
+        turn.reply = (
+            "查詢您名下的保單資料前，需要先核對您的身分。"
+            "請提供您的身分證字號，核對通過後我立刻為您查詢。"
+        )
+        return turn
 
     if scenario.emit is Emit.TEMPLATE:
         turn.reply = _render(scenario, facts)

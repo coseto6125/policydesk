@@ -33,7 +33,7 @@ def test_the_probes_run_together():
 
 def test_the_probe_only_runs_when_nothing_qualified():
     """It is the fallback, not a second opinion on a list that already has products."""
-    body = EXECUTOR[EXECUTOR.index('if "suitable_products" in scenario.tools'):EXECUTOR.index('facts["_criteria"]')]
+    body = EXECUTOR[EXECUTOR.index('if "suitable_products" in allowed'):EXECUTOR.index('facts["_criteria"]')]
     assert 'if not facts["suitable_products"]:' in body
 
 

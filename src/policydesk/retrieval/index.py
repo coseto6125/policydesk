@@ -407,7 +407,12 @@ class BM25Retriever:
         # Stop words are dropped here, on the query, and never in `cut` — which the build
         # also calls. Dropping them from the documents would change every document length
         # and so every score, to fix a problem that only exists on the query side.
-        kept = [token for token in cut(query).split(_SEP) if token and token not in QUERY_STOP]
+        tokens = [token for token in cut(query).split(_SEP) if token]
+        # `or tokens` is the fallback for a query made entirely of stop words. Without it
+        # 保單 alone cut to nothing, the boolean had no clause at all, and `search`
+        # returned an empty list — which a customer reads as 法規裡沒有這件事 rather than
+        # as 我不知道你在問什麼. A bad ranking says something; silence says the wrong thing.
+        kept = [token for token in tokens if token not in QUERY_STOP] or tokens
         for token in kept:
             for field, boost in ((F_HEADING, BOOST_HEADING), (F_BODY, BOOST_BODY)):
                 term = tantivy.Query.term_query(SCHEMA, field, token.lower())
