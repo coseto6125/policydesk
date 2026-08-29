@@ -21,10 +21,8 @@ import pytest
 from policydesk.agent import statute, tools
 from policydesk.agent.scenarios.soothe import (
     SOOTHE,
-    cited,
     complaint_channel,
     gather,
-    recheck_citations,
     statute_reference,
 )
 from policydesk.core.db import Database
@@ -46,13 +44,13 @@ async def db():
 
 
 def test_cited_reads_article_paragraph_and_item():
-    assert cited("依〔保險法 第64條第2項〕，…") == [("保險法", "art.64.2")]
-    assert cited("〔保險法 第65條第1項第2款〕") == [("保險法", "art.65.1.2")]
-    assert cited("〔保險法 第8-1條〕") == [("保險法", "art.8-1")]
+    assert statute.cited("依〔保險法 第64條第2項〕，…") == [("保險法", "art.64.2")]
+    assert statute.cited("〔保險法 第65條第1項第2款〕") == [("保險法", "art.65.1.2")]
+    assert statute.cited("〔保險法 第8-1條〕") == [("保險法", "art.8-1")]
 
 
 def test_cited_deduplicates_a_provision_quoted_twice():
-    assert cited("〔保險法 第64條〕…〔保險法 第64條〕") == [("保險法", "art.64")]
+    assert statute.cited("〔保險法 第64條〕…〔保險法 第64條〕") == [("保險法", "art.64")]
 
 
 def test_statute_citation_does_not_collide_with_the_clause_syntax():
@@ -68,24 +66,24 @@ def test_statute_citation_does_not_collide_with_the_clause_syntax():
 
 
 async def test_recheck_passes_a_real_provision(db):
-    assert await recheck_citations(db, "依〔保險法 第64條第2項〕，…") == []
+    assert await statute.unresolved(db, "依〔保險法 第64條第2項〕，…") == []
 
 
 async def test_recheck_catches_an_article_that_does_not_exist(db):
     # 保險法 stops well short of 第999條. The pair comes back as written, not as the
     # article it would belong to, so the caller can point at the exact citation to strike.
-    assert await recheck_citations(db, "〔保險法 第999條第1項〕") == [("保險法", "art.999.1")]
+    assert await statute.unresolved(db, "〔保險法 第999條第1項〕") == [("保險法", "art.999.1")]
 
 
 async def test_recheck_catches_a_provision_attributed_to_the_wrong_statute(db):
     # 保險法 §64 exists and 保險法施行細則 §64 does not. Same number, different Act — the
     # misattribution hardest for a reader to catch.
-    assert await recheck_citations(db, "〔保險法施行細則 第64條第2項〕") == [("保險法施行細則", "art.64.2")]
+    assert await statute.unresolved(db, "〔保險法施行細則 第64條第2項〕") == [("保險法施行細則", "art.64.2")]
 
 
 async def test_recheck_catches_a_paragraph_beyond_the_article(db):
     # 保險法 §64 has three 項. A fourth is a sentence that sounds like law and is not.
-    assert await recheck_citations(db, "〔保險法 第64條第9項〕") == [("保險法", "art.64.9")]
+    assert await statute.unresolved(db, "〔保險法 第64條第9項〕") == [("保險法", "art.64.9")]
 
 
 async def test_statute_reference_finds_the_provision_behind_a_complaint(db):
@@ -97,14 +95,14 @@ async def test_statute_reference_finds_the_provision_behind_a_complaint(db):
 async def test_statute_reference_citations_are_written_the_way_the_checker_reads_them(db):
     rows = await statute_reference(db, "解除契約", limit=6)
     for row in rows:
-        assert cited(row["citation"]) == [(row["statute"], row["doc_id"])]
+        assert statute.cited(row["citation"]) == [(row["statute"], row["doc_id"])]
 
 
 async def test_statute_reference_citations_all_survive_the_recheck(db):
     # The model is told to copy `citation` verbatim, so a citation the tool itself
     # formats wrongly is a reply withheld for a provision that was really there.
     rows = await statute_reference(db, "申訴", limit=6)
-    assert not await recheck_citations(db, " ".join(r["citation"] for r in rows))
+    assert not await statute.unresolved(db, " ".join(r["citation"] for r in rows))
 
 
 async def test_complaint_channel_states_the_statutory_deadline(db):
@@ -212,54 +210,54 @@ async def test_every_provision_in_the_corpus_round_trips_through_the_citation_fo
                   a.paragraph, a.subparagraph
            FROM statute_article a JOIN statute s USING (statute_id)"""
     )
-    bad = [r["doc_id"] for r in rows if cited(statute.citation(r)) != [(r["statute_name"], r["doc_id"])]]
+    bad = [r["doc_id"] for r in rows if statute.cited(statute.citation(r)) != [(r["statute_name"], r["doc_id"])]]
     assert not bad, bad[:10]
 
 
 async def test_a_two_digit_branch_article_is_readable_and_checkable(db):
-    assert cited("〔保險法 第149-10條第3項〕") == [("保險法", "art.149-10.3")]
-    assert await recheck_citations(db, "〔保險法 第149-10條第3項〕") == []
-    assert await recheck_citations(db, "〔保險法 第149-99條〕") == [("保險法", "art.149-99")]
+    assert statute.cited("〔保險法 第149-10條第3項〕") == [("保險法", "art.149-10.3")]
+    assert await statute.unresolved(db, "〔保險法 第149-10條第3項〕") == []
+    assert await statute.unresolved(db, "〔保險法 第149-99條〕") == [("保險法", "art.149-99")]
 
 
 def test_the_statutes_own_branch_notation_is_accepted():
     # 之十 is how the Act writes it in its own cross-references, and a model copying the
     # corpus will sometimes copy that.
-    assert cited("〔保險法 第149之10條第3項〕") == [("保險法", "art.149-10.3")]
+    assert statute.cited("〔保險法 第149之10條第3項〕") == [("保險法", "art.149-10.3")]
 
 
 def test_a_citation_written_in_prose_is_still_read():
     # The model is told to copy the bracketed form, and mostly does. What matters is what
     # happens when it does not: a citation the pattern misses is not one the checker
     # rejects, it is one the checker never sees, so the reply ships uncheckable.
-    assert cited("依保險法第64條第2項，保險人得解除契約") == [("保險法", "art.64.2")]
-    assert cited("（保險法 第64條第2項）") == [("保險法", "art.64.2")]
-    assert cited("〔保險法 第 64 條 第 2 項〕") == [("保險法", "art.64.2")]
+    assert statute.cited("依保險法第64條第2項，保險人得解除契約") == [("保險法", "art.64.2")]
+    assert statute.cited("（保險法 第64條第2項）") == [("保險法", "art.64.2")]
+    assert statute.cited("〔保險法 第 64 條 第 2 項〕") == [("保險法", "art.64.2")]
 
 
 def test_a_citation_in_chinese_numerals_is_read():
     # The statute cross-references itself this way — 第六十四條第三項 appears verbatim
     # inside 第68條 — so a model quoting the corpus reproduces it.
-    assert cited("根據保險法第六十四條第二項") == [("保險法", "art.64.2")]
-    assert cited("保險法第一百四十九條之十第三項") == [("保險法", "art.149-10.3")]
+    assert statute.cited("根據保險法第六十四條第二項") == [("保險法", "art.64.2")]
+    assert statute.cited("保險法第一百四十九條之十第三項") == [("保險法", "art.149-10.3")]
 
 
 def test_both_notations_for_a_branch_article_agree():
     # Digits put 之N before 條 and words put it after. Both are in the corpus.
-    assert cited("〔保險法 第8-1條第1項〕") == cited("〔保險法 第八條之一第1項〕") == [("保險法", "art.8-1.1")]
+    assert statute.cited("〔保險法 第8-1條第1項〕") == statute.cited("〔保險法 第八條之一第1項〕") == [("保險法", "art.8-1.1")]
 
 
 def test_a_leading_particle_does_not_become_part_of_the_statutes_name():
     # The name is half the key the recheck looks up. 依保險法 matches no statute, so a real
     # citation would be reported as invented and the reply withheld for nothing.
-    assert cited("依保險法第64條") == cited("參照保險法第64條") == [("保險法", "art.64")]
+    assert statute.cited("依保險法第64條") == statute.cited("參照保險法第64條") == [("保險法", "art.64")]
 
 
 def test_a_contract_article_is_not_read_as_a_statute():
     # 本契約第3條 is the customer's own policy. Without the 法/細則/辦法 anchor the checker
     # would look it up as a statute, find nothing, and void a reply nobody miscited in.
-    assert cited("本契約第3條約定的等待期") == []
-    assert cited("依第64條規定") == []
+    assert statute.cited("本契約第3條約定的等待期") == []
+    assert statute.cited("依第64條規定") == []
 
 
 async def test_every_provision_resolves_from_the_prose_form_too(db):
@@ -271,16 +269,16 @@ async def test_every_provision_resolves_from_the_prose_form_too(db):
     bad = []
     for row in rows:
         prose = "依" + row["statute_name"] + statute.citation(row).strip("〔〕").split(" ", 1)[1]
-        if cited(prose) != [(row["statute_name"], row["doc_id"])]:
+        if statute.cited(prose) != [(row["statute_name"], row["doc_id"])]:
             bad.append(row["doc_id"])
     assert not bad, bad[:10]
 
 
 async def test_the_looser_pattern_still_catches_an_invented_provision(db):
     # Reading more forms must not mean rejecting fewer. Both directions asserted.
-    assert await recheck_citations(db, "依保險法第999條第1項") == [("保險法", "art.999.1")]
-    assert await recheck_citations(db, "依保險法施行細則第64條第2項") == [("保險法施行細則", "art.64.2")]
-    assert await recheck_citations(db, "依保險法第64條第2項") == []
+    assert await statute.unresolved(db, "依保險法第999條第1項") == [("保險法", "art.999.1")]
+    assert await statute.unresolved(db, "依保險法施行細則第64條第2項") == [("保險法施行細則", "art.64.2")]
+    assert await statute.unresolved(db, "依保險法第64條第2項") == []
 
 
 def test_a_scenario_module_imports_cleanly_from_any_entry_point():

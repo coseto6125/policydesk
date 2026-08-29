@@ -89,11 +89,10 @@ async def test_statutory_floor_reaches_article_116(db):
 
 
 async def test_statutory_floor_citations_survive_a_recheck_against_the_real_corpus(db):
-    from policydesk.agent.scenarios.soothe import recheck_citations
 
     rows = await statutory_floor(db, limit=8)
     text = " ".join(r["citation"] for r in rows)
-    assert not await recheck_citations(db, text), "every citation this tool writes must resolve"
+    assert not await statute.unresolved(db, text), "every citation this tool writes must resolve"
 
 
 async def test_statutory_floor_names_the_six_month_grace_window(db):
