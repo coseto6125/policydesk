@@ -114,3 +114,12 @@ async def test_a_withheld_session_gets_the_rule_and_none_of_the_book(db, in_grac
     assert facts["grace_rule"], "the law is public and must still answer"
     assert "payment_state" not in facts
     assert "payment_history" not in facts
+
+
+async def test_an_instalment_is_a_whole_number_of_dollars(db):
+    # 408.33 元 reached a customer in a live run. No insurer bills a third of a dollar; the
+    # fraction was an artefact of dividing an annual rate by twelve.
+    fractional = await db.fetch(
+        "SELECT amount FROM premium_payment WHERE amount <> round(amount) LIMIT 5"
+    )
+    assert not fractional, f"a premium is billed in whole dollars: {fractional}"
