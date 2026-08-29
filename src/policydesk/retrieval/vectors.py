@@ -23,6 +23,7 @@ one corpus and one process.
 
 import asyncio
 import os
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -52,6 +53,9 @@ attention. 512 covers every clause in this corpus with room to spare."""
 
 BATCH = 16
 
+PROGRESS_EVERY = 512
+"""Documents between progress lines during a build. Roughly every ninety seconds."""
+
 
 class Embedder:
     """
@@ -80,12 +84,16 @@ class Embedder:
             (i for i, out in enumerate(self._session.get_outputs()) if out.name == "sentence_embedding"), None
         )
 
-    def encode(self, texts: Sequence[str]) -> NDArray:
+    def encode(self, texts: Sequence[str], *, progress: int = 0) -> NDArray:
         """
         Embed a batch.
 
         Args:
             texts: What to embed.
+            progress: Log a line every this many documents. 0 stays quiet, which is what
+                a query wants; a corpus build passes a figure, because forty minutes with
+                no output is indistinguishable from a hang and the first thing anybody
+                does about a hang is start a second one.
 
         Returns:
             An (n, DIM) fp32 array, L2-normalised so a dot product is a cosine.
@@ -95,6 +103,8 @@ class Embedder:
             return np.zeros((0, DIM), dtype=np.float32)
         rows: list[NDArray] = []
         for start in range(0, len(texts), BATCH):
+            if progress and start and not start % progress:
+                logger.info("vectors_encoding", done=start, total=len(texts))
             chunk = [t or " " for t in texts[start : start + BATCH]]
             encoded = self._tokenizer.encode_batch(chunk)
             out = self._session.run(
@@ -147,7 +157,7 @@ async def build(db: Database, *, path: Path = VECTOR_DIR, model_dir: Path = MODE
         return 0
 
     embedder = await asyncio.to_thread(Embedder, model_dir)
-    matrix = await asyncio.to_thread(embedder.encode, texts)
+    matrix = await asyncio.to_thread(partial(embedder.encode, texts, progress=PROGRESS_EVERY))
 
     await asyncio.to_thread(path.mkdir, parents=True, exist_ok=True)
     await asyncio.to_thread(np.save, path / "vectors.npy", matrix)
