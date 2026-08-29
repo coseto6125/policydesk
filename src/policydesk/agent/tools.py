@@ -31,6 +31,15 @@ if TYPE_CHECKING:
 _UNIT = re.compile(r"每\s*(?:日\s*)?([\d,]+)\s*(萬|)元")
 """How a `catalog_entry.unit_label` states its unit: 每 100 萬元保額, 每日 1,000 元住院日額."""
 
+DOCUMENTS_PER_PRODUCT = 2
+"""Document clauses kept per product. `_short` allows twelve rows in total, so this fits
+five products — the largest book in the corpus — with every one of them represented."""
+
+DOCUMENT_CHARS = 1200
+"""How much of a document clause reaches the model. Longer than `_short`'s general 400,
+because these are the lines the reply enumerates rather than context around them; the
+longest held one is 794."""
+
 UNITS_PER_LABEL = 1000
 """`policy.sum_insured` counts thousandths of one `unit_label` unit.
 
@@ -142,14 +151,16 @@ def permitted(tool_names: Iterable[str], *, owner: Any = None, confirmed: bool) 
     as gated: an unknown tool is one nobody has checked.
 
     """
-    if confirmed:
-        return frozenset(tool_names)
     catalogue: dict[str, Any] = dict(getattr(owner, "TOOLS", {}))
+    # Resolved on both paths. Returning the names unread when `confirmed` was true left
+    # the rule above true only for an unverified customer: `permitted(("no_such_tool",),
+    # confirmed=True)` handed back the name it had not found, which is the opposite of
+    # excluding what nobody has checked.
     return frozenset(
         name
         for name in tool_names
         if (fn := catalogue.get(name, globals().get(name))) is not None
-        and not getattr(fn, "requires_identity", False)
+        and (confirmed or not getattr(fn, "requires_identity", False))
     )
 
 
@@ -643,16 +654,36 @@ async def required_documents(db: Database, product_ids: list[str]) -> list[dict[
     So the clause is the answer, and it arrives with a `clause_id` the reply can cite and
     the customer can check — which the table's rows never had.
 
+    **Capped per product, not per member.** `_short` trims a tool result to twelve rows
+    before it reaches the model, and this query used to order by product: a member holding
+    five products with 22 matching clauses had two of their policies cut off the end of the
+    list, and the reply then read as a complete answer that silently omitted a contract
+    they hold. Four of 46 members lost at least one product that way, and nothing logged
+    it. Ranking inside each product puts every held contract in the result, and the twelve
+    that survive are spread across them.
+
+    The text is sliced in SQL for the same reason. `_short` clips a string at 400
+    characters, which is right for the corpus at large — a clause runs to 442,649 — but
+    the injection tells the model the document list is in `verbatim`'s 一、二、三 lines,
+    so a clip mid-enumeration removes items rather than trailing context. Eight held
+    clauses exceed 400 characters, across twelve members.
+
     """
     if not product_ids:
         return []
     return await db.fetch(
-        """SELECT c.product_id, c.clause_id, c.heading, c.verbatim, c.page, p.name AS product_name
-           FROM clause c JOIN product p USING (product_id)
-           WHERE c.product_id = ANY($1::text[])
-             AND c.heading ~ '申領|保險金的申請|檢具|應檢附'
-           ORDER BY c.product_id, c.clause_id""",
-        [product_ids],
+        """SELECT product_id, clause_id, heading, verbatim, page, product_name
+           FROM (
+               SELECT c.product_id, c.clause_id, c.heading, c.page, p.name AS product_name,
+                      left(c.verbatim, $2::int) AS verbatim,
+                      row_number() OVER (PARTITION BY c.product_id ORDER BY c.clause_id) AS rank
+               FROM clause c JOIN product p USING (product_id)
+               WHERE c.product_id = ANY($1::text[])
+                 AND c.heading ~ '申領|保險金的申請|檢具|應檢附'
+           ) ranked
+           WHERE rank <= $3::int
+           ORDER BY product_id, clause_id""",
+        [product_ids, DOCUMENT_CHARS, DOCUMENTS_PER_PRODUCT],
     )
 
 

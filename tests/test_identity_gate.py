@@ -388,3 +388,25 @@ def test_a_ten_character_question_is_not_read_as_a_national_id():
 
     for real in ("A123456789", "a123456789", "F229876543"):
         assert NATIONAL_ID.fullmatch(real), f"{real!r} is a national ID and was not read as one"
+
+
+def test_an_unknown_tool_name_is_dropped_even_on_a_confirmed_turn():
+    """
+    The gate resolved names only when it was about to withhold some.
+
+    `permitted` returned `frozenset(tool_names)` unread whenever the session was
+    confirmed, so a name nobody could resolve came back as permitted — the rule that an
+    unchecked tool is excluded held for an unverified customer and not for a verified
+    one. The asymmetry is the bug: a gate that fails closed only half the time is a gate
+    whose contract cannot be relied on by the code downstream of it.
+    """
+    assert tools.permitted(("no_such_tool",), confirmed=True) == frozenset()
+    assert tools.permitted(("no_such_tool",), confirmed=False) == frozenset()
+
+
+def test_a_confirmed_turn_still_gets_every_tool_that_does_resolve():
+    # The other half. Fixing the fail-closed hole must not withhold real tools from a
+    # customer who has proved who they are.
+    from policydesk.agent.scenarios import payment
+
+    assert tools.permitted(payment.PAYMENT.tools, owner=payment, confirmed=True) == frozenset(payment.PAYMENT.tools)

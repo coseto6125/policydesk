@@ -99,7 +99,18 @@ def test_short_renders_the_types_the_encoder_refuses():
 
 
 def test_short_still_clips_long_text_inside_rows():
-    from policydesk.agent.executor import _short
+    """
+    The clip is per key now, and both widths matter.
 
-    row = _short([{"verbatim": "條" * 900}])[0]
-    assert len(row["verbatim"]) == 400
+    A general string stays at 400 because the clause corpus holds one of 442,649
+    characters and a single row of it would be the whole prompt. `verbatim` is wider
+    because `required_documents` returns the 一、二、三 enumeration the reply reads out,
+    and a cut at 400 lands mid-list and removes documents a claimant is entitled to.
+    """
+    from policydesk.agent.executor import CHARS, LONGER, _short
+
+    quoted = _short([{"verbatim": "條" * 2000}])[0]
+    assert len(quoted["verbatim"]) == LONGER["verbatim"]
+
+    other = _short([{"note": "條" * 2000}])[0]
+    assert len(other["note"]) == CHARS

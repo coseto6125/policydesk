@@ -323,6 +323,19 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
     pending_question: str | None = None
     """What they asked before the check interrupted them. Captured once, so a wrong
     number typed after it does not become the question the desk comes back to."""
+    floor = 0
+    """The newest message this case held when the socket bound to it, and the boundary an
+    unverified connection may not read past.
+
+    Session-local like `confirmed`, and for the same reason. A visitor types a display
+    name; a name matching an existing member binds this socket to that member and
+    `open_case` hands back their live case. `memory.recent` cuts on a time gap, which is
+    about continuity — a customer who reloads mid-sentence keeps their context — and a
+    time gap cannot tell a reload from a stranger who guessed a name. Inside that window
+    the transcript of somebody else's conversation went into the prompt.
+
+    Dropped to 0 the moment 資料核對 passes, because the session has then proved it is the
+    customer and the case's own history is theirs to read."""
 
     try:
         async for raw in ws:
@@ -367,6 +380,9 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     if existing is not None:
                         member_id = existing["member_id"]
                         case_id = (await cmd.open_case(db, member_id)).case_id
+                        # Everything already on this case belongs to the connection that
+                        # wrote it, not to this one.
+                        floor = await _last_message(db, case_id)
                         await ws.send(json.encode({
                             "type": "profile",
                             "name": name,
@@ -499,6 +515,9 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         continue
 
                     confirmed = True
+                    # The session is the customer now, so the case's own transcript is
+                    # theirs — including what they said before the reload.
+                    floor = 0
                     logger.info("identity_confirmed", case_id=case_id, attempts=attempts)
                     await ws.send(json.encode({"type": "confirmed"}).decode())
                     await _push_case(db, ws, request.app, case_id)
@@ -514,13 +533,13 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
 
                     # Answer what they actually asked, before the check interrupted them.
                     text, pending_question = pending_question, None
-                    await _answer(request, ws, db, case_id=case_id, text=text, confirmed=True)
+                    await _answer(request, ws, db, case_id=case_id, text=text, confirmed=True, floor=floor)
 
                 case "say" if case_id is not None:
                     text = (message.get("text") or "").strip()
                     if not text:
                         continue
-                    await _answer(request, ws, db, case_id=case_id, text=text, confirmed=confirmed)
+                    await _answer(request, ws, db, case_id=case_id, text=text, confirmed=confirmed, floor=floor)
                     if not confirmed:
                         # The latest question, not the first. Keeping the first replayed
                         # 嗨 after the check passed; the thing worth coming back to is
@@ -622,8 +641,30 @@ async def _cited(db: Database, case_id: int, clause_ids: tuple[str, ...]) -> lis
     return rows
 
 
+async def _last_message(db: Database, case_id: int) -> int:
+    """
+    Read where a case's conversation stands right now.
+
+    Args:
+        db: The database.
+        case_id: Which case.
+
+    Returns:
+        The newest message_id, or 0 for a case nobody has spoken on.
+
+    Called once per socket, at the moment it binds to a case, so the number is the
+    boundary between what an earlier connection said and what this one is about to.
+
+    """
+    return await db.fetch_val(
+        "SELECT coalesce(max(message_id), 0) FROM conversation_message WHERE case_id = $1::bigint",
+        [case_id],
+    ) or 0
+
+
 async def _answer(
-    request: Request, ws: Websocket, db: Database, *, case_id: int, text: str, confirmed: bool
+    request: Request, ws: Websocket, db: Database, *, case_id: int, text: str,
+    confirmed: bool, floor: int = 0,
 ) -> Turn:
     """
     Run one turn and send it, recording both halves of the exchange.
@@ -635,6 +676,7 @@ async def _answer(
         case_id: Which case.
         text: What the customer said.
         confirmed: Whether this session has passed 資料核對.
+        floor: The message this connection started above. 0 reads the whole case.
 
     Returns:
         The turn, so the caller can read whether the identity gate stopped it.
@@ -655,7 +697,7 @@ async def _answer(
     turn = await run_turn(
         request.app.ctx.provider, db,
         case_id=case_id, member_id=member_id, text=text, confirmed=confirmed,
-        index=request.app.ctx.clauses,
+        index=request.app.ctx.clauses, since=floor,
     )
     await db.execute(
         """INSERT INTO conversation_message (case_id, speaker, text, turn_id)

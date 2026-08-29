@@ -15,7 +15,7 @@ a lapsed policy stops being paid before its lapse date rather than at a random p
 import random
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from policydesk.bootloader import logger
 
@@ -130,6 +130,17 @@ async def furnish(db: Database, member_id: int, *, today: date, seed: int | None
 
     rng = random.Random(seed if seed is not None else member_id)
     payments = beneficiaries = claims = 0
+    # Collected across the loop and written once. `furnish` runs inside a real customer's
+    # sign-up turn on the websocket, not in an offline seeding job, so every statement in
+    # the loop is a round trip on somebody's own turn — the largest preset held five
+    # policies and spent about a dozen of them on rows whose values were all known before
+    # the first await.
+    instalment_rows: list[list[Any]] = []
+    beneficiary_rows: list[list[Any]] = []
+    claim_rows: list[list[Any]] = []
+    policy_ids: list[int] = []
+    modes: list[str] = []
+    paid_throughs: list[date] = []
 
     for policy in policies:
         mode = rng.choices(list(MODES), weights=MODE_WEIGHTS)[0]
@@ -159,20 +170,22 @@ async def furnish(db: Database, member_id: int, *, today: date, seed: int | None
         # due date at or before today, so the next instalment is always in the future and
         # the branch was dead — 0 unpaid rows across 4,253, measured before this changed.
         in_grace = not lapsed and len(due) > 1 and rng.random() < 0.15
-        rows = [(policy["policy_id"], d, None if in_grace and d == due[-1] else d, instalment) for d in due]
-        if in_grace:
+        # A lapsed policy owes the premium that lapsed it. `horizon` stops the schedule a
+        # grace period before the lapse date, and every row was then written as paid — so
+        # 11 lapsed policies carried 0 unpaid instalments, and the scenario's own rule
+        # ("no unpaid row means every instalment is settled") told a customer whose cover
+        # had stopped for non-payment that they owed nothing. The missed instalment is the
+        # last one before the lapse, which is the due date §116's thirty days ran from.
+        owes = in_grace or (lapsed is not None and len(due) > 1)
+        rows = [(policy["policy_id"], d, None if owes and d == due[-1] else d, instalment) for d in due]
+        if owes:
             paid_through = due[-2]
 
-        await db.execute_many(
-            """INSERT INTO premium_payment (policy_id, due_at, paid_at, amount)
-               VALUES ($1::bigint, $2::date, $3::date, $4::numeric)""",
-            [list(r) for r in rows],
-        )
+        instalment_rows.extend([list(r) for r in rows])
         payments += len(rows)
-        await db.execute(
-            "UPDATE policy SET premium_mode = $1::text, paid_through = $2::date WHERE policy_id = $3::bigint",
-            [mode, paid_through, policy["policy_id"]],
-        )
+        modes.append(mode)
+        paid_throughs.append(paid_through)
+        policy_ids.append(policy["policy_id"])
 
         if rng.random() >= UNDESIGNATED:
             shares = [100] if rng.random() < 0.75 else [60, 40]
@@ -189,11 +202,7 @@ async def furnish(db: Database, member_id: int, *, today: date, seed: int | None
                 weights.pop(at)
                 named.append(pick)
             for who, share in zip(named, shares, strict=True):
-                await db.execute(
-                    """INSERT INTO policy_beneficiary (policy_id, display_name, relation, share, designated_at)
-                       VALUES ($1::bigint, $2::text, $3::text, $4::int, $5::date)""",
-                    [policy["policy_id"], who, who, share, policy["effective_at"]],
-                )
+                beneficiary_rows.append([policy["policy_id"], who, who, share, policy["effective_at"]])
                 beneficiaries += 1
 
         if not lapsed and rng.random() < CLAIM_RATE:
@@ -210,14 +219,13 @@ async def furnish(db: Database, member_id: int, *, today: date, seed: int | None
                     if decided
                     else None
                 )
-                await db.execute(
-                    """INSERT INTO claim (policy_id, kind, event_at, filed_at, stage, outcome,
-                                          decided_at, paid_amount, note)
-                       VALUES ($1::bigint,$2::text,$3::date,$4::date,$5::text,$6::text,$7::date,
-                               $8::numeric,$9::text)""",
+                claim_rows.append(
                     [
                         policy["policy_id"], rng.choice(CLAIM_KINDS), event, filed, stage, outcome,
-                        filed + timedelta(days=rng.randint(5, 20)) if decided else None,
+                        # Capped at today. A decided claim is one an assessor has already
+                        # ruled on, and a `decided_at` after today put a decision in the
+                        # future on a claim the console shows as 已核付 — 1 of 36 rows.
+                        min(filed + timedelta(days=rng.randint(5, 20)), today) if decided else None,
                         Decimal(str(round(float(instalment) * rng.uniform(0.8, 6.0), 2)))
                         if outcome in {"paid", "partial"}
                         else None,
@@ -225,6 +233,37 @@ async def furnish(db: Database, member_id: int, *, today: date, seed: int | None
                     ],
                 )
                 claims += 1
+
+    if instalment_rows:
+        await db.execute_many(
+            """INSERT INTO premium_payment (policy_id, due_at, paid_at, amount)
+               VALUES ($1::bigint, $2::date, $3::date, $4::numeric)""",
+            instalment_rows,
+        )
+    if policy_ids:
+        # Parallel arrays through `unnest`, not a `record[]`: psqlpy panics in its Rust
+        # layer on a list of tuples bound to `$1::record[]`, with no SQL error and no
+        # column named.
+        await db.execute(
+            """UPDATE policy SET premium_mode = v.mode, paid_through = v.paid
+               FROM unnest($1::bigint[], $2::text[], $3::date[]) AS v(pid, mode, paid)
+               WHERE policy.policy_id = v.pid""",
+            [policy_ids, modes, paid_throughs],
+        )
+    if beneficiary_rows:
+        await db.execute_many(
+            """INSERT INTO policy_beneficiary (policy_id, display_name, relation, share, designated_at)
+               VALUES ($1::bigint, $2::text, $3::text, $4::int, $5::date)""",
+            beneficiary_rows,
+        )
+    if claim_rows:
+        await db.execute_many(
+            """INSERT INTO claim (policy_id, kind, event_at, filed_at, stage, outcome,
+                                  decided_at, paid_amount, note)
+               VALUES ($1::bigint,$2::text,$3::date,$4::date,$5::text,$6::text,$7::date,
+                       $8::numeric,$9::text)""",
+            claim_rows,
+        )
 
     logger.info("service_history_written", member_id=member_id, payments=payments,
                 beneficiaries=beneficiaries, claims=claims)
