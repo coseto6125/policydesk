@@ -9,7 +9,8 @@ One module under `src/policydesk/agent/scenarios/`, exporting three names:
 
 ```python
 TOOLS: dict[str, Callable]      # every tool this scenario may call, by the name the Scenario lists
-async def gather(db, params, *, member_id=None, today=None, retriever=None, **_) -> dict[str, Any]
+async def gather(db, params, *, member_id=None, today=None, retriever=None,
+                 allowed: frozenset[str] | None = None, **_) -> dict[str, Any]
 <NAME>: Scenario                # the value, with tools_module set to this module's dotted path
 ```
 
@@ -29,6 +30,25 @@ scenario that reads the member's book gets gated automatically and one that read
 public tables does not. Do not declare the gate on the Scenario; there is no field for it.
 
 An unresolvable tool name reads as gated. That is why `tools_module` is not optional.
+
+The gate is per tool. `allowed` names the tools that may run this turn; a tool whose name
+is not in it must not be called, so its query never runs rather than running and having
+its output dropped. `None` means all of them, which is what a direct call in a test gets.
+
+```python
+def _can(name: str) -> bool:
+    return allowed is None or name in allowed
+```
+
+Split the tools so the public half survives the gate. A customer who has not proved who
+they are still gets 猶豫期是十天 and 據實說明義務是什麼, with the request for an ID
+attached to that material rather than standing in place of it. A desk that refuses the
+public half too is one that reads as stalling.
+
+Do not set `_identity_required` yourself. The executor sets it whenever it withheld a
+tool, so a module that forgets cannot hand the model a partial answer that reads as a
+whole one. Write the `injection` to expect it: say what the public material supports, ask
+for the national ID, say what it unlocks, and invent no part of the member half.
 
 ## What a reply may never contain
 

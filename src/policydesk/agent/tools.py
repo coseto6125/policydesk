@@ -75,6 +75,40 @@ def reads_identity(tool_names: Iterable[str], *, owner: Any = None) -> bool:
     )
 
 
+def permitted(tool_names: Iterable[str], *, owner: Any = None, confirmed: bool) -> frozenset[str]:
+    """
+    Say which of a scenario's tools may run in this session.
+
+    Args:
+        tool_names: Tool names, as a scenario lists them.
+        owner: The module holding the scenario's own tools in a `TOOLS` mapping.
+        confirmed: Whether this session has passed 資料核對.
+
+    Returns:
+        The names that may run. Confirmed, that is all of them.
+
+    Not the same question as `reads_identity`, and the difference is the point. That one
+    asks whether a scenario touches member data at all, and answers for the scenario as a
+    block. This one answers per tool, so a customer who has not proved who they are still
+    gets the half of the answer that is public — 猶豫期是十天, 據實說明義務是什麼 — with
+    the request for an ID attached to it rather than standing in place of it. Refusing the
+    public half too is what makes a desk feel like it is stalling.
+
+    A name that resolves to nothing is excluded, the same way `reads_identity` counts it
+    as gated: an unknown tool is one nobody has checked.
+
+    """
+    if confirmed:
+        return frozenset(tool_names)
+    catalogue: dict[str, Any] = dict(getattr(owner, "TOOLS", {}))
+    return frozenset(
+        name
+        for name in tool_names
+        if (fn := catalogue.get(name, globals().get(name))) is not None
+        and not getattr(fn, "requires_identity", False)
+    )
+
+
 @requires_identity
 async def list_policies(db: Database, member_id: int, *, today: date) -> list[dict[str, Any]]:
     """
