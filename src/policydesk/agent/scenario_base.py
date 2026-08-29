@@ -11,9 +11,14 @@ The type has no dependency on the catalogue, so it moves here and the cycle is g
 rather than ordered around.
 """
 
+import asyncio
 from enum import StrEnum
+from typing import TYPE_CHECKING, Any
 
 from msgspec import Struct
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Mapping
 
 
 class Emit(StrEnum):
@@ -102,3 +107,41 @@ def tool_schema(scenario: Scenario) -> dict:
             "additionalProperties": False,
         },
     }
+
+
+async def gather_tools(
+    factories: Mapping[str, Callable[[], Awaitable[Any]]], *, allowed: frozenset[str] | None
+) -> dict[str, Any]:
+    """
+    Run the tools a scenario is permitted this turn, together.
+
+    Args:
+        factories: Tool name to a zero-argument callable returning its coroutine. A
+            callable rather than a coroutine, because a coroutine built for a tool the
+            gate withholds is never awaited and warns about it — and building it at all
+            reads as though the query might run.
+        allowed: The names the executor's identity gate permits. None permits all.
+
+    Returns:
+        Tool name to result, for the tools that ran. A withheld tool has no key, which is
+        what tells the executor's `_identity_required` flag apart from a tool that
+        genuinely returned nothing.
+
+    Two things at once, and they belong together. The gate is written once instead of
+    once per scenario module — six copies of `allowed is None or name in allowed` is six
+    places a fix has to land. And the permitted tools go out concurrently rather than one
+    at a time: they read disjoint tables and none feeds another, so awaiting them in
+    sequence pays a round trip per tool on the path a customer is waiting on. Measured on
+    a local Postgres it is 5% to 22% of the scenario's own time; over a networked one it
+    is a full round trip each.
+
+    A tool that needs another's output cannot go in the same call. Ask twice — the second
+    map is built from the first's results, and that dependency is then visible in the
+    code rather than implied by the order of two awaits.
+
+    """
+    wanted = {name: make for name, make in factories.items() if allowed is None or name in allowed}
+    if not wanted:
+        return {}
+    results = await asyncio.gather(*(make() for make in wanted.values()))
+    return dict(zip(wanted, results, strict=True))

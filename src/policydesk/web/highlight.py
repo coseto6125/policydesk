@@ -159,6 +159,9 @@ def page_image(pdf: Path, page: int, needle: str) -> bytes | None:
         image = Image.alpha_composite(image, layer)
 
     buffer = io.BytesIO()
-    image.convert("RGB").save(buffer, format="PNG", optimize=True)
+    # `optimize=True` costs 212 ms against 53 ms here and returns 877,765 bytes against
+    # 893,707 — 68% of this function's latency for 1.8% of its size, on the path a
+    # customer waits on after clicking a citation. Measured on a real corpus page.
+    image.convert("RGB").save(buffer, format="PNG")
     logger.info("clause_page_rendered", pdf=pdf.name, page=page, marked=len(marks))
     return buffer.getvalue()

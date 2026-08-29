@@ -44,7 +44,7 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import tools
-from policydesk.agent.scenario_base import Scenario
+from policydesk.agent.scenario_base import Scenario, gather_tools
 from policydesk.agent.tools import requires_identity
 
 if TYPE_CHECKING:
@@ -183,15 +183,17 @@ async def gather(
         reply may cite `[art.N]` against exactly those rows and nothing invented.
 
     """
-    facts: dict[str, Any] = {}
-    allowed_clauses: set[str] = set()
-    if _permitted(allowed, "cooling_off_clause"):
-        facts["cooling_off_clause"] = await cooling_off_clause(db)
-        allowed_clauses.update(row["clause_id"] for row in facts["cooling_off_clause"])
-    if _permitted(allowed, "member_rescission") and member_id is not None:
-        facts["member_rescission"] = await member_rescission(db, member_id, today=today or datetime.now(UTC).date())
-        allowed_clauses.update(row["clause_id"] for row in facts["member_rescission"])
-    facts["_allowed_clauses"] = frozenset(allowed_clauses)
+    factories: dict[str, Any] = {"cooling_off_clause": lambda: cooling_off_clause(db)}
+    if member_id is not None:
+        factories["member_rescission"] = lambda: member_rescission(
+            db, member_id, today=today or datetime.now(UTC).date()
+        )
+    facts = await gather_tools(factories, allowed=allowed)
+    # Built from what actually came back, so a withheld tool contributes no clause id the
+    # reply could cite and the checker could not then find.
+    facts["_allowed_clauses"] = frozenset(
+        row["clause_id"] for rows in facts.values() for row in rows if isinstance(rows, list)
+    )
     return facts
 
 

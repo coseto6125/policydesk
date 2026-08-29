@@ -48,7 +48,7 @@ ID attached to the missing half rather than standing in for the whole answer.
 from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute
-from policydesk.agent.scenario_base import Param, Scenario
+from policydesk.agent.scenario_base import Param, Scenario, gather_tools
 from policydesk.agent.tools import requires_identity
 
 if TYPE_CHECKING:
@@ -189,16 +189,12 @@ async def gather(
         to could not hand the model a partial answer that reads as a whole one.
 
     """
-
-    def _can(name: str) -> bool:
-        return allowed is None or name in allowed
-
-    facts: dict[str, Any] = {}
-    if _can("disclosure_duty"):
-        facts["disclosure_duty"] = await disclosure_duty(db, params.get("concern", ""), retriever=retriever)
-    if _can("medical_declaration") and member_id is not None:
-        facts["medical_declaration"] = await medical_declaration(db, member_id)
-    return facts
+    factories: dict[str, Any] = {
+        "disclosure_duty": lambda: disclosure_duty(db, params.get("concern", ""), retriever=retriever)
+    }
+    if member_id is not None:
+        factories["medical_declaration"] = lambda: medical_declaration(db, member_id)
+    return await gather_tools(factories, allowed=allowed)
 
 
 DISCLOSURE = Scenario(

@@ -42,7 +42,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute
-from policydesk.agent.scenario_base import Param, Scenario
+from policydesk.agent.scenario_base import Param, Scenario, gather_tools
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
@@ -277,7 +277,7 @@ async def gather(
     params: dict[str, str],
     *,
     retriever: Any | None = None,
-    allowed: frozenset[str] | None = None,  # noqa: ARG001 - neither tool is gated, so this is always all of them
+    allowed: frozenset[str] | None = None,
     **_: Any,
 ) -> dict[str, Any]:
     """
@@ -297,10 +297,13 @@ async def gather(
     together: the escalation route without the provisions reads as being shown the door,
     and the provisions without the route as being read the law.
     """
-    return {
-        "statute_reference": await statute_reference(db, params.get("concern", ""), retriever=retriever),
-        "complaint_channel": await complaint_channel(db),
-    }
+    return await gather_tools(
+        {
+            "statute_reference": lambda: statute_reference(db, params.get("concern", ""), retriever=retriever),
+            "complaint_channel": lambda: complaint_channel(db),
+        },
+        allowed=allowed,
+    )
 
 
 SOOTHE = Scenario(
