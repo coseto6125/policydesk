@@ -129,17 +129,24 @@ async def lapsed_policies(db: Database, member_id: int, *, today: date) -> list[
         the customer will act on.
 
     """
-    return await db.fetch(
+    rows = await db.fetch(
         """SELECT po.policy_id, po.policy_number, po.product_id, pr.name AS product_name,
-                  po.sum_insured, po.effective_at, po.lapsed_at,
+                  po.sum_insured, ce.unit_label, po.effective_at, po.lapsed_at,
                   ($1::date - po.lapsed_at) AS days_since_lapse,
                   po.main_policy_id IS NULL AS is_main
            FROM policy po
            JOIN product pr USING (product_id)
+           LEFT JOIN catalog_entry ce USING (product_id)
            WHERE po.member_id = $2::bigint AND po.lapsed_at IS NOT NULL
            ORDER BY po.lapsed_at DESC""",
         [today, member_id],
     )
+    # The third place this had to be said. `sum_insured` counts thousandths of one
+    # `unit_label` unit, and a lapsed policy quoted at its raw count tells a customer
+    # deciding whether to reinstate that the cover is worth a thousandth of what it is.
+    for row in rows:
+        row["insured"] = tools.insured_amount(row.pop("sum_insured", None), row.pop("unit_label", None))
+    return rows
 
 
 @requires_identity

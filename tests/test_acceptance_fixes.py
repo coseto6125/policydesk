@@ -606,3 +606,105 @@ async def test_a_case_nobody_has_spoken_on_has_no_floor(db):
         assert await _last_message(db, case_id) == 0
     finally:
         await db.execute('DELETE FROM "case" WHERE case_id = $1::bigint', [case_id])
+
+
+@pytest.mark.asyncio
+async def test_a_policy_row_carries_the_amount_only_once(db):
+    """
+    The renderer was added and the value it replaces was left beside it.
+
+    `list_policies` handed the model both `sum_insured: 2000` and `insured: 每日 2,000 元`
+    and the injection told it to state 保險金額. It chose the bare count in a live reply —
+    保險金額：3,000 for a policy paying 每日 3,000 元, a figure a thousand times too small
+    and with the unit gone. A field nobody may print does not travel with the material.
+    """
+    from datetime import UTC, datetime
+
+    from policydesk.agent.tools import list_policies
+
+    member_id = await db.fetch_val(
+        "SELECT member_id FROM policy GROUP BY member_id ORDER BY count(*) DESC LIMIT 1")
+    if member_id is None:
+        pytest.skip("no member holds a policy")
+    rows = await list_policies(db, int(member_id), today=datetime.now(UTC).date())
+    assert rows
+    for row in rows:
+        assert "sum_insured" not in row, "the raw count is still in the material"
+        assert "unit_label" not in row, "the unit belongs inside `insured`, not beside it"
+        assert row["insured"], "no amount at all is worse than a bare one"
+
+
+@pytest.mark.asyncio
+async def test_a_lapsed_policy_quotes_its_amount_with_the_unit_too(db):
+    # The third site with the same defect. A customer deciding whether to reinstate reads
+    # this list, and a raw count tells them the cover is worth a thousandth of what it is.
+    from datetime import UTC, datetime
+
+    from policydesk.agent.scenarios.reinstate import lapsed_policies
+
+    member_id = await db.fetch_val("SELECT member_id FROM policy WHERE lapsed_at IS NOT NULL LIMIT 1")
+    if member_id is None:
+        pytest.skip("no member holds a lapsed policy")
+    for row in await lapsed_policies(db, int(member_id), today=datetime.now(UTC).date()):
+        assert "sum_insured" not in row
+        assert row["insured"]
+
+
+@pytest.mark.asyncio
+async def test_the_benefit_list_holds_no_paperwork(db):
+    """
+    `kind = 'grant'` holds 2,521 clauses and only 1,400 name something the contract pays.
+
+    A live reply listed eight 給付項目 for one policy, and three of them were the procedure
+    for claiming a benefit (…的申領), one was 保險金額之減少 and one was 保險事故的通知.
+    A customer reading that list cannot tell which line is cover and which is paperwork.
+    """
+    from policydesk.agent.tools import benefit_headings
+
+    ids = [r["product_id"] for r in await db.fetch(
+        "SELECT DISTINCT product_id FROM policy LIMIT 12")]
+    if not ids:
+        pytest.skip("no policies")
+    headings = [r["heading"] for r in await benefit_headings(db, ids)]
+    assert headings, "the filter must not empty the list"
+    paperwork = [h for h in headings if any(w in h for w in ("申領", "申請", "通知", "指定", "減少", "變更"))]
+    assert not paperwork, f"the benefit list carries procedure: {paperwork[:3]}"
+
+
+@pytest.mark.asyncio
+async def test_the_benefit_list_reads_in_contract_order(db):
+    """
+    `clause_id` sorted as text puts `art.11` before `art.3`.
+
+    A live reply listed 保險範圍 [art.3] after 保險金給付之限制 [art.11], so a customer
+    reading their own policy alongside the reply found the two in different orders. The
+    article number is a number and is sorted as one.
+    """
+    from policydesk.agent.tools import benefit_headings
+
+    ids = [r["product_id"] for r in await db.fetch(
+        """SELECT product_id FROM clause WHERE kind = 'grant'
+           GROUP BY product_id HAVING count(*) > 9 LIMIT 1""")]
+    if not ids:
+        pytest.skip("no product carries enough granting clauses to cross ten")
+    numbers = [
+        int(r["clause_id"].removeprefix("art.").split(".")[0])
+        for r in await benefit_headings(db, ids)
+        if r["clause_id"].startswith("art.")
+    ]
+    assert numbers == sorted(numbers), f"out of contract order: {numbers}"
+
+
+@pytest.mark.asyncio
+async def test_a_cap_on_a_benefit_is_not_listed_as_a_benefit(db):
+    # 保險金給付之限制 is a cap, and it reached a customer's 保什麼 list. A heading merely
+    # containing 限制 stays: 完全失能保險金的給付及其限制 is the grant with its conditions.
+    from policydesk.agent.tools import benefit_headings
+
+    ids = [r["product_id"] for r in await db.fetch(
+        """SELECT DISTINCT product_id FROM clause
+           WHERE kind = 'grant' AND heading ~ '之限制$|的限制$' LIMIT 4""")]
+    if not ids:
+        pytest.skip("no product carries a limit-only heading")
+    headings = [r["heading"] for r in await benefit_headings(db, ids)]
+    assert not [h for h in headings if h.endswith(("之限制", "的限制"))]
