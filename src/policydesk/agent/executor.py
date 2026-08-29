@@ -35,6 +35,7 @@ from policydesk.agent.scenario import (
     BY_NAME,
     CATALOGUE,
     OPENERS,
+    PUBLIC_OPENERS,
     ROUTER_INSTRUCTIONS,
     WRITING,
     Emit,
@@ -80,6 +81,8 @@ class Turn:
         self.procedure_hint: str = ""
         """What the customer called the procedure, used to look up its multiplier."""
         self.quick_replies: tuple[str, ...] = OPENERS
+        """Replaced by the scenario's own, or by the public set when nothing ran and the
+        session is unverified."""
         """One-tap follow-ups, all of them questions. A scenario that ran replaces the
         openers with its own; one that did not leaves the customer somewhere to start."""
         self.awaiting_identity = False
@@ -504,7 +507,10 @@ async def run_turn(
         known = (
             "# 本次連線尚未完成身分核對\n"
             "保戶還沒核對身分，所以你看不到他的任何保單資料。\n"
-            "打招呼、詢問服務範圍、詢問一般保險常識這類不涉及他個人資料的問題，照常回答。\n"
+            "打招呼、詢問服務範圍這類完全不涉及保險內容的話，直接回答就好。\n"
+            "但只要問到保險本身——猶豫期幾天、據實說明是什麼、停效多久還能復效、有哪些商品——"
+            "還是要呼叫對應的情境工具。那些情境查得到公開的條款與法條，未核對身分一樣答得出來，"
+            "而你自己憑印象講的天數或金額沒有任何東西可以查證。\n"
             "一旦他問到自己的保單、保費、保額、理賠或投保規劃，就需要先核對身分——"
             "那時再請他提供身分證字號，不要提早要。\n"
             "任何情況下都不要猜測或編造他的保單內容。\n\n"
@@ -522,6 +528,11 @@ async def run_turn(
         return turn
 
     if scenario is None:
+        if not confirmed:
+            # The chips a refused customer sees must be things this desk can still answer.
+            # `OPENERS` is four questions about their own book, so offering them right after
+            # 請提供身分證字號 hands back the question that was just refused.
+            turn.quick_replies = PUBLIC_OPENERS
         # The router answers directly when nothing fits — `ROUTER_INSTRUCTIONS` says so in
         # as many words — and that answer used to be the one reply nothing checked. It has
         # no tools behind it, so no clause id is allowed and any citation in it is one the
