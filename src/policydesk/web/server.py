@@ -17,6 +17,7 @@ import asyncio
 import base64
 import contextlib
 import os
+import re
 import secrets
 from datetime import UTC, date, datetime
 from html import escape
@@ -64,8 +65,18 @@ DESK_TOKEN = os.environ.get("POLICYDESK_DESK_TOKEN") or secrets.token_urlsafe(16
 # caseworker can search for.
 MAX_NAME = 40
 
-ID_LENGTH = 10
-"""A Taiwanese national ID, exactly. One letter and nine digits."""
+NATIONAL_ID = re.compile(r"^[A-Za-z][0-9]{9}$")
+"""A Taiwanese national ID: one letter and nine digits, and the shape matters.
+
+This branch used to trigger on length alone, and 我想查我的保單保什麼 is exactly ten
+characters. Measured over a real socket: that question was consumed as a failed identity
+attempt, the customer was told 這組號碼與檔案不符, `pending_question` was never set so the
+desk had nothing to come back to, and three such questions locked the session out of a
+check the customer had not yet been asked to make.
+
+Still a pattern rather than a prompt, which is the one stated exception this project makes
+— the exception is for the identity mechanism, and a shape is what identifies one.
+"""
 
 MAX_CONFIRM_ATTEMPTS = 3
 """Tries at 資料核對 before the session is handed to a person. Three is what a call
@@ -423,19 +434,19 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     }).decode())
                     await _push_case(db, ws, request.app, case_id)
 
-                case "say" if case_id is not None and not confirmed and len(
+                case "say" if case_id is not None and not confirmed and NATIONAL_ID.fullmatch(
                     (message.get("text") or "").strip()
-                ) == ID_LENGTH:
-                    # An unconfirmed session typing exactly ten characters is answering
-                    # the one question this desk asks before anything else. Routing it
+                ):
+                    # An unconfirmed session typing a national ID is answering the one
+                    # question this desk asks before anything else. Routing it
                     # would send a national ID to a model and answer it as a question,
                     # which is how a near-miss ended up replayed as "the thing they
                     # wanted to know". Not gated on having asked first: the desk may not
                     # have asked yet, and the number is still the number.
                     #
-                    # Length, not shape: this project answers every other question with a
-                    # prompt rather than a pattern, and the identity mechanism is the one
-                    # stated exception. A Taiwanese national ID is exactly ten characters.
+                    # Shape, not length. Ten characters alone eats any ten-character
+                    # Chinese sentence — see `NATIONAL_ID`. A pattern here is the project's
+                    # one stated exception, and it is the identity mechanism that has it.
                     if locked:
                         # Every later ten-character message is another guess. Answering it
                         # at all — even with a refusal that varies — is the oracle.

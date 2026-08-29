@@ -175,7 +175,7 @@ def test_a_number_typed_in_answer_is_never_routed():
     Routing it sends a national ID to a model and answers it as a question, which is how
     a near-miss ended up replayed as "the thing they wanted to know".
     """
-    branch = SERVER[SERVER.index('case "say" if case_id is not None and not confirmed and len('):
+    branch = SERVER[SERVER.index('case "say" if case_id is not None and not confirmed and NATIONAL_ID'):
                     SERVER.index('case "say" if case_id is not None:')]
     assert "run_turn" not in branch
     assert "_answer(" in branch, "the replay after a pass still runs a real turn"
@@ -196,7 +196,7 @@ def test_no_identity_attempt_enters_the_transcript():
     model's context is a national ID that leaves. A near-miss is no better: it is one
     character from the real one.
     """
-    branch = SERVER[SERVER.index('case "say" if case_id is not None and not confirmed and len('):
+    branch = SERVER[SERVER.index('case "say" if case_id is not None and not confirmed and NATIONAL_ID'):
                     SERVER.index('case "say" if case_id is not None:')]
     assert "INSERT INTO conversation_message" not in branch
     assert "identity_attempt" in branch, "a refused attempt is still audited"
@@ -363,3 +363,28 @@ async def test_a_scenario_promising_public_material_actually_returns_some(scenar
         assert "沒有任何公開資訊時" in scenario.injection, (
             f"{scenario.name} has no public tool, so the paragraph must say what to do with none"
         )
+
+
+def test_a_ten_character_question_is_not_read_as_a_national_id():
+    """
+    Measured over a real socket, and it cost the customer the session.
+
+    The branch used to fire on length alone. 我想查我的保單保什麼 is exactly ten characters,
+    so it was consumed as a failed identity attempt: the customer was told 這組號碼與檔案
+    不符 for a sentence, `pending_question` was never set so the desk had nothing to come
+    back to after a pass, and three such questions locked a check the customer had not yet
+    been asked to make.
+    """
+    from policydesk.web.server import NATIONAL_ID
+
+    for sentence in (
+        "我想查我的保單保什麼",
+        "住院四天要準備什麼理賠",
+        "我想知道保費多少錢啊",
+        "0912345678",
+        "ABCDEFGHIJ",
+    ):
+        assert not NATIONAL_ID.fullmatch(sentence), f"{sentence!r} was read as a national ID"
+
+    for real in ("A123456789", "a123456789", "F229876543"):
+        assert NATIONAL_ID.fullmatch(real), f"{real!r} is a national ID and was not read as one"
