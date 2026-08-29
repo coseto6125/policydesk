@@ -102,3 +102,18 @@ def test_every_link_the_viewer_page_builds_carries_the_token():
         at = body.index(link)
         window = body[max(0, at - 220):at + 60]
         assert "token=" in window, f"the viewer builds {link} without a token"
+
+
+def test_the_desk_addresses_the_customer_and_not_a_third_party():
+    """
+    「這位保戶目前紀錄為商業潛水員」 reached a customer in a live run.
+
+    The material's own section header is 這位保戶的現況 — a label written for the model, and
+    the model read it as the way to refer to the person it was talking to. A desk that says
+    這位保戶 to someone's face is a desk discussing them with somebody else.
+    """
+    from policydesk.agent.scenario import WRITING
+
+    assert "稱呼一律用「您」" in WRITING
+    assert "這位保戶" in WRITING, "the wrong form must be named, not only the right one"
+    assert "不是給他看的" in WRITING, "and the reason — the labels are for the model"

@@ -137,7 +137,10 @@ async def furnish(db: Database, member_id: int, *, today: date, seed: int | None
         # Decimal, not float. psqlpy binds a `numeric` column from Decimal only, and an
         # int, a float or a str all fail with `insufficient data left in message` — a
         # wire-protocol error naming neither the column nor the type.
-        instalment = Decimal(str(round(annual * MODES[mode] / 12, 2) or 1000.0))
+        # Whole dollars. A monthly instalment of 408.33 元 reached a customer in a live run,
+        # and no insurer bills a third of a dollar — the fraction is an artefact of dividing
+        # an annual rate by twelve, and it reads as a system that cannot count.
+        instalment = Decimal(str(round(annual * MODES[mode] / 12) or 1000))
         lapsed = policy["lapsed_at"]
         # A lapsed policy stopped being paid before it lapsed, by the grace period — that
         # is what made it lapse. An in-force one is paid up to the last due date behind us.
