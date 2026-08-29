@@ -25,6 +25,11 @@ term, not a document — so the answer is the embedding channel, whose scores do
 on document length at all. The `SHORT` marker below flags the documents this is happening
 to.
 
+A third failure this makes visible: a query whose every token is in `QUERY_STOP` reaches
+the index with nothing to search for and comes back empty. 保單 alone does that today. An
+empty result reads to a customer as "the law does not cover this" rather than "I did not
+understand the question", which is why the `used:` line prints even when it is empty.
+
 **Vocabulary.** 我要改受益人 is the one that survives both fixes: 保險法 §111–114 say 處分
 and 轉讓, the customer says 改, and no reweighting bridges that. That query is what the
 embedding channel is for, and telling the three cases apart is the point of this script —
