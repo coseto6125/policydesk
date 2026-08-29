@@ -7,7 +7,7 @@ console gets wrong quietly: it starts writing, it drops the rows whose grouping 
 NULL, and it serves someone else's national ID to whoever knows the URL.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -268,22 +268,62 @@ def test_only_the_open_tab_fetches():
     assert "clearInterval(livePoll)" in PAGE
 
 
-def test_the_profile_tab_shows_the_service_history_not_only_the_contract():
+async def test_the_profile_tab_shows_the_service_history_not_only_the_contract():
     """
     The pane was built before `premium_payment`, `policy_beneficiary` and `claim` existed.
 
     A caseworker opening a customer saw what they bought and nothing about what has happened
     since — no premium behind or ahead, nobody named on the contract, no claim in flight.
     Those are the three things a customer is most likely to be ringing about.
-    """
-    source = Path("src/policydesk/web/console.py").read_text()
-    body = source[source.index("async def profile("):source.index("async def llm_list(")]
-    for table in ("premium_payment", "policy_beneficiary", "claim c"):
-        assert table in body, f"the profile endpoint never reads {table}"
 
-    page = Path("src/policydesk/web/static/index.html").read_text()
-    for slot in ("profilePayments", "profileBeneficiaries", "profileClaims"):
-        assert page.count(slot) >= 2, f"{slot} has no cell and no renderer"
+    Asserted on the response, not on the endpoint's source text. The first version of this
+    test read `console.py` and checked the table names appeared in it, which passed while
+    the same endpoint shipped a 保額 with its unit stripped off — a source grep cannot see
+    a field the handler never builds.
+    """
+    db = _FakeDB([_profile_row()])
+    body = _decode(await mod.profile(_Request({"member": "5"}, db=db)))
+    for section in ("payments", "beneficiaries", "claims"):
+        assert body[section], f"the profile endpoint returned no {section}"
+
+
+async def test_the_profile_tab_renders_a_sum_insured_with_its_unit():
+    """
+    `sum_insured` counts thousandths of one `unit_label` unit.
+
+    3000 against 每 100 萬元保額 is 300 萬元, and the pane printed the raw count: a figure
+    a thousand times too small, sitting beside a premium that was right. The customer-facing
+    tool had been fixed; this endpoint hand-rolls its own query and did not get the fix.
+    """
+    db = _FakeDB([_profile_row(sum_insured=3000, unit_label="每 100 萬元保額")])
+    policy = _decode(await mod.profile(_Request({"member": "5"}, db=db)))["policies"][0]
+    assert policy["insured"] == "300 萬元"
+    assert "3000" not in policy["insured"]
+
+
+def _profile_row(**over):
+    """
+    One row that satisfies every query `profile` runs.
+
+    `_FakeDB` answers each fetch with the same list, so the fixture carries the union of
+    the columns those queries read rather than one shape per query.
+    """
+    return {
+        "member_id": 5, "display_name": "皓榕", "birth_date": date(1980, 3, 4),
+        "national_id": "A123456789", "occupation": "工程師", "occupation_class": 2,
+        "policy_id": 1, "policy_number": "CL0001-000001", "product_id": "P1",
+        "product_name": "終身壽險", "line": "life", "attachment": False,
+        "sum_insured": 1000, "unit_label": "每 100 萬元保額", "annual_premium": 12000.0,
+        "effective_at": date(2024, 1, 1), "lapsed_at": None,
+        "main_policy_id": None, "main_policy_number": None,
+        "due_at": date(2026, 1, 1), "paid_at": date(2026, 1, 1), "amount": 12000.0,
+        "method": "transfer", "relation": "配偶", "share": 100,
+        "designated_at": date(2024, 1, 1), "claim_id": 1, "kind": "hospital",
+        "event_at": date(2026, 5, 1), "filed_at": date(2026, 5, 5), "stage": "assessing",
+        "outcome": None, "decided_at": None, "paid_amount": None,
+        "case_id": 1, "stage_name": "inquiry", "created_at": date(2026, 5, 1),
+        "fact": "", "value": "", "summary": "", "updated_at": date(2026, 5, 1),
+    } | over
 
 
 def test_a_claim_with_no_outcome_is_shown_as_a_stage_not_a_verdict():
@@ -295,3 +335,38 @@ def test_a_claim_with_no_outcome_is_shown_as_a_stage_not_a_verdict():
     assert "if (c.outcome)" in body, "the outcome must gate the verdict wording"
     assert "審核中" in body
     assert "never inferred from" in body, "the reason belongs beside the branch"
+
+
+async def test_the_token_tab_names_a_scenario_in_both_languages_and_says_what_it_does():
+    """
+    `llm_usage` stores the key and only the key, which is right — the Chinese name and
+    the summary are display copy and change without a row meaning anything different.
+    The console joined neither, so the tab listed `explain_cover` and left an operator
+    to already know what that is.
+    """
+    db = _FakeDB([{
+        "scenario": "explain_cover", "phases": ["answer"], "calls": 3,
+        "prompt_tokens": 100, "completion_tokens": 20, "cached_tokens": 0, "total_tokens": 120,
+        "cost_usd": None, "p50_ms": 800.0, "p95_ms": 1200.0,
+    }])
+    row = _decode(await mod.scenarios(_Request({}, db=db)))["rows"][0]
+    assert row["scenario"] == "explain_cover"
+    assert row["display_name"] == "查詢保障內容"
+    assert row["summary"]
+
+
+async def test_the_unattributed_bucket_keeps_its_row_and_gains_no_name():
+    """
+    `route` runs before a scenario exists, so its rows carry NULL and are most of the
+    bill. The join must leave them alone rather than drop them or invent a name — the
+    tab renders that bucket with its own label and its phase list.
+    """
+    db = _FakeDB([{
+        "scenario": None, "phases": ["route", "facts"], "calls": 9,
+        "prompt_tokens": 900, "completion_tokens": 90, "cached_tokens": 0, "total_tokens": 990,
+        "cost_usd": None, "p50_ms": 700.0, "p95_ms": 1100.0,
+    }])
+    row = _decode(await mod.scenarios(_Request({}, db=db)))["rows"][0]
+    assert row["scenario"] is None
+    assert row["display_name"] is None
+    assert row["summary"] is None

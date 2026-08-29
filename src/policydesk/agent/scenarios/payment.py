@@ -70,6 +70,18 @@ async def payment_state(db: Database, member_id: int, *, today: date) -> list[di
     NOT the thirty days §116 counts, which start when the 催告 arrives — the injection says
     so, because a number beside a policy is read as the number that matters.
 
+    `next_due_at` is stepped from `paid_through` by the contract's own mode, and only when
+    nothing is outstanding — with an unpaid instalment on the book, the next payment due is
+    that one, not a date after it. The scenario offers 我想知道下一期什麼時候繳 as a
+    one-tap reply and had no column to answer it with: the query returned the oldest
+    unpaid and the newest paid, both in the past, leaving the model to either miss the
+    question or produce a date from arithmetic no tool had done.
+
+    `no_record` separates a policy nobody has recorded a payment for from one paid up to
+    date. Both have every payment column NULL, and they are opposite facts. The state is
+    reachable on an in-place upgrade: the migration adds `paid_through` without
+    backfilling it, and `furnish` only writes history for a member as they enrol.
+
     """
     return await db.fetch(
         """SELECT po.policy_id, po.policy_number, pr.name AS product_name,
@@ -79,7 +91,15 @@ async def payment_state(db: Database, member_id: int, *, today: date) -> list[di
                   due.amount AS unpaid_amount,
                   ($2::date - due.due_at) AS overdue_days,
                   last.amount AS instalment,
-                  last.paid_at AS last_paid_at
+                  last.paid_at AS last_paid_at,
+                  (po.paid_through IS NULL AND due.due_at IS NULL) AS no_record,
+                  CASE WHEN po.lapsed_at IS NULL AND due.due_at IS NULL AND po.paid_through IS NOT NULL
+                       THEN (po.paid_through + CASE po.premium_mode
+                                WHEN 'annual' THEN interval '1 year'
+                                WHEN 'semiannual' THEN interval '6 months'
+                                WHEN 'quarterly' THEN interval '3 months'
+                                ELSE interval '1 month' END)::date
+                  END AS next_due_at
            FROM policy po
            JOIN product pr USING (product_id)
            LEFT JOIN LATERAL (
@@ -210,6 +230,7 @@ async def gather(
 PAYMENT = Scenario(
     name="payment",
     display_name="繳費與寬限期",
+    summary="查各張保單繳到哪、有無欠繳與寬限期規則",
     description=(
         "保戶問繳費相關的事情時使用："
         "我這期繳了嗎、下次什麼時候繳、一期要繳多少、我忘記繳了會怎樣、寬限期還有多久、"
@@ -218,23 +239,31 @@ PAYMENT = Scenario(
     ),
     injection=(
         "payment_state 是空的時候，代表這位保戶名下沒有保單，不是系統查不到；"
-        "payment_state 每一列的 unpaid_due_at 都是空的時候，代表他每一期都繳齊了，"
-        "那是好消息，直接告訴他目前沒有欠繳。\\n\\n"
+        "payment_state 某一列的 unpaid_due_at 是空的、no_record 為假、而且 is_lapsed 也為假時，"
+        "代表那張保單每一期都繳齊了，那是好消息，直接告訴他目前沒有欠繳。"
+        "這句話只能對那一列講，不可以因為某幾張沒有欠繳就說「您目前沒有欠繳」——"
+        "同一位保戶名下可能有另一張正在欠繳或已經停效。\n"
+        "no_record 為真是另一回事：那張保單沒有任何繳費紀錄可查，不是繳齊也不是欠繳。"
+        "照實說本櫃台查不到那張保單的繳費紀錄，請他洽原業務員或客服，"
+        "不要說他已經繳清，也不要說他欠繳。\n\n"
         "你正在回答保戶自己的繳費狀況。逐張說明，每一張講清楚四件事：繳別（premium_mode，"
         "年繳、半年繳、季繳、月繳照 MODE_LABEL 的說法講）、一期金額（instalment）、"
-        "已繳到哪一天（paid_through）、以及有沒有未繳的一期（unpaid_due_at）。\\n\\n"
+        "已繳到哪一天（paid_through）、以及有沒有未繳的一期（unpaid_due_at）。\n"
+        "問到下一期什麼時候繳，就照 next_due_at 那一欄回答，那是依繳別推出來的應繳日。"
+        "next_due_at 是空的時候不要自己推算日期：有未繳的一期時下一期就是那一期，"
+        "保單已停效或查無繳費紀錄時則沒有下一期可談。\n\n"
         "**有未繳的一期時，這才是重點，不是餘額。** 照 grace_rule 回傳的條文說明："
         "保險費到期未交付，經催告到達後屆三十日仍不交付，契約效力停止。"
-        "引用時照 citation 欄位一字不差標註，例如〔保險法 第116條第1項〕。\\n\\n"
+        "引用時照 citation 欄位一字不差標註，例如〔保險法 第116條第1項〕。\n\n"
         "那三十天從催告送達的翌日起算，不是從到期日起算，也不是從今天起算。"
         "本櫃台沒有催告送達日這筆資料，所以絕對不要算出一個剩幾天或哪一天截止的答案。"
-        "說明期間怎麼算、從什麼時候起算，然後請他確認收到催告通知的日期。\\n"
+        "說明期間怎麼算、從什麼時候起算，然後請他確認收到催告通知的日期。\n"
         "overdue_days 是從到期日算到今天的天數，只能拿來說明已經逾期多久，"
-        "不可以拿來當作寬限期剩幾天。\\n\\n"
+        "不可以拿來當作寬限期剩幾天。\n\n"
         "已經停效的保單（is_lapsed 為真）照實說目前不提供保障，並告訴他復效要另外辦理，"
-        "細節請他回頭問復效的事。不要在這裡說明復效條件。\\n\\n"
+        "細節請他回頭問復效的事。不要在這裡說明復效條件。\n\n"
         "不可以說保單一定會失效或一定不會失效，也不可以承諾任何寬限或通融——"
-        "催告與停效由公司依條款作業，你能做的是把規則和他目前的狀態攤開。\\n"
+        "催告與停效由公司依條款作業，你能做的是把規則和他目前的狀態攤開。\n"
         "金額一律照工具回傳的數字說，不要自己加總或換算。"
     ),
     tools=("payment_state", "payment_history", "grace_rule"),

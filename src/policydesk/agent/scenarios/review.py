@@ -299,6 +299,7 @@ async def gather(
 REVIEW = Scenario(
     name="review",
     display_name="保單健檢",
+    summary="盤點保障缺口，指出還缺哪一類",
     description=(
         "保戶問我的保障夠不夠、有沒有缺什麼、想幫他看一下保單、想健檢保單時使用。"
         "這個情境不需要任何參數，保戶只要問了就直接查。"

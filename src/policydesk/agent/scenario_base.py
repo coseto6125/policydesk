@@ -50,6 +50,15 @@ class Scenario(Struct, frozen=True):
     display_name: str
     description: str
     """Read by the router. Written for the model, not for an operator."""
+    summary: str = ""
+    """One line naming what this scenario does, for an operator reading the console.
+
+    Separate from `description` rather than sliced out of it. That one is routing
+    material — a list of example questions and the cases to route elsewhere — and its
+    first clause reads as a rule about when to pick the scenario, not as a statement of
+    what the scenario is. A console cell built from it says 保戶問繳費相關的事情時使用,
+    which tells an operator nothing they did not already read in the name.
+    """
     injection: str = ""
     """Added to the model's instructions once this scenario is entered."""
     tools: tuple[str, ...] = ()

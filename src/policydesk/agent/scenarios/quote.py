@@ -221,6 +221,7 @@ async def gather(
 QUOTE = Scenario(
     name="quote",
     display_name="保費試算",
+    summary="依年齡與保額試算某張商品的保費",
     description=(
         "保戶問「這張要多少錢」「我這個年紀保費多少」「幫我算一下」這類想知道某張商品保費金額時使用。"
         "這是試算不是核保結果，不需要保戶先說預算或需求。"

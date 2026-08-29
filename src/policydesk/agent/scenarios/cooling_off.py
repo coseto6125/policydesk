@@ -186,6 +186,7 @@ async def gather(
 COOLING_OFF = Scenario(
     name="cooling_off",
     display_name="契約撤銷權",
+    summary="說明猶豫期從哪天起算、能不能撤銷",
     description=(
         "保戶問「我後悔了可以退嗎」「剛買的保單可以取消嗎」「有沒有猶豫期」這類想撤銷剛簽的保單時使用。"
         "已經投保一段時間、問的是解約金或停效復效時不要選這個情境。"

@@ -245,6 +245,7 @@ async def gather(
 REINSTATE = Scenario(
     name="reinstate",
     display_name="保單復效",
+    summary="說明停效保單的復效條件與期限",
     description=(
         "保戶的保單停效了，問怎麼辦、可不可以復效、能不能救回來時使用。"
         "這個情境不需要任何參數，保戶只要問了就直接查。"

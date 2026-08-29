@@ -293,8 +293,11 @@ async def gather(
     facts = await gather_tools(factories, allowed=allowed)
     facts.setdefault("_allowed_clauses", frozenset())
 
+    # Falsy, not `is None`. `member_occupation` returns `{}` for a member_id with no row
+    # — its own docstring says so — and `{}` is not None, so the guard passed and
+    # `member["policies"]` raised KeyError on the next line.
     member = facts.get("member_occupation")
-    if member is None or (allowed is not None and "occupation_clause" not in allowed):
+    if not member or (allowed is not None and "occupation_clause" not in allowed):
         return facts
 
     product_ids = sorted({p["product_id"] for p in member["policies"]})
@@ -307,6 +310,7 @@ async def gather(
 OCCUPATION = Scenario(
     name="occupation",
     display_name="職業變更通知",
+    summary="說明換工作的通知義務與職業等級的影響",
     description=(
         "保戶問換工作、職業或職務有變動要不要通知、現在做的工作會不會影響理賠或保費時使用。"
         "這個情境不判斷會不會加費、退費或終止契約，只說明通知義務本身、契約與保險法怎麼規定，"

@@ -148,6 +148,7 @@ async def gather(
 CLAIM_STATUS = Scenario(
     name="claim_status",
     display_name="理賠進度查詢",
+    summary="查已送件理賠案目前的進度與結果",
     description=(
         "保戶問一件已經送出的理賠案辦到哪了、上次申請的賠款下來了嗎、理賠有沒有過、"
         "或理賠是不是被拒絕時使用。例如「我的理賠辦到哪了」「上次申請的賠款下來了嗎」"
@@ -187,6 +188,8 @@ CLAIM_STATUS = Scenario(
     ),
     tools=("member_claims", "complaint_channel"),
     tools_module="policydesk.agent.scenarios.claim_status",
-    quick_replies=("這個理賠案還缺什麼文件？", "我要申訴這個理賠結果", "我想查其他保單的理賠"),
+    # 我要申訴這個理賠結果 was here, and it is an intention rather than a question — a
+    # mis-tap would have written a complaint the customer never made into the case record.
+    quick_replies=("這個理賠案還缺什麼文件？", "理賠結果不滿意可以怎麼處理？", "我想查其他保單的理賠"),
     transitions=("claim_checklist", "soothe"),
 )

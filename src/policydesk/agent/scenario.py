@@ -46,6 +46,7 @@ claims about *his* policy, not a generic description of what this insurer sells.
 POLICY_OVERVIEW = Scenario(
     name="policy_overview",
     display_name="保單總覽",
+    summary="列出名下所有保單與目前的保障範圍",
     description=(
         "保戶問自己保了什麼、手上有哪些保單、目前的保障範圍、有沒有保到某一類時使用。"
         "這個情境不需要任何參數，保戶只要問了就直接查。"
@@ -68,6 +69,7 @@ POLICY_OVERVIEW = Scenario(
 EXPLAIN_COVER = Scenario(
     name="explain_cover",
     display_name="查詢保障內容",
+    summary="就某一種情況查條款賠不賠、怎麼賠",
     description="保戶詢問自己既有保單保什麼、賠不賠某種情況、條款怎麼寫時使用。",
     injection=(
         "find_clause 是空的時候，代表他手上這幾張保單的條款裡沒有講到這個主題，不是系統查不到。說明他的保單涵蓋哪些項目，並請他換個說法或指定哪一張保單，不要憑印象講一段條款。\n"
@@ -97,6 +99,7 @@ EXPLAIN_COVER = Scenario(
 BROWSE_PRODUCTS = Scenario(
     name="browse_products",
     display_name="商品介紹",
+    summary="介紹在賣的商品線，尚未問到保戶自身條件",
     description=(
         "保戶問「你們有什麼保險」「有哪些壽險商品」「賣什麼」這類還沒談到自身條件的問題時使用。"
         "只需要商品線一個參數，不要問預算。"
@@ -129,6 +132,7 @@ BROWSE_PRODUCTS = Scenario(
 RECOMMEND = Scenario(
     name="recommend",
     display_name="方案建議",
+    summary="依保戶說出的需求與預算挑出適合的商品",
     description="保戶已說出自身需求與預算，要挑出適合他的商品時使用。只想知道有賣什麼請改用 browse_products。",
     injection=(
         "你正在說明一組已由適合度規則篩選出來的商品。"
@@ -161,6 +165,7 @@ RECOMMEND = Scenario(
 ISSUE_DOCUMENTS = Scenario(
     name="issue_documents",
     display_name="交付應簽署文件",
+    summary="保戶決定投保後，交出應簽署的文件",
     description="保戶決定投保，要求文件或表示要簽約時使用。",
     emit=Emit.TEMPLATE,
     template=(
@@ -176,6 +181,7 @@ ISSUE_DOCUMENTS = Scenario(
 VERIFY_IDENTITY = Scenario(
     name="verify_identity",
     display_name="身分驗證",
+    summary="文件簽署後核對身分證字號與生日",
     description="文件簽署完成後進行身分驗證時使用。",
     emit=Emit.TEMPLATE,
     template="請輸入身分證字號完成驗證。驗證通過後，本案才會送交核保人員審核。",
@@ -188,6 +194,7 @@ VERIFY_IDENTITY = Scenario(
 CLAIM_CHECKLIST = Scenario(
     name="claim_checklist",
     display_name="理賠應備文件",
+    summary="列出這次理賠申請要準備的文件",
     description="保戶詢問理賠、想申請給付、問要準備什麼文件時使用。",
     injection=(
         "你正在協助保戶備齊理賠申請文件。"
@@ -221,6 +228,7 @@ CLAIM_CHECKLIST = Scenario(
 BILLING = Scenario(
     name="billing",
     display_name="繳費查詢",
+    summary="查商品費率算出的年繳保費與繳費紀錄",
     description="保戶詢問保費、繳費紀錄、下期應繳時使用。",
     emit=Emit.TEMPLATE,
     template="您名下有效保單共 {active} 張，年繳保費合計 {premium} 元。\n各張保單明細請見左側後台的保單清單。",
@@ -232,6 +240,7 @@ BILLING = Scenario(
 COVERAGE = Scenario(
     name="coverage",
     display_name="保額查詢",
+    summary="查保額與各項給付的額度",
     description="保戶詢問保額、保障額度、還能領多少時使用。",
     emit=Emit.TEMPLATE,
     template=(
