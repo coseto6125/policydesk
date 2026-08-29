@@ -373,6 +373,8 @@ BENEFICIARY = Scenario(
             example="我離婚了，想把受益人換掉",
         ),
     ),
-    quick_replies=("這個要準備什麼文件？", "我想先看看目前紀錄是誰？", "沒有指定受益人的話會怎麼樣？"),
+    # Two of the three asked what the reply had just said: the injection lists the current
+    # designations and explains the §113 fallback in every reply this scenario writes.
+    quick_replies=("這個要準備什麼文件？", "受益人可以填未成年的孩子嗎？", "變更後從什麼時候生效？"),
     transitions=("policy_overview", "soothe"),
 )

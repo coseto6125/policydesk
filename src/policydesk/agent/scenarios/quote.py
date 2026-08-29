@@ -271,6 +271,8 @@ QUOTE = Scenario(
             example="500000",
         ),
     ),
-    quick_replies=("我想調整保額再算一次", "這張的等待期是多久？", "這張有哪些不賠的情況？"),
+    # 這張 assumes the quote found a product. When it did not — a name the customer typed
+    # that matched nothing — three chips about 這張 offer a conversation with no subject.
+    quick_replies=("換一個保額再算一次可以嗎？", "這張的等待期是多久？", "還有沒有更便宜的同類商品？"),
     transitions=("explain_cover", "recommend"),
 )

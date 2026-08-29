@@ -332,3 +332,44 @@ async def test_a_lower_floor_admits_the_long_tail(db):
     # The floor is the whole mechanism, so prove it is doing something rather than
     # coinciding with the corpus.
     assert len(await category_catalog(db, floor=1)) > 3 * len(await category_catalog(db))
+
+
+@pytest.mark.asyncio
+async def test_no_category_is_both_held_and_missing(db):
+    """
+    The gap list was the catalogue minus the held names, compared as strings.
+
+    Neither side is a controlled vocabulary — both are extracted from clause headings —
+    and `category_catalog` applies `CATALOG_FLOOR` where `held_categories` does not, so
+    one contract's 特定處置費用 never cancelled the catalogue's 特定處置. A live reply
+    told one customer 門診手術費用：由新實全心意PLUS附約提供 and, eleven lines later,
+    門診手術醫療：您名下沒有任何一張有效保單涵蓋. Three categories did that in one reply.
+
+    A customer who cannot tell whether outpatient surgery is covered is worse off than
+    one who was told the wrong thing: the wrong thing can at least be checked.
+    """
+    from policydesk.agent.scenarios.review import _stem, gather
+
+    member_id = await db.fetch_val(
+        """SELECT member_id FROM policy WHERE lapsed_at IS NULL
+           GROUP BY member_id ORDER BY count(*) DESC LIMIT 1""")
+    if member_id is None:
+        pytest.skip("no member holds a policy")
+    facts = await gather(db, {}, member_id=int(member_id))
+    if not facts.get("gaps") or not facts.get("held_benefits"):
+        pytest.skip("this member has no gaps or no recognised categories")
+
+    held = {_stem(b["name"]) for b in facts["held_benefits"]}
+    contradictory = [c["name"] for c in facts["gaps"] if _stem(c["name"]) in held]
+    assert not contradictory, f"listed as covered and as missing in one reply: {contradictory}"
+
+
+def test_a_name_that_is_only_a_modifier_is_not_a_category():
+    # 醫療 alone names no event. It was reported as a gap to a customer holding 住院醫療
+    # and 門診手術費用, which reads as a denial of the cover they were shown two lines up.
+    from policydesk.agent.scenarios.review import _stem
+
+    assert _stem("醫療") == ""
+    assert _stem("特定處置費用") == "特定處置"
+    assert _stem("住院醫療") == "住院"
+    assert _stem("各項癌症") == "各項癌症"

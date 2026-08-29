@@ -241,6 +241,8 @@ DISCLOSURE = Scenario(
             example="有高血壓，不確定要不要寫進健康告知",
         ),
     ),
-    quick_replies=("除斥期間是怎麼算的？", "我想知道紀錄上現在寫了什麼？", "這件事要跟誰確認比較準？"),
+    # 我想知道紀錄上現在寫了什麼？ was here, and the reply states the recorded declaration
+    # every time — including when there is none, which is the answer that chip led back to.
+    quick_replies=("除斥期間是怎麼算的？", "現在補告知還來得及嗎？", "這件事要跟誰確認比較準？"),
     transitions=("soothe", "explain_cover"),
 )

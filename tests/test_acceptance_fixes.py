@@ -708,3 +708,64 @@ async def test_a_cap_on_a_benefit_is_not_listed_as_a_benefit(db):
         pytest.skip("no product carries a limit-only heading")
     headings = [r["heading"] for r in await benefit_headings(db, ids)]
     assert not [h for h in headings if h.endswith(("之限制", "的限制"))]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_promising_a_claim_outcome_never_reaches_the_customer(db, live_case):
+    """
+    理賠是人工審查, so the desk may not decide one — in any wording.
+
+    The scenario injections forbid it in prose, and prose is what a model quietly stops
+    following. A promise is the sentence a customer acts on, so the reply is withheld
+    rather than annotated: a caveat under 應該會過 still leaves 應該會過 on the screen.
+    """
+    from policydesk.agent.executor import PROMISED, run_turn
+    from policydesk.llm.provider import Completion
+
+    class Promising:
+        name = "stub"
+
+        async def complete(self, **_: object) -> Completion:
+            return Completion(text="您這件一定會賠，大概可以領到 5 萬元。", model="stub", provider="stub")
+
+    turn = await run_turn(
+        Promising(), db, case_id=live_case["case_id"], member_id=live_case["member_id"],
+        text="我這次一定會賠對吧", confirmed=True,
+    )
+    assert turn.reply == PROMISED
+    assert "一定會賠" not in turn.reply
+    assert any(f.startswith("promise:") for f in turn.faults)
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_denies_a_promise_is_not_withheld(db, live_case):
+    """
+    The other direction, and it is the one a screen like this gets wrong.
+
+    不能據此判定您的外送工作一定會加費、退費或影響理賠 is a live reply saying the desk
+    cannot decide, in the words a promise uses. 可保證明 is the certificate a customer is
+    asked to produce for a reinstatement past six months. Withholding either would take
+    away a correct answer — the first the most careful sentence in the set, the second a
+    document the customer has to go and get.
+    """
+    from policydesk.agent.executor import PROMISED, run_turn
+    from policydesk.llm.provider import Completion
+
+    careful = (
+        "本櫃台只能說明通知義務與各保單的職業等級上限，"
+        "不能據此判定您的外送工作一定會加費、退費或影響理賠。"
+        "停效滿六個月後申請復效，公司得要求提供可保證明。"
+    )
+
+    class Careful:
+        name = "stub"
+
+        async def complete(self, **_: object) -> Completion:
+            return Completion(text=careful, model="stub", provider="stub")
+
+    turn = await run_turn(
+        Careful(), db, case_id=live_case["case_id"], member_id=live_case["member_id"],
+        text="換工作會影響理賠嗎", confirmed=True,
+    )
+    assert turn.reply != PROMISED
+    assert "可保證明" in turn.reply
