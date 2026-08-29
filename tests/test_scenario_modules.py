@@ -14,6 +14,7 @@ function that raises, then calls `gather` with those names withheld. A module th
 would have run.
 """
 
+import re
 from datetime import UTC, datetime
 from importlib import import_module
 from typing import Any
@@ -21,7 +22,7 @@ from typing import Any
 import pytest
 
 from policydesk.agent import tools
-from policydesk.agent.scenario import CATALOGUE
+from policydesk.agent.scenario import CATALOGUE, Emit
 from policydesk.core.db import Database
 
 pytestmark = pytest.mark.asyncio
@@ -149,3 +150,29 @@ async def test_a_confirmed_turn_runs_every_tool(scenario, db, member_id):
     )
     assert isinstance(facts, dict)
     assert set(facts) - {"_allowed_clauses", "_identity_required"}, f"{scenario.name} returned no material at all"
+
+
+EXPLAINS = re.compile(r"是空的時候|沒有回傳任何項目時|查無|沒有符合")
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [s for s in CATALOGUE if s.emit is not Emit.TEMPLATE and s.tools],
+    ids=lambda s: s.name,
+)
+def test_a_scenario_says_what_an_empty_tool_result_means(scenario):
+    """
+    An empty result the model is not told about becomes 系統尚未回傳.
+
+    That sentence reached a customer twice today — once when the table behind a tool held
+    four rows, once when a lookup was correctly empty because the product has no surgery
+    schedule. The model does not distinguish "nothing to find" from "could not look", and
+    it will not invent the reassuring reading: 您名下沒有停效的保單 is good news, and a
+    desk that reports it as a system failure has made a good day sound like a broken one.
+
+    A template scenario is exempt: `_render` decides what an empty list looks like, and
+    there is no model between the rows and the customer.
+    """
+    assert EXPLAINS.search(scenario.injection), (
+        f"{scenario.name} runs {sorted(scenario.tools)} and never says what an empty one means"
+    )
