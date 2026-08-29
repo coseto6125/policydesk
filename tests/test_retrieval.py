@@ -14,6 +14,34 @@ import pytest
 SOURCE = Path("src/policydesk/retrieval/index.py").read_text()
 TOOLS = Path("src/policydesk/agent/tools.py").read_text()
 
+STATUTE = "statute"
+
+
+@pytest.fixture(scope="module")
+def index():
+    """
+    Open the real index, once for the module.
+
+    Returns:
+        The retriever, or a skip when nothing has been built.
+
+    Source-reading tests below prove the query is *assembled* a certain way. Only a real
+    index proves what that assembly ranks, and the two failures worth guarding here —
+    a filler word deciding the order, and a question of nothing but filler answering with
+    silence — are both invisible to a string search.
+    """
+    import asyncio
+
+    from policydesk.core.db import Database
+    from policydesk.retrieval.index import INDEX_DIR, open_index
+
+    if not (INDEX_DIR / "meta.json").is_file():
+        pytest.skip("no index built; run policydesk-index")
+    opened = asyncio.run(open_index(Database()))
+    if opened is None:
+        pytest.skip("the index would not open")
+    return opened
+
 
 def test_both_sides_cut_with_the_same_function():
     """
@@ -192,3 +220,21 @@ def test_the_index_is_opened_once_per_process():
     assert "open_index(application.ctx.db), open_vectors(application.ctx.db)" in server
     assert "HybridRetriever(channels) if channels else None" in server
     assert "open_index" not in server[server.index("async def customer_socket"):]
+
+
+def test_a_query_of_nothing_but_stop_words_still_answers(index):
+    # 保單 alone cuts to one token, the stop list drops it, and without a fallback the
+    # boolean had no clause and `search` returned []. A customer reads an empty result as
+    # 法規裡沒有這件事, which is a claim about the corpus; what actually happened is that
+    # the question carried nothing to rank on. A bad ranking says something.
+    assert index.search("保單", corpus=STATUTE, limit=2), "an all-stop-word query returned silence"
+    assert index.search("可以", corpus=STATUTE, limit=2)
+
+
+def test_a_stop_word_no_longer_decides_the_ranking(index):
+    # 可以 appears in 4 of 1,212 articles and 復效 in 7, so the filler had the higher IDF
+    # and both of these returned the same three provisions as each other. They must not.
+    lapse = [h.doc_id for h in index.search("保單停效可以復效嗎", corpus=STATUTE, limit=3)]
+    rescind = [h.doc_id for h in index.search("猶豫期幾天可以撤銷", corpus=STATUTE, limit=3)]
+    assert lapse != rescind, "two different questions returned one ranking"
+    assert lapse[0].startswith("art.116"), f"停效復效 should reach 第116條, got {lapse}"

@@ -6,6 +6,7 @@ government mock, at the signing stage, and stays valid for the case. This one pr
 person on *this connection* is the customer, and it expires with the connection.
 """
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -46,20 +47,66 @@ def test_scenarios_touching_the_customer_book_derive_the_gate(scenario):
     assert tools.reads_identity(scenario.tools), f"{scenario.name} reaches member data ungated"
 
 
-def test_the_gate_skips_the_query_rather_than_the_sentence():
+class _RefusingDB:
     """
-    Withholding after the gather means the data was already read and only the prose
-    about it was dropped. `_gather` returns the public half without ever running a
-    member query.
+    A database that raises the moment a query names a member table.
+
+    The gate's promise is that the query does not run, not that its output is dropped
+    afterwards. Only a database that refuses to answer can tell those two apart, which a
+    search of the executor's source cannot: it says the branch exists, never that the
+    branch is reached. Measured cost of not knowing that — `browse_products` declares only
+    public tools, so the per-scenario question answered "no gate needed" and an unverified
+    visitor's whole book went into the prompt on the next line.
     """
-    body = EXECUTOR[EXECUTOR.index("async def _gather("):EXECUTOR.index("async def _public_only(")]
-    assert "if not confirmed and tools.reads_identity(scenario.tools):" in body, (
-        "an ungated scenario must run normally even unconfirmed"
+
+    FORBIDDEN = ("from policy", "from member", "join policy", "join member")
+
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    def _check(self, sql: str) -> None:
+        self.seen.append(sql)
+        flat = " ".join(sql.lower().split())
+        for phrase in self.FORBIDDEN:
+            if phrase in flat:
+                raise AssertionError(f"an unverified session read a member table: {phrase!r}")
+
+    async def fetch(self, sql: str, params: object = None) -> list[dict[str, object]]:
+        self._check(sql)
+        return []
+
+    async def fetch_one(self, sql: str, params: object = None) -> dict[str, object] | None:
+        self._check(sql)
+        return None
+
+    async def fetch_val(self, sql: str, params: object = None) -> object:
+        self._check(sql)
+        return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", [s for s in CATALOGUE if not s.tools_module], ids=lambda s: s.name)
+async def test_an_unverified_session_runs_no_member_query(scenario):
+    """
+    Every scenario, not only the ones whose declared tools happen to be marked.
+
+    A scenario declaring nothing but public tools still reached `list_policies` and
+    `clause_ids_for`, because those are called by the gatherer rather than declared by the
+    scenario. The gate is now per tool and those two are named explicitly; this asserts it
+    for the whole catalogue rather than for the scenarios someone remembered.
+    """
+    from policydesk.agent.executor import Turn, _gather
+
+    db = _RefusingDB()
+    turn = Turn(case_id=1, member_id=1)
+    facts = await _gather(
+        db, scenario, turn, today=date(2026, 8, 29),
+        params={p.name: p.example or "測試" for p in scenario.params}, confirmed=False,
     )
-    assert "return await _public_only(db, scenario, params)" in body
-    public = EXECUTOR[EXECUTOR.index("async def _public_only("):EXECUTOR.index("def _render(")]
-    assert "list_policies" not in public
-    assert "catalogue_sample" in public, "the public catalogue is what it can still show"
+    assert facts.get("_identity_required") is True, f"{scenario.name} did not mark the answer partial"
+    assert facts.get("_allowed_clauses") == frozenset(), (
+        f"{scenario.name} offered clause ids nothing can check"
+    )
 
 
 def test_the_standing_brief_is_not_read_before_the_check():
