@@ -382,3 +382,30 @@ async def test_a_real_provision_survives_the_soothe_route(db, case):
     )
     assert turn.reply != WITHHELD
     assert "第64條第3項" in turn.reply
+
+
+@pytest.mark.asyncio
+async def test_a_real_provision_survives_however_the_model_words_the_sentence(db):
+    """
+    The checker voided ten of fourteen realistic phrasings of a correct citation.
+
+    `_STATUTE_NAME` has no left boundary, so any CJK character abutting the name is captured
+    with it and 另依保險法 matches no row. Before the executor ran this on every reply it
+    only saw soothe's own hardcoded string, where the name always stood alone — so widening
+    where the check runs is what turned a latent weakness into replies being withheld.
+    """
+    from policydesk.agent import statute
+
+    real = [
+        "依保險法第64條第2項辦理。", "另依保險法第64條第2項辦理。", "並依保險法第64條第2項辦理。",
+        "這在保險法第64條第2項有規定。", "法源是保險法第64條第2項。", "請參考保險法第64條第2項。",
+        "本公司依保險法第64條第2項處理。", "台灣的保險法第64條第2項。", "適用保險法第64條第2項。",
+        "〔保險法 第64條第2項〕", "改依保險法施行細則第4條。", "另依金融消費者保護法第13條第2項。",
+    ]
+    voided = [t for t in real if await statute.unresolved(db, t)]
+    assert not voided, f"a correct citation was reported as invented: {voided}"
+
+    # And the two the check exists for still fail: an article nobody wrote, and the right
+    # article number attributed to the wrong statute.
+    assert await statute.unresolved(db, "依保險法第999條第1項")
+    assert await statute.unresolved(db, "依保險法施行細則第64條第2項")

@@ -90,3 +90,15 @@ def test_every_link_the_page_builds_carries_the_token():
     for link in ("/contract/${encodeURIComponent(p.product_id)}", "/clause/${encodeURIComponent(c.product_id)}"):
         at = page.index(link)
         assert "token=" in page[at:at + 260], f"{link} is built without a token"
+
+
+def test_every_link_the_viewer_page_builds_carries_the_token():
+    # The page images were updated when `contract` gained its guard and the download link
+    # was not, so the one control on the viewer that opens the actual file 403'd. A guard
+    # is only finished when every caller of the guarded route passes through it.
+    source = Path("src/policydesk/web/server.py").read_text()
+    body = source[source.index("def _render_contract("):]
+    for link in ("/page/", "download=1"):
+        at = body.index(link)
+        window = body[max(0, at - 220):at + 60]
+        assert "token=" in window, f"the viewer builds {link} without a token"

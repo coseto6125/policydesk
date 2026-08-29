@@ -1122,7 +1122,7 @@ def _render_contract(row: dict[str, Any], pages: int, viewer: int) -> str:
 <header>
   <h1>{_esc(row["name"])}</h1>
   <div class="meta">共 {pages} 頁 · 保險公司公開條款 ·
-    <a href="/contract/{_esc(row["product_id"])}?member={viewer}&amp;download=1">下載 PDF</a></div>
+    <a href="/contract/{_esc(row["product_id"])}?member={viewer}&amp;token={_esc(DESK_TOKEN)}&amp;download=1">下載 PDF</a></div>
   <nav>{numbers}</nav>
 </header>
 <main>{images}</main>
