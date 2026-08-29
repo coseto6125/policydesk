@@ -630,14 +630,28 @@ async def required_documents(db: Database, product_ids: list[str]) -> list[dict[
     diagnosis certificate"; it asks for one that 須列明手術或處置名稱及部位, and a
     certificate without the site named comes back.
 
+    **Read out of the clause corpus, not out of `required_document`.** That table holds
+    four rows across one product out of 660, so this scenario answered 系統尚未回傳本次申請
+    所需文件清單 for every customer — measured on a live turn. The contracts carry the lists
+    themselves, in 1,398 clauses across 394 products, under headings that name the act:
+    ...的申領, 保險金的申請, 檢具. The bodies are the enumeration a claimant needs:
+
+        受益人申領「特定傷病保險金」時，應檢具下列文件：
+        一、保險單或其謄本。
+        二、診斷證明書及相關檢驗報告。…
+
+    So the clause is the answer, and it arrives with a `clause_id` the reply can cite and
+    the customer can check — which the table's rows never had.
+
     """
     if not product_ids:
         return []
     return await db.fetch(
-        """SELECT rd.product_id, rd.benefit, rd.document, rd.condition, rd.page, p.name AS product_name
-           FROM required_document rd JOIN product p USING (product_id)
-           WHERE rd.product_id = ANY($1::text[])
-           ORDER BY rd.benefit, rd.document""",
+        """SELECT c.product_id, c.clause_id, c.heading, c.verbatim, c.page, p.name AS product_name
+           FROM clause c JOIN product p USING (product_id)
+           WHERE c.product_id = ANY($1::text[])
+             AND c.heading ~ '申領|保險金的申請|檢具|應檢附'
+           ORDER BY c.product_id, c.clause_id""",
         [product_ids],
     )
 
