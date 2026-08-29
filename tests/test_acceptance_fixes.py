@@ -281,3 +281,38 @@ async def test_a_real_provision_is_not_withheld(db, live_case):
     )
     assert turn.reply != WITHHELD
     assert "第64條" in turn.reply
+
+
+def test_no_template_reaches_a_customer_with_a_placeholder_in_it():
+    """
+    「已為您備妥應簽署文件共 {count} 份」 is what one customer read.
+
+    `issue_documents` asked for `count` and `names`, no tool supplied them, and `_render`
+    fell through to its default branch and returned the template verbatim. A placeholder is
+    a promise the renderer makes on the tool's behalf; an unmade one reaches the customer
+    looking like a bug in their insurer.
+    """
+    from policydesk.agent.executor import _render
+    from policydesk.agent.scenario import CATALOGUE, Emit
+
+    for scenario in CATALOGUE:
+        if scenario.emit is not Emit.TEMPLATE:
+            continue
+        rendered = _render(scenario, {})
+        assert "{" not in rendered, f"{scenario.name} rendered a placeholder: {rendered[:60]}"
+        assert "}" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_the_document_template_counts_what_is_actually_unsigned(db):
+    from policydesk.agent import tools
+
+    row = await db.fetch_one(
+        """SELECT case_id, count(*) FILTER (WHERE signed_at IS NULL) AS waiting
+           FROM case_document GROUP BY case_id ORDER BY count(*) DESC LIMIT 1"""
+    )
+    if row is None:
+        pytest.skip("no case carries documents")
+    got = await tools.pending_signatures(db, row["case_id"])
+    assert got["count"] == row["waiting"]
+    assert got["names"].count("\n") + 1 == got["count"] or not got["count"]

@@ -307,6 +307,20 @@ async def _gather(
         facts["_allowed_clauses"] = frozenset()
         product_ids: list[str] = []
         pending: dict[str, Any] = {}
+    elif "list_policies" not in allowed:
+        # A confirmed session used to get the book whatever the scenario asked for, so
+        # `browse_products` — one tool, the public catalogue — was handed every policy the
+        # customer holds, directly beneath an injection telling the model 你還看不到既有
+        # 保單. Not a leak: the session is verified and the data is theirs. It is an
+        # instruction and a payload contradicting each other, with the model as the only
+        # thing deciding which wins, and the failure is a 商品介紹 answer that opens by
+        # reciting policy numbers nobody asked about.
+        #
+        # Every scenario that needs product_ids declares `list_policies` alongside the
+        # tool that needs them, so honouring the declaration costs nothing.
+        facts["_allowed_clauses"] = frozenset()
+        product_ids = []
+        pending = {}
     else:
         # list_policies first, because everything else needs its product_ids.
         policies = await tools.list_policies(db, turn.member_id, today=today)
@@ -331,6 +345,8 @@ async def _gather(
         pending["billing_summary"] = tools.billing_summary(db, turn.member_id, today=today)
     if "coverage_summary" in allowed:
         pending["coverage_summary"] = tools.coverage_summary(db, turn.member_id, today=today)
+    if "pending_signatures" in allowed:
+        pending["pending_signatures"] = tools.pending_signatures(db, turn.case_id)
 
     results = await asyncio.gather(*pending.values())
     facts.update(dict(zip(pending, results, strict=True)))
@@ -414,6 +430,9 @@ def _render(scenario: Scenario, facts: dict[str, Any]) -> str:
 
     """
     match scenario.name:
+        case "issue_documents":
+            waiting = facts.get("pending_signatures") or {}
+            return scenario.template.format(count=waiting.get("count", 0), names=waiting.get("names", ""))
         case "billing":
             summary = facts.get("billing_summary") or {}
             return scenario.template.format(
@@ -424,6 +443,13 @@ def _render(scenario: Scenario, facts: dict[str, Any]) -> str:
             lines = "\n".join(f"　{r['product_name']}（{r['policy_number']}）：{r['sum_insured']:,} 元" for r in rows)
             return scenario.template.format(lines=lines or "　（查無有效保單）")
         case _:
+            # A template reaching here with a placeholder in it renders the braces to the
+            # customer, which is how 「共 {count} 份」 was read by one. Every template that
+            # needs a value has a case above; this branch is for the ones that need none,
+            # and it says so rather than assuming it.
+            if "{" in scenario.template:
+                logger.warning("template_unfilled", scenario=scenario.name)
+                return "本次查詢未能組出完整回覆，已保留紀錄並轉由專人與您聯繫。"
             return scenario.template
 
 
