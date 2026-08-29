@@ -197,9 +197,13 @@ async def list_policies(db: Database, member_id: int, *, today: date) -> list[di
         [today, member_id],
     )
     for row in rows:
+        # Popped, not copied. Handing the model both 2000 and 每日 2,000 元 and telling
+        # it to state 保險金額 is asking it to choose, and it chose the bare count in a
+        # live reply — 保險金額：3,000 for a policy paying 每日 3,000 元. The renderer was
+        # added and the value it replaces was left in the row beside it.
         # Rendered here, once, so no caller has to know that `sum_insured` counts
         # thousandths of a unit named in another table.
-        row["insured"] = insured_amount(row.get("sum_insured"), row.get("unit_label"))
+        row["insured"] = insured_amount(row.pop("sum_insured", None), row.pop("unit_label", None))
     return rows
 
 
@@ -439,14 +443,37 @@ async def benefit_headings(db: Database, product_ids: list[str], limit: int = 40
     granting clauses of those contracts are another. Asking 想了解哪一項 in reply is the
     desk making the customer do a lookup it could have done itself.
 
+    **`kind = 'grant'` alone is too wide, so the heading is read too.** That bucket holds
+    2,521 clauses and only 1,400 name something the contract pays: 901 of the rest are
+    的申領, which is how to claim a benefit rather than a benefit, and the remainder are
+    保險金額之減少, 保險事故的通知 and 受益人之指定. A live reply listed eight 給付項目
+    for one policy and three of them were procedure — a customer reading that list cannot
+    tell which line is cover and which is paperwork.
+
+    Matched on 保險金 rather than on 給付, because 住院日額保險金, 祝壽保險金 and
+    癌症住院醫療保險金 are benefits whose headings never use the word. A heading ending in
+    之限制 is dropped and one merely containing 限制 is kept: 保險金給付之限制 is a cap on
+    a benefit rather than a benefit, while 完全失能保險金的給付及其限制 is the grant with
+    its own conditions attached — 13 of the first shape against 132 of the second.
+
+    Ordered by the article number, not by `clause_id` as text. `art.11` sorts before
+    `art.3` as a string, so a live reply listed 保險範圍 [art.3] after [art.11] and the
+    whole list read out of contract order. The 50 ids with no article number (`waiting`)
+    sort last rather than raising on the cast.
+
     """
     if not product_ids:
         return []
     return await db.fetch(
-        """SELECT c.product_id, c.clause_id, c.heading, p.name AS product_name
+        r"""SELECT c.product_id, c.clause_id, c.heading, p.name AS product_name
            FROM clause c JOIN product p USING (product_id)
            WHERE c.product_id = ANY($1::text[]) AND c.kind = 'grant'
-           ORDER BY p.name, c.clause_id
+             AND c.heading ~ '保險金|保險範圍|承保範圍'
+             AND c.heading !~ '申領|申請|通知|指定|減少|變更|受益人'
+             AND c.heading !~ '之限制$|的限制$'
+           ORDER BY p.name,
+                    coalesce(nullif(substring(c.clause_id from 'art\.([0-9]+)'), '')::int, 999999),
+                    c.clause_id
            LIMIT $2::int""",
         [product_ids, limit],
     )
