@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 from msgspec import DecodeError, Struct, json
 
 from policydesk.bootloader import logger
+from policydesk.llm.pricing import cost
 from policydesk.llm.provider import Provider, ProviderError
 
 if TYPE_CHECKING:
@@ -120,7 +121,7 @@ EXTRACT_INSTRUCTIONS = """\
 _LOAD_HISTORY = """\
 SELECT message_id, speaker, text, created_at, now() AS observed_at
 FROM conversation_message
-WHERE case_id = $1::bigint
+WHERE case_id = $1::bigint AND message_id > $3::bigint
 ORDER BY message_id DESC
 LIMIT $2::int"""
 
@@ -131,7 +132,9 @@ ORDER BY updated_at DESC
 LIMIT $2::int"""
 
 
-async def recent(db: Database, case_id: int, limit: int = HISTORY_LIMIT) -> list[dict[str, Any]]:
+async def recent(
+    db: Database, case_id: int, limit: int = HISTORY_LIMIT, since: int = 0
+) -> list[dict[str, Any]]:
     """
     Read the current session's messages, oldest first.
 
@@ -139,17 +142,27 @@ async def recent(db: Database, case_id: int, limit: int = HISTORY_LIMIT) -> list
         db: The database.
         case_id: Which case.
         limit: Most messages to consider.
+        since: Read nothing at or below this message_id. 0 reads the whole case.
 
     Returns:
-        The messages since the last gap wider than SESSION_GAP_S, oldest first. Empty
-        when the newest message is itself older than the gap, which is how a customer
-        returning tomorrow starts on a clean transcript instead of mid-sentence.
+        The messages since the last gap wider than SESSION_GAP_S and above `since`,
+        oldest first. Empty when the newest message is itself older than the gap, which
+        is how a customer returning tomorrow starts on a clean transcript instead of
+        mid-sentence.
+
+    **`since` is the connection's own boundary, and it is a second boundary on purpose.**
+    The gap is about continuity: a customer who reloads mid-sentence keeps their context.
+    It is not about identity, and it cannot be — a visitor who types a display name that
+    matches an existing member is bound to that member's live case, and inside the gap
+    they were handed the transcript of a conversation somebody else had. The caller sets
+    `since` to the case's newest message at the moment the socket bound, so an unverified
+    connection reads only what it has said itself, and drops it once the check passes.
 
     Over-fetches, because the gap walk may cut the window short and a short window is
     worse than a wasted row.
 
     """
-    rows = await db.fetch(_LOAD_HISTORY, [case_id, limit * 2])
+    rows = await db.fetch(_LOAD_HISTORY, [case_id, limit * 2, since])
     kept: list[dict[str, Any]] = []
     previous: datetime | None = None
     for row in rows:
@@ -348,12 +361,14 @@ async def sweep_once(db: Database, provider: Provider, *, batch: int = 5) -> int
 
         await db.execute(
             """INSERT INTO llm_usage (case_id, phase, provider, model, prompt_tokens, completion_tokens,
-                                      cached_tokens, total_tokens, latency_ms, response)
-               VALUES ($1::bigint,'facts',$2::text,$3::text,$4::int,$5::int,$6::int,$7::int,$8::int,$9::jsonb)""",
+                                      cached_tokens, total_tokens, cost_usd, latency_ms, response)
+               VALUES ($1::bigint,'facts',$2::text,$3::text,$4::int,$5::int,$6::int,$7::int,
+                       $8::numeric,$9::int,$10::jsonb)""",
             [
                 case["case_id"], completion.provider, completion.model,
                 completion.prompt_tokens, completion.completion_tokens, completion.cached_tokens,
-                completion.total_tokens, completion.latency_ms, {"text": completion.text[:2000]},
+                completion.total_tokens, cost(completion), completion.latency_ms,
+                {"text": completion.text[:2000]},
             ],
         )
 
