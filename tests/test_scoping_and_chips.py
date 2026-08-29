@@ -9,6 +9,26 @@ from pathlib import Path
 
 import pytest
 
+
+@pytest.fixture(scope="module")
+async def db():
+    from policydesk.core.db import Database
+
+    pool = Database()
+    try:
+        await pool.fetch_val("SELECT 1")
+    except Exception:
+        pytest.skip("policydesk-pg is not up")
+    return pool
+
+
+@pytest.fixture(scope="module")
+async def live_case(db):
+    row = await db.fetch_one('SELECT case_id, member_id FROM "case" ORDER BY case_id DESC LIMIT 1')
+    if row is None:
+        pytest.skip("no case to run a turn against")
+    return row
+
 SERVER = Path("src/policydesk/web/server.py").read_text()
 PAGE = Path("src/policydesk/web/static/index.html").read_text()
 
@@ -241,3 +261,59 @@ def test_both_refusal_paths_say_not_to_repeat_the_same_request():
 
     assert ASKED_ALREADY in IDENTITY_PENDING
     assert "ASKED_ALREADY" in inspect.getsource(executor.run_turn)
+
+
+def test_no_quick_reply_anywhere_commits_the_customer():
+    """
+    A tap is one pixel from a mis-tap, and a mis-tap writes into the case record.
+
+    Two got through: 我要申訴這個理賠結果 on `claim_status`, and 我要申訴，該找誰？ on
+    `soothe` — whose tail is a question and whose head is a decision the customer had
+    not made. 請幫我查我的保單怎麼寫 is the same shape without the word 申訴.
+
+    我想了解 and 想確認 stay: they name a subject the customer wants explained, which is
+    what a follow-up chip is for.
+    """
+    import re
+
+    from policydesk.agent.scenario import CATALOGUE
+
+    commits = re.compile(r"^(我要|請幫我|幫我)")
+    offending = [(s.name, q) for s in CATALOGUE for q in s.quick_replies if commits.match(q)]
+    assert not offending, f"a tap on these writes an intention nobody expressed: {offending}"
+
+
+@pytest.mark.asyncio
+async def test_a_gated_turn_offers_only_what_the_desk_can_still_answer(db, live_case):
+    """
+    The swap ran on the free-answer path and not on the gated one.
+
+    A customer asked 我的保單保額是多少 with no id. `coverage` ran, its member query was
+    withheld, and the reply asked for the number — then offered 我想了解這些保額夠不夠,
+    已經理賠過的會扣掉嗎, 想確認有沒有重複投保. All three need the same id, so every chip
+    under a refusal led straight back to it. Measured on a live turn.
+
+    Driven through `run_turn` with a provider that routes to `coverage`, so the assertion
+    is on the chips a customer would see rather than on the premise that `coverage` reads
+    identity — which was the first version of this test and proved nothing about the swap.
+    """
+    from policydesk.agent.executor import run_turn
+    from policydesk.agent.scenario import BY_NAME, PUBLIC_OPENERS
+    from policydesk.llm.provider import Completion
+
+    class RoutesToCoverage:
+        name = "stub"
+
+        async def complete(self, **_: object) -> Completion:
+            return Completion(text="", model="stub", provider="stub",
+                              tool_calls=({"name": "coverage", "arguments": {}},))
+
+    turn = await run_turn(
+        RoutesToCoverage(), db, case_id=live_case["case_id"], member_id=live_case["member_id"],
+        text="我的保單保額是多少", confirmed=False,
+    )
+    assert turn.awaiting_identity, "the premise: this turn was refused for want of an id"
+    assert set(turn.quick_replies) <= set(PUBLIC_OPENERS), (
+        f"a refused customer was offered {turn.quick_replies}, which the same gate refuses"
+    )
+    assert not set(turn.quick_replies) & set(BY_NAME["coverage"].quick_replies)

@@ -204,6 +204,9 @@ SOOTHE = Scenario(
             example="公司說要解除契約因為健康告知沒寫",
         ),
     ),
-    quick_replies=("我想知道這條實際怎麼適用在我身上", "我要申訴，該找誰？", "請幫我查我的保單怎麼寫"),
+    # 我要申訴，該找誰？ was here. The tail is a question and the head is a decision, and a
+    # mis-tap writes 我要申訴 into a case record for someone who was only asking how it
+    # works. 請幫我查我的保單怎麼寫 was an instruction for the same reason.
+    quick_replies=("我想知道這條實際怎麼適用在我身上", "申訴要向誰提出？", "我的保單條款是怎麼寫的？"),
     transitions=("explain_cover", "policy_overview", "claim_checklist"),
 )

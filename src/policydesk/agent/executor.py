@@ -580,7 +580,12 @@ async def run_turn(
         turn.awaiting_identity = True
 
     turn.scenario = scenario.name
-    turn.quick_replies = _fresh(scenario.quick_replies or OPENERS, _asked(messages))
+    # The same rule the free-answer path already had, and this path is where it was
+    # missing. A customer who asked 我的保單保額是多少 without an id was refused and then
+    # offered 我想了解這些保額夠不夠, 已經理賠過的會扣掉嗎, 想確認有沒有重複投保 — three
+    # more questions the same gate would refuse. Measured on a live turn.
+    chips = PUBLIC_OPENERS if turn.awaiting_identity else (scenario.quick_replies or OPENERS)
+    turn.quick_replies = _fresh(chips, _asked(messages))
     turn.procedure_hint = text
     turn.params = params
     facts = await _gather(db, scenario, turn, today=today, params=params, confirmed=confirmed, index=index)
