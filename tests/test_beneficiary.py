@@ -70,7 +70,9 @@ async def test_the_notice_effect_provision_is_111_ii_not_114(db):
 
 async def test_undesignated_fallback_finds_112_and_113(db):
     rows = await undesignated_fallback(db)
-    assert {r["doc_id"] for r in rows} == {"art.112.1", "art.113.1"}
+    assert {r["doc_id"] for r in rows} == {"art.113.1"}, (
+        "§112 is the mirror provision and must not arrive under this key"
+    )
 
 
 async def test_undesignated_fallback_matches_the_legal_heir_default(db):
@@ -144,7 +146,7 @@ async def test_gather_still_runs_the_public_tools_when_only_they_are_allowed(db)
     # The shape the executor now produces for an unconfirmed session: `permitted`
     # excludes both gated tools, and the statutory half still answers.
     allowed = permitted(BENEFICIARY.tools, owner=beneficiary_module, confirmed=False)
-    assert allowed == frozenset({"designation_rules", "undesignated_fallback"})
+    assert allowed == frozenset({"designation_rules", "undesignated_fallback", "designated_protection"})
     facts = await gather(db, {"concern": "受益人可以改成誰"}, member_id=LEGAL_HEIR_MEMBER_ID, allowed=allowed)
     assert facts["designation_rules"]
     assert facts["undesignated_fallback"]
@@ -249,3 +251,27 @@ def test_beneficiary_collects_the_customers_own_reason():
 def test_beneficiary_quick_replies_are_questions_not_commitments():
     for reply in BENEFICIARY.quick_replies:
         assert reply.endswith(("？", "?")), reply
+
+
+@pytest.mark.asyncio
+async def test_the_two_estate_provisions_arrive_under_the_conditions_they_apply_to(db):
+    """
+    §112 and §113 are one word apart and opposite in effect.
+
+    §113 says an undesignated death benefit becomes the estate; §112 says a designated one
+    does not. The same query returns both, and handed to the model under one key they read
+    as two supports for the same claim — so a model being thorough cites 〔保險法 第112條第
+    1項〕 for what that provision denies. The citation checker cannot catch it: §112 exists,
+    so the citation resolves. A real provision cited for the opposite of what it says is
+    what this separation prevents.
+    """
+    from policydesk.agent.scenarios.beneficiary import BENEFICIARY, designated_protection, undesignated_fallback
+
+    absent = [r["doc_id"] for r in await undesignated_fallback(db)]
+    present = [r["doc_id"] for r in await designated_protection(db)]
+    assert absent, "the undesignated case returned nothing"
+    assert all(d.startswith("art.113") for d in absent), absent
+    assert present, "the designated case returned nothing"
+    assert all(d.startswith("art.112") for d in present), present
+    assert not set(absent) & set(present), "one provision cannot be both conditions"
+    assert "相反的情形" in BENEFICIARY.injection, "the model must be told they are mirrors"
