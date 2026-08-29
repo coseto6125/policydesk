@@ -686,7 +686,7 @@ _CITED_NUMBER = (
 CITATION = re.compile(rf"[〔（(\[]?\s*{_LEAD}\s*({_STATUTE_NAME})\s*{_CITED_NUMBER}\s*[〕）)\]]?")
 """How a statute citation is read *out of* a reply: 〔保險法 第64條第2項〕 and its variants.
 
-Written one way and read many. `_readable` emits the bracketed form and the model is told
+Written one way and read many. `citation` emits the bracketed form and the model is told
 to copy it, but what the checker must catch is everything a model might write instead —
 because a citation the pattern misses is not one the checker rejects, it is one it never
 sees. Brackets optional, full-width or half-width or absent; the number in digits or in

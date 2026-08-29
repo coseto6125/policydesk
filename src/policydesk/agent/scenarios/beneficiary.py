@@ -56,11 +56,10 @@ explained, with the request for an ID attached to the missing half — his own c
 record and his policies — rather than standing in for the whole answer.
 """
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute, tools
-from policydesk.agent.scenario_base import Param, Scenario
+from policydesk.agent.scenario_base import Param, Scenario, gather_tools
 from policydesk.agent.tools import requires_identity
 
 if TYPE_CHECKING:
@@ -273,29 +272,15 @@ async def gather(
     executor's own default gather step.
 
     """
-
-    def _can(name: str) -> bool:
-        return allowed is None or name in allowed
-
-    # Built up as a name -> coroutine mapping, not four separate awaits, so the tools
-    # that do run still go out together rather than one round trip at a time — the same
-    # reasoning as the executor's own default gather step (`_gather`'s `pending` dict).
-    pending: dict[str, Any] = {}
-    if _can("designation_rules"):
-        pending["designation_rules"] = designation_rules(db, params.get("concern", ""), retriever=retriever)
-    if _can("designated_protection"):
-        pending["designated_protection"] = designated_protection(db, retriever=retriever)
-    if _can("undesignated_fallback"):
-        pending["undesignated_fallback"] = undesignated_fallback(db, retriever=retriever)
+    factories: dict[str, Any] = {
+        "designation_rules": lambda: designation_rules(db, params.get("concern", ""), retriever=retriever),
+        "designated_protection": lambda: designated_protection(db, retriever=retriever),
+        "undesignated_fallback": lambda: undesignated_fallback(db, retriever=retriever),
+    }
     if member_id is not None:
-        if _can("current_beneficiary"):
-            pending["current_beneficiary"] = current_beneficiary(db, member_id)
-        if _can("list_policies"):
-            pending["list_policies"] = tools.list_policies(db, member_id, today=today)
-    if not pending:
-        return {}
-    results = await asyncio.gather(*pending.values())
-    return dict(zip(pending, results, strict=True))
+        factories["current_beneficiary"] = lambda: current_beneficiary(db, member_id)
+        factories["list_policies"] = lambda: tools.list_policies(db, member_id, today=today)
+    return await gather_tools(factories, allowed=allowed)
 
 
 BENEFICIARY = Scenario(
