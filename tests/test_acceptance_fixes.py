@@ -358,3 +358,20 @@ async def test_every_tool_that_quotes_a_sum_insured_renders_it(db):
         for row in rows:
             assert row["insured"], f"a policy row carries no rendered amount: {row}"
             assert "元" in row["insured"] or "單位" in row["insured"], row["insured"]
+
+
+def test_the_multiplier_is_named_as_a_multiplier():
+    """
+    `find_multiplier` hands the model a bare 3.00 and no base.
+
+    The injection told it to run the calculator on 給付倍數 without saying what the number
+    multiplies, so the model had a figure it could not ground — and a bare 3.00 in front of
+    a customer reads as three dollars just as easily as three times.
+    """
+    from policydesk.agent.scenario import BY_NAME
+
+    injection = BY_NAME["claim_checklist"].injection
+    assert "給付倍數" in injection
+    assert "倍" in injection
+    assert "不可以寫成" in injection, "the wrong reading must be named, not just the right one"
+    assert "核保理賠人員" in injection, "this scenario still may not decide an amount"
