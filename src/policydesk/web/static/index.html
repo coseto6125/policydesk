@@ -1763,6 +1763,9 @@ async function openTranscript(id) {
         <div class="bub">${esc(m.text)}</div>
         <span class="at">${shortTime(m.created_at)}${m.turn_id ? ` · ${esc(m.turn_id)}` : ""}</span>
       </div>`).join("") : `<div class="empty">這位保戶尚無訊息</div>`;
+    // Opened at the latest message, like the customer pane. A caseworker opening a
+    // conversation is asking what was just said, not how it began.
+    requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
   } catch (err) { fail(log, err); }
 }
 

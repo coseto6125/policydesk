@@ -295,7 +295,14 @@ than an exception to it: these tools genuinely read no member row.
 """
 
 
-async def gather(db: Database, params: dict[str, str], *, retriever: Any | None = None, **_: Any) -> dict[str, Any]:
+async def gather(
+    db: Database,
+    params: dict[str, str],
+    *,
+    retriever: Any | None = None,
+    allowed: frozenset[str] | None = None,  # noqa: ARG001 - neither tool is gated, so this is always all of them
+    **_: Any,
+) -> dict[str, Any]:
     """
     Run this scenario's tools.
 
