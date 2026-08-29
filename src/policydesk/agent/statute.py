@@ -671,7 +671,7 @@ so a real citation would be reported as invented."""
 
 _STATUTE_NAME = r"[\u4e00-\u9fff]{2,10}?(?:法|細則|辦法|準則|條例|規則)"
 
-_INT = r"\d{1,3}|[一二三四五六七八九十百]{1,10}?"
+_INT = r"\d{1,4}|[一二三四五六七八九十百]{1,10}?"
 _SMALL = r"\d{1,2}|[一二三四五六七八九十]{1,3}"
 
 _CITED_NUMBER = (
@@ -787,6 +787,19 @@ async def unresolved(db: Database, text: str) -> list[tuple[str, str]]:
     Returns:
         The (statute name, doc_id) pairs with no matching row. Empty means every
         citation resolves.
+
+    **The boundary is the corpus, and it is a boundary on purpose.** This desk carries three
+    statutes. A reply citing a fourth — 遺產及贈與稅法第16條第9款 is the standard sentence
+    for 身故保險金會不會被課遺產稅, and it is correct law — is reported here and the reply is
+    withheld. That reads like a false positive and is the rule working: the desk may not
+    state a provision no tool returned, and no tool returns that one. The fix for the
+    customer is the injection, which names what the desk carries so the model does not
+    reach for what it does not; loosening this check instead would let an invented
+    provision through under any statute name nobody thought to carry.
+
+    Four digits, not three: 民法 runs to 第1225條, so a three-digit pattern could not read
+    第1138條 at all — and a citation the pattern never sees is one this function never
+    rejects, which is the direction the `CITATION` docstring calls the dangerous one.
 
     Checked by *name as written* as well as by doc_id, because 保險法 §64 and 保險法施行
     細則 §64 are different sentences and a reply that attributes one to the other is wrong
