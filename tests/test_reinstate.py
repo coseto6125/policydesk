@@ -146,6 +146,61 @@ async def test_gather_names_all_three_facts(monkeypatch: pytest.MonkeyPatch):
     assert facts["_allowed_clauses"] == frozenset({"art.7"})
 
 
+async def test_gather_with_only_the_public_tool_allowed_never_queries_the_members_book(monkeypatch: pytest.MonkeyPatch):
+    # Proves the query never ran, not that its output was dropped afterwards: `fetch`
+    # raises for a `FROM policy` statement, so a call to `lapsed_policies` fails loudly
+    # instead of silently returning a row this test would then have to notice and drop.
+    class StubDB:
+        async def fetch(self, sql: str, params: list[object] | None = None) -> list[dict[str, object]]:
+            if "FROM policy po" in sql:
+                raise AssertionError("lapsed_policies must not run when it is not in `allowed`")
+            raise AssertionError(sql)
+
+    import policydesk.agent.scenarios.reinstate as reinstate_mod
+
+    async def _fake_statutory_floor(_db: object, *, retriever: object = None) -> list[dict[str, object]]:
+        return [{"citation": "〔保險法 第116條第3項〕", "statute": "保險法", "doc_id": "art.116.3", "chapter": "", "verbatim": "…"}]
+
+    monkeypatch.setattr(reinstate_mod, "statutory_floor", _fake_statutory_floor)
+
+    facts = await gather(StubDB(), {}, member_id=1, allowed=frozenset({"statutory_floor"}))
+    assert facts == {"statutory_floor": [{"citation": "〔保險法 第116條第3項〕", "statute": "保險法", "doc_id": "art.116.3", "chapter": "", "verbatim": "…"}]}
+    assert "lapsed_policies" not in facts
+    assert "reinstatement_clauses" not in facts
+    assert "_allowed_clauses" not in facts
+
+
+async def test_gather_with_reinstatement_clauses_not_allowed_keeps_lapsed_but_drops_the_clause_pair(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # `reinstatement_clauses` and `_allowed_clauses` are meant to move together — this
+    # proves neither leaks when the tool that would justify a citation is withheld.
+    class StubDB:
+        async def fetch(self, sql: str, params: list[object] | None = None) -> list[dict[str, object]]:
+            if "FROM policy po" in sql and "JOIN product pr" in sql:
+                return [
+                    {
+                        "policy_id": 1,
+                        "policy_number": "L1",
+                        "product_id": "P1",
+                        "product_name": "測試附約",
+                        "sum_insured": 100000,
+                        "effective_at": None,
+                        "lapsed_at": "2026-01-01",
+                        "days_since_lapse": 90,
+                        "is_main": True,
+                    }
+                ]
+            if "FROM clause c JOIN product p" in sql:
+                raise AssertionError("reinstatement_clauses must not run when it is not in `allowed`")
+            raise AssertionError(sql)
+
+    facts = await gather(StubDB(), {}, member_id=1, allowed=frozenset({"lapsed_policies"}))
+    assert facts["lapsed_policies"]
+    assert "reinstatement_clauses" not in facts
+    assert "_allowed_clauses" not in facts
+
+
 def test_reinstate_tools_are_gated_through_the_module_it_names():
     from importlib import import_module
 

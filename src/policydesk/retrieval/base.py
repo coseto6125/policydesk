@@ -33,6 +33,32 @@ on; it flattens the difference between rank 1 and rank 2 enough that one channel
 confident first place cannot outvote the other channel entirely."""
 
 
+QUERY_STOP: frozenset[str] = frozenset({
+    "你們", "我們", "為什麼", "憑什麼", "怎麼", "這樣", "可以", "不可以", "應該", "什麼",
+    "這個", "那個", "已經", "根本", "當初", "知道", "想要", "我要", "沒有", "還有", "現在",
+    "公司", "你們公司", "貴公司",
+})
+"""Words a question is made of that no document is about. Dropped from a query, never
+from a document — removing them at index time would change every document's length and
+so change every score, which is a different intervention with a different failure.
+
+Not a general stop list. 保險, 契約 and 解除 are common here and load-bearing.
+
+The measurement that put 可以 in it: it appears in 4 of 1,212 statute articles, so its
+IDF is 5.60 — higher than 復效's 5.09. 保單停效可以復效嗎 and 猶豫期幾天可以撤銷 therefore
+returned the same three provisions as each other, neither of them about either question,
+because the rarest term in both sentences was the filler. A customer's 語助詞 outranking
+what they are actually asking is the shape of this failure, and it does not look like a
+retrieval bug from the outside — it looks like a corpus that does not contain the answer.
+
+公司 earns its place for a different reason: in a customer's sentence it is a pronoun
+meaning *you*, and in the statute it is a corporate entity the regulator licenses.
+
+Measured by the session that owns `agent/statute.py`, which holds the same set for its
+SQL fallback and imports it from here.
+"""
+
+
 class Hit(Struct, frozen=True):
     """One retrieved document, in the only shape callers see."""
 

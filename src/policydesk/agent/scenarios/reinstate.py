@@ -270,10 +270,13 @@ REINSTATE = Scenario(
         "準備清償欠繳的保險費（以及條款要求的利息或其他費用）、"
         "超過六個月的話還要準備健康告知或核保要求的證明文件。\n"
         "每一個期限、每一個條文、每一個天數都必須是工具回傳的，想不起來或工具沒回傳就說這部分需要查證，"
-        "寫錯的期限比不寫更傷害保戶。\n"
-        "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料。"
-        "此時說明本櫃台可以幫他查詢保單復效的條件，但需要先核對身分，請他提供身分證字號。"
-        "不要憑空講任何關於他保單的內容。"
+        "寫錯的期限比不寫更傷害保戶。\n\n"
+        "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，material 裡沒有他個人的"
+        "lapsed_policies、reinstatement_clauses、_allowed_clauses，但 statutory_floor 一定還在——"
+        "保險法對復效的最低保障是公開的規定，不用核對身分也能先講。"
+        "此時先照 statutory_floor 說明法律定的期限與健康告知規則，"
+        "再說明要查他這張保單自己的停效日期、距今天數、以及契約自己寫的復效期限，需要先核對身分，"
+        "請他提供身分證字號。不要憑空講任何關於他保單的內容，也不要假裝已經查過他的保單。"
     ),
     tools=("lapsed_policies", "reinstatement_clauses", "statutory_floor"),
     tools_module="policydesk.agent.scenarios.reinstate",

@@ -195,6 +195,61 @@ async def test_gather_marks_a_rider_uncovered_when_its_main_has_lapsed():
     assert rider["effectively_covered"] is False, "but its main did, and the rider's cover went with it"
 
 
+async def test_gather_with_only_the_public_tool_allowed_never_queries_the_members_book(monkeypatch):
+    # Proves the query never ran, not that its output was dropped afterwards: `fetch`
+    # raises for a `FROM policy` statement, so a call to `list_policies` fails loudly
+    # instead of silently returning a row this test would then have to notice and drop.
+    class StubDB:
+        async def fetch(self, sql: str, params: list[object] | None = None) -> list[dict[str, object]]:
+            if "FROM policy" in sql:
+                raise AssertionError("list_policies must not run when it is not in `allowed`")
+            if "FROM clause c JOIN product p" in sql:
+                return [{"product_id": "P1", "product_name": "測試商品", "heading": "住院日額保險金的申領"}]
+            raise AssertionError(sql)
+
+    monkeypatch.setattr(review_module, "CATALOG_FLOOR", 1)
+    facts = await gather(StubDB(), {}, member_id=1, allowed=frozenset({"category_catalog"}))
+    assert facts == {"category_catalog": [{"name": "住院日額", "product_count": 1}]}
+    assert "policies" not in facts
+    assert "held_benefits" not in facts
+    assert "gaps" not in facts
+
+
+async def test_gather_with_held_categories_not_allowed_keeps_policies_but_drops_the_gap_pair(monkeypatch):
+    # `list_policies` and `held_categories` are meant to move together, but the contract
+    # is per tool — this proves the intermediate split does not fabricate a gap list from
+    # an empty `held`, which would tell a verified customer he holds nothing at all.
+    class StubDB:
+        async def fetch(self, sql: str, params: list[object] | None = None) -> list[dict[str, object]]:
+            if "FROM policy" in sql:
+                return [
+                    {
+                        "policy_id": 1,
+                        "policy_number": "A1",
+                        "sum_insured": 100000,
+                        "effective_at": None,
+                        "lapsed_at": None,
+                        "main_policy_number": None,
+                        "product_name": "測試商品",
+                        "product_id": "P1",
+                        "attachment": "main",
+                        "days_in_force": 10,
+                        "is_lapsed": False,
+                    }
+                ]
+            if "FROM clause c JOIN product p" in sql:
+                if params and params[0]:
+                    raise AssertionError("held_categories must not run when it is not in `allowed`")
+                return [{"product_id": "P1", "product_name": "測試商品", "heading": "住院日額保險金的申領"}]
+            raise AssertionError(sql)
+
+    monkeypatch.setattr(review_module, "CATALOG_FLOOR", 1)
+    facts = await gather(StubDB(), {}, member_id=1, allowed=frozenset({"category_catalog", "list_policies"}))
+    assert facts["policies"]
+    assert "held_benefits" not in facts
+    assert "gaps" not in facts
+
+
 def test_review_tools_are_gated_through_the_module_it_names():
     assert REVIEW.tools_module == "policydesk.agent.scenarios.review"
     from importlib import import_module
