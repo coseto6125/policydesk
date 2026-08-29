@@ -28,6 +28,7 @@ an HttpOnly cookie the customer pane never receives. That is a different product
 one asked for, so it is a decision rather than a fix.
 """
 
+import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -281,7 +282,39 @@ async def profile(request: Request):
            FROM "case" WHERE member_id = $1::bigint ORDER BY updated_at DESC""",
         [member_id],
     )
-    return _json({"member": member, "policies": policies, "facts": facts, "cases": cases})
+    # The three service tables the pane was built before. A caseworker looking at a customer
+    # sees what they bought and nothing about what has happened since — no premium behind or
+    # ahead, nobody named on the contract, no claim in flight. Those are the three things the
+    # customer is most likely to be ringing about.
+    payments, beneficiaries, claims = await asyncio.gather(
+        db.fetch(
+            """SELECT pp.due_at, pp.paid_at, pp.amount, pp.method, po.policy_number
+               FROM premium_payment pp JOIN policy po USING (policy_id)
+               WHERE po.member_id = $1::bigint
+               ORDER BY pp.paid_at IS NOT NULL, pp.due_at DESC
+               LIMIT $2::int""",
+            [member_id, LIST_LIMIT],
+        ),
+        db.fetch(
+            """SELECT pb.display_name, pb.relation, pb.share, pb.designated_at, po.policy_number
+               FROM policy_beneficiary pb JOIN policy po USING (policy_id)
+               WHERE po.member_id = $1::bigint
+               ORDER BY po.policy_number, pb.share DESC""",
+            [member_id],
+        ),
+        db.fetch(
+            """SELECT c.claim_id, c.kind, c.event_at, c.filed_at, c.stage, c.outcome,
+                      c.decided_at, c.paid_amount, po.policy_number, pr.name AS product_name
+               FROM claim c JOIN policy po USING (policy_id) JOIN product pr USING (product_id)
+               WHERE po.member_id = $1::bigint
+               ORDER BY c.filed_at DESC""",
+            [member_id],
+        ),
+    )
+    return _json({
+        "member": member, "policies": policies, "facts": facts, "cases": cases,
+        "payments": payments, "beneficiaries": beneficiaries, "claims": claims,
+    })
 
 
 # ---------------------------------------------------------------- LLM 追蹤
