@@ -375,6 +375,8 @@ OCCUPATION = Scenario(
             example="我要換工作，去做計程車司機，不確定要不要跟你們說",
         ),
     ),
-    quick_replies=("我這張保單的職業等級上限是第幾類？", "換工作後保費會怎麼算？", "萬一忘了通知會怎樣？"),
+    # 我這張保單的職業等級上限是第幾類？ was here, and the reply lists the ceiling for every
+    # policy the customer holds — the chip led back to the table directly above it.
+    quick_replies=("要用什麼方式通知才算數？", "換工作後保費會怎麼算？", "萬一忘了通知會怎樣？"),
     transitions=("quote", "explain_cover"),
 )

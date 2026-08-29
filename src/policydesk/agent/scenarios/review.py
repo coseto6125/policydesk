@@ -137,6 +137,32 @@ async def _grant_headings(db: Database, product_ids: list[str]) -> list[dict[str
     )
 
 
+_MODIFIER = re.compile(r"(費用|醫療|給付|保險金)+$")
+"""Trailing words a heading adds to a category without changing which event it names.
+
+住院醫療 and 住院 are the same cover to a customer, and so are 特定處置費用 and 特定處置.
+Stripped repeatedly, because 門診手術費用醫療 stacks two of them.
+"""
+
+
+def _stem(name: str) -> str:
+    """
+    Reduce a category name to what it is about.
+
+    Args:
+        name: The category as a clause heading spelled it.
+
+    Returns:
+        The name with its trailing modifiers removed, or the empty string for a name
+        that is nothing but modifiers — 醫療 alone names no event and is not a category
+        anyone can be said to lack.
+
+    """
+    while (shorter := _MODIFIER.sub("", name)) != name:
+        name = shorter
+    return name
+
+
 @requires_identity
 async def held_categories(db: Database, product_ids: list[str]) -> list[dict[str, Any]]:
     """
@@ -291,8 +317,17 @@ async def gather(
     held = await held_categories(db, covered_product_ids)
     facts["held_benefits"] = held
     if catalog is not None:
-        held_names = {b["name"] for b in held}
-        facts["gaps"] = [c for c in catalog if c["name"] not in held_names]
+        # Compared on the stem, not the name. Both sides come from the same extractor and
+        # neither is a controlled vocabulary, so one contract writes 特定處置費用 where
+        # another writes 特定處置 — and `category_catalog` applies `CATALOG_FLOOR` while
+        # `held_categories` does not, so the rarer spelling reaches only one of the two
+        # sets. Subtracting the strings put the same cover on both lists: a live reply
+        # told one customer 門診手術費用：由新實全心意PLUS附約提供 and, eleven lines
+        # later, 門診手術醫療：您名下沒有任何一張有效保單涵蓋. Three categories did that
+        # in one reply, and a customer who cannot tell whether outpatient surgery is
+        # covered is worse off than one who was simply told the wrong thing.
+        held_stems = {_stem(b["name"]) for b in held}
+        facts["gaps"] = [c for c in catalog if (stem := _stem(c["name"])) and stem not in held_stems]
     return facts
 
 

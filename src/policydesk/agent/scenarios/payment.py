@@ -269,6 +269,8 @@ PAYMENT = Scenario(
     tools=("payment_state", "payment_history", "grace_rule"),
     tools_module="policydesk.agent.scenarios.payment",
     params=(),
-    quick_replies=("我想知道下一期什麼時候繳？", "逾期了還能補繳嗎？", "可以改成年繳嗎？"),
+    # 我想知道下一期什麼時候繳？ was here, and the injection now requires every reply to
+    # state `next_due_at` per policy — so the chip spent a tap on lines already on screen.
+    quick_replies=("逾期了還能補繳嗎？", "可以改成年繳嗎？", "催告通知會寄到哪裡？"),
     transitions=("reinstate", "billing", "soothe"),
 )

@@ -568,6 +568,7 @@ async def run_turn(
         # no tools behind it, so no clause id is allowed and any citation in it is one the
         # model invented.
         await _unverifiable(db, turn, turn.reply, frozenset())
+        _withhold_promise(turn, case_id, None)
         return turn
 
     if not confirmed and tools.reads_identity(scenario.tools):
@@ -635,6 +636,8 @@ async def run_turn(
     turn.computations = _run_calculations(completion)
 
     if await _unverifiable(db, turn, completion.text, allowed):
+        return turn
+    if _withhold_promise(turn, case_id, scenario.name):
         return turn
     if not completion.text.strip():
         # A model that answered with tool calls and no prose leaves the customer
@@ -704,6 +707,109 @@ def _echoes(chip: str, text: str) -> bool:
         return False
     shared = sum(1 for ch in set(a) if ch in b)
     return shared / len(set(a)) >= 0.6
+
+
+PROMISED = (
+    "本次回覆包含理賠或核保結果的判斷，那是核保理賠人員的權責，"
+    "為避免給您錯誤的期待，已保留該回覆並轉由專人與您說明。"
+)
+"""What the customer reads instead of a reply that promised an outcome.
+
+Withheld rather than annotated, for the reason `WITHHELD` is: a caveat under a promise
+still leaves the promise on the screen, and the promise is the part a customer acts on.
+"""
+
+_PROMISE = re.compile(
+    # 一定會賠, 保證理賠, 絕對可以復效 — the outcome asserted outright.
+    r"(一定|必定|絕對|肯定)[^。；\n]{0,6}(會|可以|能|能夠)[^。；\n]{0,10}(賠|給付|核准|通過|理賠|復效|受理)"
+    # 保證給付 — but not 可保證明, which is a document a customer is asked to provide.
+    r"|(?<!可)保證[^。；\n]{0,8}(賠|給付|核准|通過|理賠|受理|沒問題)"
+    # 應該會過, 看起來沒問題, 通常都會賠 — the hedge that a customer reads as a yes.
+    r"|(應該|多半|通常|大概)[^。；\n]{0,4}(會|可以|都會|沒問題)[^。；\n]{0,8}(賠|給付|核准|通過|理賠|受理)"
+    r"|看起來沒(什麼)?問題|不用擔心[^。；\n]{0,10}(賠|給付|核准|通過)"
+    # 我們會核准 — the desk deciding on the insurer's behalf.
+    r"|我(們)?(會|可以|能)[^。；\n]{0,6}(核准|核賠|給付|通融|放寬|加速)"
+)
+"""Ways a reply says an outcome the desk does not decide.
+
+The desk may report what an assessor recorded — 審核中, 待補件, 已核付 with the figure
+from the row — and may never say what an assessor will decide. Three shapes reach a
+customer as a yes: the outright claim, the hedge that reads as one (應該會過), and the
+desk speaking for the insurer (我們會核准).
+
+The lookbehind on 保證 is not decoration. 可保證明 is the certificate of insurability a
+customer is asked to produce for a reinstatement past six months, and it appeared in a
+live reply — a screen that fired on it would withhold a correct answer about a document
+the customer needs to go and get.
+"""
+
+
+_DENIAL = re.compile(r"不能|不會|不可|不得|無法|並非|不代表|不保證|不是說")
+"""Words that turn the phrase after them into a denial.
+
+Read from the clause the match sits in, so 不能據此判定…一定會加費 passes and
+一定會加費 alone does not. Measured on the twenty-two replies this desk has written: one
+of them denies a promise using the promise's own words, and a screen without this would
+have withheld the most careful sentence in the set.
+"""
+
+
+def _promises(text: str) -> str:
+    """
+    Find where a reply promised an outcome it may not promise.
+
+    Args:
+        text: What the model wrote.
+
+    Returns:
+        The offending phrase, or the empty string when there is none.
+
+    Mechanical, like the citation check beside it, and for the same reason: a promise
+    about a claim is a red line rather than a judgement call, and the check that guards a
+    red line does not itself run on a model. Every other check in this desk is
+    prompt-based; these two are the exceptions, and both withhold rather than annotate.
+
+    """
+    found = _PROMISE.search(text)
+    if found is None:
+        return ""
+    # A denial of a promise is not a promise. 不能據此判定您的外送工作一定會加費、退費或
+    # 影響理賠 is a live reply saying the desk cannot decide, and the pattern reads its
+    # 一定會…理賠 the same way it reads a claim. The clause before the match decides.
+    before = text[:found.start()]
+    # The negator can sit hard against the match — 我不保證會核准 puts 不 one character
+    # before 保證, which no clause-level scan sees because the clause is then just 我不.
+    if before[-1:] in {"不", "沒", "未", "毋"}:
+        return ""
+    clause = before.rsplit("。", 1)[-1].rsplit("\n", 1)[-1]
+    return "" if _DENIAL.search(clause) else found.group(0)
+
+
+def _withhold_promise(turn: Turn, case_id: int, scenario: str | None) -> bool:
+    """
+    Replace a reply that promised an outcome the desk does not decide.
+
+    Args:
+        turn: The turn, whose `reply` and `faults` this may set.
+        case_id: For the log line.
+        scenario: Which scenario wrote it, or None for the router's free answer.
+
+    Returns:
+        True when the reply was withheld, so the caller stops.
+
+    Runs on both paths. The scenario injections forbid this in prose, and prose is what
+    the model may quietly stop following — 理賠是人工審查, and a desk that says 應該會過
+    has decided something no one at this counter is allowed to decide. The customer acts
+    on the promise, not on the caveat under it, so the reply goes rather than gains a
+    footnote.
+
+    """
+    if not (phrase := _promises(turn.reply)):
+        return False
+    logger.warning("promise_withheld", case_id=case_id, scenario=scenario, phrase=phrase)
+    turn.faults = (*turn.faults, f"promise:{phrase}")
+    turn.reply = PROMISED
+    return True
 
 
 async def _unverifiable(db: Database, turn: Turn, text: str, allowed: frozenset[str]) -> bool:
