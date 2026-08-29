@@ -20,7 +20,7 @@ customer being helped and is the customer being asked nothing.
 
 from policydesk.agent.scenario_base import Emit, Param, Scenario, tool_schema
 
-__all__ = ["BY_NAME", "CATALOGUE", "IDENTITY_PENDING", "OPENERS", "ROUTER_INSTRUCTIONS", "WRITING", "Emit", "Param", "Scenario", "tool_schema"]
+__all__ = ["BY_NAME", "CATALOGUE", "IDENTITY_PENDING", "OPENERS", "PUBLIC_OPENERS", "ROUTER_INSTRUCTIONS", "WRITING", "Emit", "Param", "Scenario", "tool_schema"]
 
 
 IDENTITY_PENDING = (
@@ -291,7 +291,9 @@ ROUTER_INSTRUCTIONS = """\
 你不得自行判斷賠不賠、不得承諾任何金額、不得撰寫或改寫條款文字。
 這些都由確定性工具產生，你只負責把工具回傳的內容說清楚。
 
-若保戶的訴求不屬於任何情境，直接以繁體中文回答，並說明本櫃台可以協助的範圍。\
+若保戶的訴求不屬於任何情境，直接以繁體中文回答，並說明本櫃台可以協助的範圍。
+這種直接回答不可以出現任何天數、金額、比例或條號——那些只能來自情境工具查回來的資料。
+問到這些就改呼叫對應的情境工具，工具查不到就說這部分需要查證，不要憑印象給一個數字。\
 """
 
 
@@ -321,5 +323,22 @@ OPENERS: tuple[str, ...] = (
     "理賠要準備哪些文件？",
     "我想了解有沒有適合的方案",
 )
-"""Offered when no scenario ran, so a customer who does not know what to ask has
-somewhere to start. Questions, like every other quick reply here."""
+"""Offered when no scenario ran and the session is verified, so a customer who does not
+know what to ask has somewhere to start. Questions, like every other quick reply here."""
+
+PUBLIC_OPENERS: tuple[str, ...] = (
+    "猶豫期是幾天？",
+    "健康告知沒寫到會怎樣？",
+    "保單停效還能不能復效？",
+    "你們有哪些商品？",
+)
+"""The same, for a session that has not proved who it is.
+
+`OPENERS` is four questions about the customer's own book, and offering them to someone who
+was just told 請提供身分證字號 hands them back the question that was refused — measured on a
+live turn, where 我想查一下我的保單保什麼 was answered with a request for the ID and then
+offered 我想了解目前的保單保什麼 as a chip.
+
+These four are the ones the desk answers without an ID, because their scenarios have a
+public half: the contract's own 契約撤銷權 clause, 保險法 §64, §116, and the catalogue.
+"""

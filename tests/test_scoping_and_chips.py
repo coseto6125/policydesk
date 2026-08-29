@@ -123,3 +123,29 @@ def test_the_occupation_class_is_looked_up_and_never_accepted_from_the_client():
     assert "OCCUPATION_CLASS.get(occupation" in body
     enrol = SERVER[SERVER.index('case "enrol"'):SERVER.index('case "say"')]
     assert "occupation_class" not in enrol.split("await ws.send")[0]
+
+
+def test_the_chips_a_refused_customer_sees_are_ones_the_desk_can_answer():
+    """
+    Measured on a live turn: 我想查一下我的保單保什麼 was answered with a request for the
+    national ID, and then offered 我想了解目前的保單保什麼 as a chip — the question that had
+    just been refused, one tap away.
+
+    Every entry in the public set must belong to a scenario with a tool that survives the
+    gate, or it is the same trap with different words.
+    """
+    from policydesk.agent import tools
+    from policydesk.agent.scenario import CATALOGUE, OPENERS, PUBLIC_OPENERS
+
+    assert not set(PUBLIC_OPENERS) & set(OPENERS)
+    answerable = {
+        s.name
+        for s in CATALOGUE
+        if tools.permitted(s.tools, owner=__import__("importlib").import_module(s.tools_module)
+                           if s.tools_module else None, confirmed=False)
+    }
+    assert {"cooling_off", "disclosure", "reinstate", "browse_products"} <= answerable, (
+        f"a chip promises an answer from a scenario that has nothing public: {sorted(answerable)}"
+    )
+    for chip in PUBLIC_OPENERS:
+        assert chip.endswith(("？", "?")), f"a chip that is not a question is a commitment: {chip}"
