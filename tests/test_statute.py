@@ -405,3 +405,35 @@ async def test_the_modal_pattern_contributes_no_fragments(loaded):
     kept = {t for row in rows for t in acted.findall(row["verbatim"]) if statute._is_term(t)}
     assert not [t for t in kept if t.startswith(("之", "依", "予", "其", "該", "前"))]
     assert "據實說明" in kept
+
+
+async def test_the_statute_corpus_is_reachable_through_the_hybrid_the_server_builds(loaded):
+    # The server does not hand `statute_reference` a BM25Retriever; it hands it whatever
+    # `HybridRetriever` wraps. Fusion re-scores and re-orders, and a corpus filter dropped
+    # anywhere in that stack turns a statute question into a contract answer — so the
+    # assertion is made on the object the server actually constructs.
+    from policydesk.retrieval.base import CLAUSE, STATUTE, HybridRetriever
+
+    ranked = _FakeRetriever(
+        [_hit("insurance_act", "art.64.3", 9.0), _hit("insurance_act", "art.64.2", 8.0)]
+    )
+    rows = await statute.search_statute(
+        loaded, "解除契約", ["insurance_act"], limit=2, siblings=False, retriever=HybridRetriever([ranked])
+    )
+    assert [r["doc_id"] for r in rows] == ["art.64.3", "art.64.2"]
+    assert ranked.calls[0][1] == STATUTE != CLAUSE
+
+
+async def test_two_channels_disagreeing_still_yield_statute_rows(loaded):
+    # One channel is optional by design, so the shape that matters is two of them ranking
+    # differently: the fused order must still be provisions this module can read back.
+    from policydesk.retrieval.base import HybridRetriever
+
+    lexical = _FakeRetriever([_hit("insurance_act", "art.64.2", 9.0), _hit("insurance_act", "art.68.1", 1.0)])
+    semantic = _FakeRetriever([_hit("insurance_act", "art.68.1", 9.0), _hit("insurance_act", "art.64.2", 1.0)])
+    rows = await statute.search_statute(
+        loaded, "解除契約", ["insurance_act"], limit=4, siblings=False,
+        retriever=HybridRetriever([lexical, semantic]),
+    )
+    assert {r["doc_id"] for r in rows} == {"art.64.2", "art.68.1"}
+    assert all(r["verbatim"] for r in rows)
