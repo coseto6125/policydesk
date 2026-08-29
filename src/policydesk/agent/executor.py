@@ -263,9 +263,18 @@ async def _gather(
         # have to move together: resolving the gate somewhere the dispatch does not look
         # is how a scenario ends up demanding an ID for a question about public law.
         owner = import_module(scenario.tools_module)
-        if not confirmed and tools.reads_identity(scenario.tools, owner=owner):
-            return await _public_only(db, scenario, params)
-        facts = await owner.gather(db, params, member_id=turn.member_id, today=today, retriever=index)
+        # Per tool, not per scenario. A scenario that mixes a public statute lookup with
+        # a read of the member's own book still answers the public half unverified, with
+        # the request for an ID attached to material rather than standing in for it.
+        allowed = tools.permitted(scenario.tools, owner=owner, confirmed=confirmed)
+        facts = await owner.gather(
+            db, params, member_id=turn.member_id, today=today, retriever=index, allowed=allowed
+        )
+        if allowed != frozenset(scenario.tools):
+            # Set here rather than trusted to the module. A module that forgets the flag
+            # would hand the model a partial answer with nothing saying a part is missing,
+            # and the model would present it as the whole answer.
+            facts["_identity_required"] = True
         # Empty rather than absent. A scenario module citing contract clauses returns its
         # own allow-list; one citing statute carries the 〔保險法 第64條第2項〕 syntax,
         # which the `art.NN` checker never sees, so it has nothing here to allow.
