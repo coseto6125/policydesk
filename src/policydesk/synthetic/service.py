@@ -172,19 +172,24 @@ async def furnish(db: Database, member_id: int, *, today: date, seed: int | None
         )
 
         if rng.random() >= UNDESIGNATED:
-            named = rng.choices([r for r, _ in RELATIONS], weights=[w for _, w in RELATIONS])[0]
             shares = [100] if rng.random() < 0.75 else [60, 40]
-            for index, share in enumerate(shares):
+            # Distinct relations, drawn without replacement. The first draw gave two 配偶
+            # splitting 60/40 on the same contract, and a person has one spouse — a row a
+            # caseworker reads as a data fault, correctly.
+            pool = [r for r, _ in RELATIONS]
+            weights = [w for _, w in RELATIONS]
+            named: list[str] = []
+            for _ in shares:
+                pick = rng.choices(pool, weights=weights)[0]
+                at = pool.index(pick)
+                pool.pop(at)
+                weights.pop(at)
+                named.append(pick)
+            for who, share in zip(named, shares, strict=True):
                 await db.execute(
                     """INSERT INTO policy_beneficiary (policy_id, display_name, relation, share, designated_at)
                        VALUES ($1::bigint, $2::text, $3::text, $4::int, $5::date)""",
-                    [
-                        policy["policy_id"],
-                        f"{named}{index + 1}" if len(shares) > 1 else named,
-                        named,
-                        share,
-                        policy["effective_at"],
-                    ],
+                    [policy["policy_id"], who, who, share, policy["effective_at"]],
                 )
                 beneficiaries += 1
 

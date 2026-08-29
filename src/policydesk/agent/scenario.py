@@ -252,6 +252,7 @@ from policydesk.agent.scenarios.beneficiary import BENEFICIARY
 from policydesk.agent.scenarios.claim_status import CLAIM_STATUS
 from policydesk.agent.scenarios.cooling_off import COOLING_OFF
 from policydesk.agent.scenarios.disclosure import DISCLOSURE
+from policydesk.agent.scenarios.occupation import OCCUPATION
 from policydesk.agent.scenarios.payment import PAYMENT
 from policydesk.agent.scenarios.quote import QUOTE
 from policydesk.agent.scenarios.reinstate import REINSTATE
@@ -277,6 +278,7 @@ CATALOGUE: tuple[Scenario, ...] = (
     COOLING_OFF,
     PAYMENT,
     CLAIM_STATUS,
+    OCCUPATION,
 )
 
 BY_NAME: dict[str, Scenario] = {s.name: s for s in CATALOGUE}

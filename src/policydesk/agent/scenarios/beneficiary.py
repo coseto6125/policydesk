@@ -44,7 +44,7 @@ never at the counter.
 
 ## Identity
 
-`current_beneficiary` reads the member's own recorded relation and `list_policies`
+`current_beneficiary` reads the designation on each contract and `list_policies`
 (reused from `policydesk.agent.tools`, already `@requires_identity`) reads their book, so
 both carry the mark. `designation_rules` and `undesignated_fallback` read only
 `statute_article` and carry no mark. The executor derives `allowed` from these marks per
@@ -56,6 +56,7 @@ explained, with the request for an ID attached to the missing half — his own c
 record and his policies — rather than standing in for the whole answer.
 """
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute, tools
@@ -195,28 +196,53 @@ async def designated_protection(db: Database, *, retriever: Any | None = None) -
 
 
 @requires_identity
-async def current_beneficiary(db: Database, member_id: int) -> dict[str, Any]:
+async def current_beneficiary(db: Database, member_id: int) -> list[dict[str, Any]]:
     """
-    Read this member's currently recorded beneficiary relation.
+    Read who is designated on each of this member's contracts.
 
     Args:
         db: The database.
-        member_id: Whose record.
+        member_id: Whose book.
 
     Returns:
-        `relation`: the raw code. `label`: its Chinese reading. Empty when the member
-        row does not exist.
+        One row per policy: its number, the product, and who is named on it with their
+        share. A policy with nobody named comes back with an empty `beneficiaries` list,
+        which is 保險法 §113 and the case this scenario spends most of its words on.
+
+    **Per contract, not per person.** This used to read `member.beneficiary_relation`, one
+    code on the customer — and a beneficiary is not a property of a person. It is a
+    designation on a contract, there can be several with shares between them, and §110 to
+    §113 are entirely about that designation. A scenario built on those provisions was
+    answering from a field that could not express what any of them describe.
 
     Reads one member's own record, so this carries `@requires_identity`. It only ever
-    reads — nothing in this module writes to `member`, because this scenario prepares a
-    change and never executes one.
+    reads: this scenario prepares a change and never executes one.
 
     """
-    row = await db.fetch_one("SELECT beneficiary_relation FROM member WHERE member_id = $1::bigint", [member_id])
-    if row is None:
-        return {}
-    relation = row["beneficiary_relation"]
-    return {"relation": relation, "label": _RELATION_LABEL.get(relation, relation)}
+    rows = await db.fetch(
+        """SELECT po.policy_id, po.policy_number, pr.name AS product_name,
+                  (po.lapsed_at IS NOT NULL) AS is_lapsed,
+                  coalesce(
+                      json_agg(json_build_object('name', pb.display_name, 'relation', pb.relation,
+                                                 'share', pb.share)
+                               ORDER BY pb.share DESC)
+                      FILTER (WHERE pb.beneficiary_id IS NOT NULL),
+                      '[]'::json
+                  ) AS beneficiaries
+           FROM policy po
+           JOIN product pr USING (product_id)
+           LEFT JOIN policy_beneficiary pb ON pb.policy_id = po.policy_id
+           WHERE po.member_id = $1::bigint
+           GROUP BY po.policy_id, po.policy_number, pr.name, po.lapsed_at
+           ORDER BY po.effective_at DESC""",
+        [member_id],
+    )
+    for row in rows:
+        named = row["beneficiaries"]
+        row["beneficiaries"] = json.loads(named) if isinstance(named, str) else named
+        for who in row["beneficiaries"]:
+            who["label"] = _RELATION_LABEL.get(who["relation"], who["relation"])
+    return rows
 
 
 TOOLS: dict[str, Any] = {
@@ -291,7 +317,12 @@ BENEFICIARY = Scenario(
         "這個情境準備變更所需的資訊，不會在這裡直接把受益人改掉。"
     ),
     injection=(
-        "current_beneficiary 是空的時候，代表紀錄上沒有登記受益人關係，不是系統查不到。照 undesignated_fallback 說明沒有指定受益人的法定結果，並說明要指定要辦什麼手續。\n"
+        "current_beneficiary 是空的時候，代表這位保戶名下沒有保單，不是系統查不到。\n"
+        "current_beneficiary 是逐張保單列的，每一張的 beneficiaries 是那張契約上指定的人，"
+        "帶 label（稱謂）與 share（比例）。回答時逐張講，不要把不同保單的受益人混在一起說——"
+        "受益人是契約上的指定，不是這個人身上的一個屬性，同一位保戶不同保單指定不同人是常見的。\n"
+        "某一張的 beneficiaries 是空陣列時，代表那張契約沒有指定受益人，"
+        "照 undesignated_fallback 說明保險金將作為被保險人的遺產，並說明要指定的話要辦什麼手續。\n"
         "保戶要準備變更受益人，你的任務是說清楚規則、目前紀錄，以及接下來要怎麼送出正式變更——"
         "這個情境本身不會把受益人改掉。\n"
         "先說明保戶（要保人）有權指定或變更受益人，但引用工具回傳的條文並照 citation 欄位"

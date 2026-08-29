@@ -97,19 +97,66 @@ def test_readable_formats_111_ii_the_way_it_is_cited():
 
 
 async def test_current_beneficiary_reads_the_members_real_recorded_relation(db):
-    facts = await current_beneficiary(db, LEGAL_HEIR_MEMBER_ID)
-    assert facts == {"relation": "legal_heir", "label": "法定繼承人"}
+    rows = await current_beneficiary(db, LEGAL_HEIR_MEMBER_ID)
+    assert rows, "a member holding policies returned no designation rows at all"
+    for row in rows:
+        assert row["policy_number"], row
+        assert isinstance(row["beneficiaries"], list)
+        for who in row["beneficiaries"]:
+            assert who["label"], who
+            assert 0 < who["share"] <= 100
+
+
+async def test_a_designation_is_per_contract_and_can_name_several(db):
+    """
+    A beneficiary is not a property of a person.
+
+    This read `member.beneficiary_relation`, one code on the customer, while 保險法 §110 to
+    §113 are entirely about a designation on a contract — which there can be several of,
+    with shares between them. The scenario was answering from a field that could not
+    express what any of those provisions describe.
+    """
+    split = await db.fetch(
+        """SELECT policy_id, count(*) AS named, sum(share) AS total
+           FROM policy_beneficiary GROUP BY policy_id HAVING count(*) > 1 LIMIT 5"""
+    )
+    if not split:
+        pytest.skip("no contract names more than one beneficiary")
+    for row in split:
+        assert row["total"] == 100, f"shares on one contract must add up: {row}"
+    named = await db.fetch(
+        """SELECT policy_id, array_agg(relation) AS relations FROM policy_beneficiary
+           GROUP BY policy_id HAVING count(*) > 1"""
+    )
+    for row in named:
+        assert len(set(row["relations"])) == len(row["relations"]), (
+            f"one contract names the same relation twice: {row} — a person has one spouse"
+        )
+
+
+async def test_a_contract_naming_nobody_comes_back_empty_rather_than_missing(db):
+    # 保險法 §113 is the whole point of this scenario, so a policy with no designation must
+    # be a row with an empty list — not an absent row a reply would silently skip.
+    bare = await db.fetch_val(
+        """SELECT po.member_id FROM policy po
+           WHERE NOT EXISTS (SELECT 1 FROM policy_beneficiary WHERE policy_id = po.policy_id)
+           LIMIT 1"""
+    )
+    if bare is None:
+        pytest.skip("every policy names somebody")
+    rows = await current_beneficiary(db, int(bare))
+    assert any(not r["beneficiaries"] for r in rows), "the undesignated contract vanished"
 
 
 async def test_current_beneficiary_missing_member_returns_empty(db):
-    assert await current_beneficiary(db, 0) == {}
+    assert await current_beneficiary(db, 0) == []
 
 
 async def test_gather_includes_designation_and_current_state_when_identity_is_present(db):
     facts = await gather(db, {"concern": "我離婚了要換人"}, member_id=LEGAL_HEIR_MEMBER_ID)
     assert facts["designation_rules"]
     assert facts["undesignated_fallback"]
-    assert facts["current_beneficiary"] == {"relation": "legal_heir", "label": "法定繼承人"}
+    assert isinstance(facts["current_beneficiary"], list)
     assert isinstance(facts["list_policies"], list)
 
 
