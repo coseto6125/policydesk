@@ -32,6 +32,7 @@ from msgspec import DecodeError, json
 
 from policydesk.agent import memory, statute, tools
 from policydesk.agent.scenario import (
+    ASKED_ALREADY,
     BY_NAME,
     CATALOGUE,
     OPENERS,
@@ -535,7 +536,8 @@ async def run_turn(
             "而你自己憑印象講的天數或金額沒有任何東西可以查證。\n"
             "一旦他問到自己的保單、保費、保額、理賠或投保規劃，就需要先核對身分——"
             "那時再請他提供身分證字號，不要提早要。\n"
-            "任何情況下都不要猜測或編造他的保單內容。\n\n"
+            "任何情況下都不要猜測或編造他的保單內容。\n"
+            + ASKED_ALREADY + "\n"
         )
     past = f"{known}{profile}{memory.transcript(messages[:-1])}"
 
@@ -550,15 +552,17 @@ async def run_turn(
         return turn
 
     if scenario is None:
-        # A chip repeating what was just asked is one tap to the same answer. Measured on a
-        # live turn: 理賠要準備哪些文件？ was offered right under a reply to 住院四天要準備
-        # 什麼理賠文件？.
-        turn.quick_replies = tuple(c for c in turn.quick_replies if not _echoes(c, text)) or turn.quick_replies
         if not confirmed:
             # The chips a refused customer sees must be things this desk can still answer.
             # `OPENERS` is four questions about their own book, so offering them right after
             # 請提供身分證字號 hands back the question that was just refused.
             turn.quick_replies = PUBLIC_OPENERS
+        # Filtered after the swap, not before it. The echo filter used to run on the line
+        # above and have its result thrown away by `PUBLIC_OPENERS` — so it protected every
+        # path except the one where a refused customer is handed a fixed list, which is
+        # exactly where a stale chip lands. Measured: 你們有哪些商品？ came back as a chip
+        # under the third reply to that same question.
+        turn.quick_replies = _fresh(turn.quick_replies, _asked(messages))
         # The router answers directly when nothing fits — `ROUTER_INSTRUCTIONS` says so in
         # as many words — and that answer used to be the one reply nothing checked. It has
         # no tools behind it, so no clause id is allowed and any citation in it is one the
@@ -576,7 +580,7 @@ async def run_turn(
         turn.awaiting_identity = True
 
     turn.scenario = scenario.name
-    turn.quick_replies = scenario.quick_replies or OPENERS
+    turn.quick_replies = _fresh(scenario.quick_replies or OPENERS, _asked(messages))
     turn.procedure_hint = text
     turn.params = params
     facts = await _gather(db, scenario, turn, today=today, params=params, confirmed=confirmed, index=index)
@@ -635,6 +639,42 @@ async def run_turn(
         return turn
     turn.reply = completion.text
     return turn
+
+
+def _asked(messages: list[dict[str, Any]]) -> list[str]:
+    """
+    List what the customer has said this session.
+
+    Args:
+        messages: The window `memory.recent` returned, newest last.
+
+    Returns:
+        Their own lines, including the one being answered now.
+
+    A chip is stale against the whole conversation, not against the last sentence. The
+    customer who asks 你們有什麼壽險可以保 and then twice 那我適合哪一張 was offered
+    你們有哪些商品？ under the third reply — the first question, answered two turns
+    earlier, handed back as a suggestion.
+
+    """
+    return [m["text"] for m in messages if m["speaker"] == "customer"]
+
+
+def _fresh(chips: tuple[str, ...], said: list[str]) -> tuple[str, ...]:
+    """
+    Drop the chips that repeat a question already asked.
+
+    Args:
+        chips: The offered questions.
+        said: Everything the customer has said.
+
+    Returns:
+        The chips that are still new, or all of them when none is — an empty chip row
+        is worse than a stale one, because a customer who does not know what to ask
+        then has nowhere to start.
+
+    """
+    return tuple(c for c in chips if not any(_echoes(c, s) for s in said)) or chips
 
 
 def _echoes(chip: str, text: str) -> bool:

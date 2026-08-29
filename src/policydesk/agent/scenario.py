@@ -23,12 +23,32 @@ from policydesk.agent.scenario_base import Emit, Param, Scenario, tool_schema
 __all__ = ["BY_NAME", "CATALOGUE", "IDENTITY_PENDING", "OPENERS", "PUBLIC_OPENERS", "ROUTER_INSTRUCTIONS", "WRITING", "Emit", "Param", "Scenario", "tool_schema"]
 
 
+ASKED_ALREADY = (
+    "上一輪你已經請他提供身分證字號、而他又問了同一件事時，不要把同一句話再講一次。\n"
+    "先把材料裡還沒講完的公開內容講完，或具體說出核對之後第一件會為他查什麼，"
+    "再用一句話帶到身分證字號，不要整段都在要資料。\n"
+)
+"""What to do when the refusal has already been given once.
+
+Measured on three live turns: 你們有什麼壽險可以保 was answered and ended with 請提供您的
+身分證字號; 那我適合哪一張 was answered with nothing but that request; and the same question
+again drew the same request in fewer words. A customer who repeats a question is telling the
+desk the last answer did not land, and repeating it more briefly is the desk saying less each
+time it is asked.
+
+Read by both paths that can refuse — the scenario one through `IDENTITY_PENDING`, and the
+router's free answer through `executor`'s own unverified block, which is where the third of
+those three turns was written.
+"""
+
+
 IDENTITY_PENDING = (
     "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料。\n"
     "材料裡有公開資訊（商品目錄、法規條文這類對誰都一樣的東西）時，先照那些內容把他問得到的部分答完。\n"
     "材料裡沒有任何公開資訊時，不要補一段商品介紹上去——直接說這個問題要查他名下的資料，"
     "並具體說明核對身分之後你可以為他查到什麼。\n"
     "接著請他提供身分證字號。\n"
+    + ASKED_ALREADY +
     "不要憑空講任何關於他保單、保費、保額或理賠的內容，也不要憑你自己的知識描述本公司賣什麼商品："
     "本公司賣什麼只能照材料裡的商品目錄講。"
 )
