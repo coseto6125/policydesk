@@ -233,6 +233,11 @@ class EmbeddingRetriever:
         vector = self._embedder.encode([query])[0]
         scores = np.asarray(self._vectors[rows], dtype=np.float32) @ vector
         take = min(limit, scores.shape[0])
+        if take <= 0:
+            # `[-0:]` is `[0:]`, so a limit of zero returned the whole corpus in an
+            # arbitrary order rather than nothing. No caller passes 0 today; the negation
+            # of a slice bound is not a thing the next one should have to notice.
+            return []
         # argpartition finds the k largest in O(n); argsort then orders just those k.
         top = np.argpartition(scores, -take)[-take:]
         top = top[np.argsort(scores[top])[::-1]]

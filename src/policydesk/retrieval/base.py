@@ -166,6 +166,11 @@ def rrf(
     for entry in rankings:
         name, ranking = entry if isinstance(entry, tuple) else ("", entry)
         weight = (weights or {}).get(name, 1.0)
+        if weight <= 0:
+            # Zero reads as "switch this channel off for this corpus", and without this it
+            # means "rank it last": its documents still enter `fused` at score 0.0 and
+            # still occupy slots the other channel would have filled.
+            continue
         for position, hit in enumerate(ranking):
             key = (hit.scope_id, hit.doc_id)
             fused[key] = fused.get(key, 0.0) + weight / (k + position + 1)

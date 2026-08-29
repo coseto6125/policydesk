@@ -280,3 +280,23 @@ def test_the_weighted_hybrid_reaches_what_only_one_channel_can(index):
         pytest.skip("no vectors built")
     hits = HybridRetriever([index, semantic]).search("換工作會不會影響保險", corpus=CLAUSE, scope=(), limit=3)
     assert hits, "the hybrid returned nothing for a question the corpus answers"
+
+
+def test_a_zero_weight_switches_a_channel_off_rather_than_ranking_it_last():
+    # Without the guard the zero-weighted channel's documents still enter the fusion at
+    # score 0.0 and still take slots. Nothing in WEIGHTS is zero, so this guards the
+    # reading rather than the behaviour: the next person writing 0.0 means "off".
+    from policydesk.retrieval.base import CLAUSE, Hit, rrf
+
+    kept = [Hit(corpus=CLAUSE, doc_id="a", scope_id="p", score=1.0)]
+    dropped = [Hit(corpus=CLAUSE, doc_id="b", scope_id="p", score=9.0)]
+    fused = rrf([("bm25", dropped), ("embedding", kept)], limit=4, weights={"bm25": 0.0, "embedding": 1.0})
+    assert [h.doc_id for h in fused] == ["a"]
+
+
+def test_a_limit_of_zero_returns_nothing_rather_than_everything(index):
+    # `[-0:]` is `[0:]`. The lexical channel is asserted here too, so the two channels
+    # cannot disagree about what a limit of zero means.
+    from policydesk.retrieval.base import STATUTE
+
+    assert index.search("復效", corpus=STATUTE, limit=0) == []

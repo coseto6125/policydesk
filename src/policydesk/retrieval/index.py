@@ -387,7 +387,11 @@ class BM25Retriever:
         limit on documents they will never be shown.
 
         """
-        if not query.strip():
+        if limit <= 0 or not query.strip():
+            # tantivy's top-score collector panics on a limit of zero — a PanicException
+            # out of the Rust layer, which is not something a caller catches. The semantic
+            # channel answers the same question with an empty list, and two channels
+            # disagreeing about what zero means is a disagreement nobody sees.
             return []
 
         must: list[tuple[Any, Any]] = [
