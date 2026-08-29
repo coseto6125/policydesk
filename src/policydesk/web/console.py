@@ -16,6 +16,16 @@ are the operator's own bill and latency budget. Scoping them to a member would a
 "what did this one customer cost" and hide the question actually being asked, which is
 what the deployment spends. They sit behind the same desk token as everything else here,
 because the trace carries the prompts, and the prompts carry the customer.
+
+**Say plainly what that token is worth: nothing, against anyone who can load the page.**
+`GET /` substitutes `DESK_TOKEN` into `index.html` for every visitor, because the demo
+puts both panes on one page on purpose — the point is watching the desk work beside the
+chat. So the token stops a scan of the port and stops nothing else, and a comment claiming
+otherwise is worse than no comment, because the next reader stops checking.
+
+What would make it a boundary is a second route the customer pane never reaches, setting
+an HttpOnly cookie the customer pane never receives. That is a different product from the
+one asked for, so it is a decision rather than a fix.
 """
 
 from datetime import UTC, datetime
@@ -66,6 +76,12 @@ async def _require_desk_token(request: Request):
     the profile carries a national ID, and the trace carries the prompt those went into.
     The desk socket is guarded for exactly this reason and these are the same rows over
     HTTP, so they take the same guard.
+
+    The guard is worth what the token is worth, which is nothing against a reader of the
+    page: `GET /` hands the token to every visitor. See this module's own docstring. This
+    check earns its place as the thing that fails closed when the page is not involved —
+    a request with no token, from a scanner or a stale bookmark, gets 403 rather than a
+    national ID.
 
     The import is deferred because `server` imports this blueprint at module scope: the
     same import at the top of this file would run while `server` is still half-executed
