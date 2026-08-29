@@ -1274,7 +1274,7 @@ function renderPolicies(policies, c) {
   $("policyTable").innerHTML = policies.length ? policies.map(p => `
     <tr class="${live(p) ? "" : "lapsed"}">
       <td class="pnum">${esc(p.policy_number)}</td>
-      <td><a class="pname" href="/contract/${encodeURIComponent(p.product_id)}?member=${memberId}" target="_blank" title="開啟這張保單的契約條款">${esc(p.product_name)}</a>${
+      <td><a class="pname" href="/contract/${encodeURIComponent(p.product_id)}?member=${memberId}&token=${encodeURIComponent(DESK_TOKEN)}" target="_blank" title="開啟這張保單的契約條款">${esc(p.product_name)}</a>${
         p.main_policy_number ? `<br><span class="rider">主約 ${esc(p.main_policy_number)}</span>` : ""}</td>
       <td class="num">${money(p.sum_insured)}</td>
       <td class="num">${money(p.annual_premium)}</td>
@@ -1334,7 +1334,7 @@ function renderCitations(cited) {
   box.className = "cites";
   box.innerHTML = `<span class="label">引用條款</span>` + cited.map(c => `
     <a class="cite" target="_blank"
-       href="/clause/${encodeURIComponent(c.product_id)}/${encodeURIComponent(c.clause_id)}?member=${memberId}"
+       href="/clause/${encodeURIComponent(c.product_id)}/${encodeURIComponent(c.clause_id)}?member=${memberId}&token=${encodeURIComponent(DESK_TOKEN)}"
        title="${esc(c.product_name)} 第 ${c.page} 頁">
       <code>${esc(c.clause_id)}</code><span>${esc(c.heading)}</span>
     </a>`).join("");

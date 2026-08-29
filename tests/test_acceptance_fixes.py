@@ -91,12 +91,16 @@ def test_document_route_requires_the_same_token_as_the_desk():
     integers walk every member's personal data — which a code review demonstrated by
     curling /doc/1 and reading 陳大文's ID off the page.
     """
-    from pathlib import Path
+    from types import SimpleNamespace
 
-    source = Path("src/policydesk/web/server.py").read_text()
-    doc_route = source[source.index('@app.get("/doc/'):source.index('@app.get("/health")')]
-    assert "DESK_TOKEN" in doc_route, "the document route must be gated like the desk socket"
-    assert "403" in doc_route
+    from policydesk.web.server import DESK_TOKEN, _unauthorised
+
+    def request(token: str) -> object:
+        return SimpleNamespace(args={"token": token}, ip="1.2.3.4")
+
+    assert _unauthorised(request(""), "document") is not None, "an unguarded route walks every ID"
+    assert _unauthorised(request("wrong"), "document") is not None
+    assert _unauthorised(request(DESK_TOKEN), "document") is None, "the desk must still get through"
 
 
 def test_both_signing_parties_are_required():

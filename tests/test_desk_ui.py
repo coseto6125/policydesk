@@ -70,3 +70,23 @@ def test_the_queue_answers_the_keyboard():
 
 def test_reduced_motion_is_honoured():
     assert "@media (prefers-reduced-motion: reduce)" in PAGE
+
+
+def test_the_contract_routes_are_guarded_like_the_document_route():
+    # 200 for a holding and 404 for a miss is an oracle: 48 members by 660 products maps
+    # who holds what, from anywhere that can reach the port, with `?member=` as the only
+    # authorisation and the requester choosing it. The document route already carried this
+    # reasoning; these three did not.
+    source = Path("src/policydesk/web/server.py").read_text()
+    for route in ("clause_page", "contract", "contract_page", "download_document"):
+        at = source.index(f"async def {route}(")
+        body = source[at:source.index("\n@app.", at) if "\n@app." in source[at:] else len(source)]
+        assert "_unauthorised(request" in body[:2000], f"{route} answers an id without a token"
+
+
+def test_every_link_the_page_builds_carries_the_token():
+    # A guarded route the page calls without the token is a feature that 403s in the demo.
+    page = Path("src/policydesk/web/static/index.html").read_text()
+    for link in ("/contract/${encodeURIComponent(p.product_id)}", "/clause/${encodeURIComponent(c.product_id)}"):
+        at = page.index(link)
+        assert "token=" in page[at:at + 260], f"{link} is built without a token"
