@@ -266,3 +266,32 @@ def test_only_the_open_tab_fetches():
     """
     assert "LOAD[key]?.()" in PAGE
     assert "clearInterval(livePoll)" in PAGE
+
+
+def test_the_profile_tab_shows_the_service_history_not_only_the_contract():
+    """
+    The pane was built before `premium_payment`, `policy_beneficiary` and `claim` existed.
+
+    A caseworker opening a customer saw what they bought and nothing about what has happened
+    since — no premium behind or ahead, nobody named on the contract, no claim in flight.
+    Those are the three things a customer is most likely to be ringing about.
+    """
+    source = Path("src/policydesk/web/console.py").read_text()
+    body = source[source.index("async def profile("):source.index("async def llm_list(")]
+    for table in ("premium_payment", "policy_beneficiary", "claim c"):
+        assert table in body, f"the profile endpoint never reads {table}"
+
+    page = Path("src/policydesk/web/static/index.html").read_text()
+    for slot in ("profilePayments", "profileBeneficiaries", "profileClaims"):
+        assert page.count(slot) >= 2, f"{slot} has no cell and no renderer"
+
+
+def test_a_claim_with_no_outcome_is_shown_as_a_stage_not_a_verdict():
+    # `outcome` is NULL for most claims and means still being assessed. A pane that inferred
+    # a verdict from the stage would put a decision on screen that nobody made — the same
+    # rule the scenario follows, applied where the caseworker reads it.
+    page = Path("src/policydesk/web/static/index.html").read_text()
+    body = page[page.index("function claimState("):page.index("async function loadProfile(")]
+    assert "if (c.outcome)" in body, "the outcome must gate the verdict wording"
+    assert "審核中" in body
+    assert "never inferred from" in body, "the reason belongs beside the branch"

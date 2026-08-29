@@ -948,6 +948,27 @@
             </table></div>
           </div>
           <div class="card">
+            <header><h3>繳費紀錄 premium_payment</h3><span class="spacer"></span><span class="count" id="payCount"></span></header>
+            <div class="body flush scroll-x"><table style="min-width:430px">
+              <thead><tr><th style="width:96px">應繳日</th><th style="width:96px">實繳日</th><th style="width:84px" class="num">金額</th><th>保單號碼</th></tr></thead>
+              <tbody id="profilePayments"><tr><td colspan="4" class="empty">尚無繳費紀錄</td></tr></tbody>
+            </table></div>
+          </div>
+          <div class="card">
+            <header><h3>受益人 policy_beneficiary</h3><span class="spacer"></span><span class="count" id="benCount"></span></header>
+            <div class="body flush scroll-x"><table style="min-width:380px">
+              <thead><tr><th>保單號碼</th><th style="width:88px">稱謂</th><th style="width:62px" class="num">比例</th><th style="width:92px">指定日</th></tr></thead>
+              <tbody id="profileBeneficiaries"><tr><td colspan="4" class="empty">名下保單均未指定受益人</td></tr></tbody>
+            </table></div>
+          </div>
+          <div class="card">
+            <header><h3>理賠 claim</h3><span class="spacer"></span><span class="count" id="claimCount"></span></header>
+            <div class="body flush scroll-x"><table style="min-width:470px">
+              <thead><tr><th style="width:52px">案號</th><th style="width:78px">類別</th><th style="width:92px">事故日</th><th style="width:104px">狀態</th><th style="width:88px" class="num">已賠</th><th>保單號碼</th></tr></thead>
+              <tbody id="profileClaims"><tr><td colspan="6" class="empty">尚無理賠案件</td></tr></tbody>
+            </table></div>
+          </div>
+          <div class="card">
             <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-history"/></svg>抽取記憶 member_fact</h3><span class="spacer"></span><span class="count" id="factCount"></span></header>
             <div class="body"><div class="facts" id="profileFacts"><div class="empty">尚未抽取</div></div></div>
           </div>
@@ -1780,6 +1801,24 @@ $("inboxList").addEventListener("keydown", (e) => {
 
 /* ── 客戶資料 ── */
 
+const CLAIM_KIND = {
+  hospital: "住院", surgery: "手術", accident: "意外", disability: "失能",
+  death: "身故", specific_illness: "特定傷病",
+};
+
+/** A claim's state as one phrase: an outcome when it has one, the stage while it does not. */
+function claimState(c) {
+  if (c.outcome) {
+    const said = { paid: "已核付", partial: "部分給付", declined: "未受理" }[c.outcome] ?? c.outcome;
+    const tone = c.outcome === "declined" ? "var(--flag)" : "var(--good)";
+    return `<span style="color:${tone}">${said}</span>`;
+  }
+  // `outcome` is NULL for most claims and means still being assessed — never inferred from
+  // the stage, which is why 待補件 and 審核中 read as states rather than as verdicts.
+  const said = { received: "已收件", documents_pending: "待補件", assessing: "審核中" }[c.stage] ?? c.stage;
+  return `<span class="none">${said}</span>`;
+}
+
 async function loadProfile() {
   const box = $("profileKv");
   if (memberId === null) {
@@ -1821,6 +1860,38 @@ async function loadProfile() {
         <td class="num">${money(p.annual_premium)}</td>
         <td class="mono">${esc(p.effective_at)}</td>
       </tr>`).join("") : `<tr><td colspan="5" class="empty">尚無保單</td></tr>`;
+
+    // An unpaid instalment is the row a caseworker is looking for, so it sorts first and is
+    // marked — the API already orders `paid_at IS NOT NULL` ahead of the date.
+    const owed = d.payments.filter(p => !p.paid_at).length;
+    $("payCount").textContent = owed ? `${owed} 期未繳 / ${d.payments.length}` : d.payments.length || "";
+    $("profilePayments").innerHTML = d.payments.length ? d.payments.map(p => `
+      <tr${p.paid_at ? "" : ` style="background:color-mix(in oklab, var(--flag) 10%, transparent)"`}>
+        <td class="mono">${esc(String(p.due_at))}</td>
+        <td class="mono">${p.paid_at ? esc(String(p.paid_at)) : `<span class="none">未繳</span>`}</td>
+        <td class="num mono">${money(p.amount)}</td>
+        <td class="mono tight">${esc(p.policy_number)}</td>
+      </tr>`).join("") : `<tr><td colspan="4" class="empty">尚無繳費紀錄</td></tr>`;
+
+    $("benCount").textContent = d.beneficiaries.length || "";
+    $("profileBeneficiaries").innerHTML = d.beneficiaries.length ? d.beneficiaries.map(b => `
+      <tr>
+        <td class="mono tight">${esc(b.policy_number)}</td>
+        <td>${esc(b.relation)}</td>
+        <td class="num mono">${b.share}%</td>
+        <td class="mono">${esc(String(b.designated_at))}</td>
+      </tr>`).join("") : `<tr><td colspan="4" class="empty">名下保單均未指定受益人</td></tr>`;
+
+    $("claimCount").textContent = d.claims.length || "";
+    $("profileClaims").innerHTML = d.claims.length ? d.claims.map(c => `
+      <tr>
+        <td class="mono">#${c.claim_id}</td>
+        <td>${esc(CLAIM_KIND[c.kind] ?? c.kind)}</td>
+        <td class="mono">${esc(String(c.event_at))}</td>
+        <td>${claimState(c)}</td>
+        <td class="num mono">${c.paid_amount ? money(c.paid_amount) : `<span class="none">—</span>`}</td>
+        <td class="mono tight">${esc(c.policy_number)}</td>
+      </tr>`).join("") : `<tr><td colspan="6" class="empty">尚無理賠案件</td></tr>`;
 
     $("factCount").textContent = d.facts.length || "";
     $("profileFacts").innerHTML = d.facts.length ? d.facts.map(f => `
