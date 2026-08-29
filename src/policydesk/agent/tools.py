@@ -13,6 +13,7 @@ lookup rather than reaching a customer.
 """
 
 import asyncio
+import re
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +26,49 @@ if TYPE_CHECKING:
     from datetime import date
 
     from policydesk.core.db import Database
+
+
+_UNIT = re.compile(r"每\s*(?:日\s*)?([\d,]+)\s*(萬|)元")
+"""How a `catalog_entry.unit_label` states its unit: 每 100 萬元保額, 每日 1,000 元住院日額."""
+
+UNITS_PER_LABEL = 1000
+"""`policy.sum_insured` counts thousandths of one `unit_label` unit.
+
+Not a convention anybody wrote down, and it took a live reply to find. `billing_summary`
+computes `unit_premium * sum_insured / 1000.0`, and `unit_premium` is the annual cost of
+exactly one unit — so 3000 against 每 100 萬元保額 is three units, or 300 萬元 of cover.
+The desk was quoting the 3000.
+"""
+
+
+def insured_amount(sum_insured: int | None, unit_label: str | None) -> str:
+    """
+    Render what a policy actually covers, in the words a customer reads.
+
+    Args:
+        sum_insured: The raw count from `policy`.
+        unit_label: The product's unit, from `catalog_entry`.
+
+    Returns:
+        e.g. `300 萬元`, `每日 1,500 元`, or `3 單位` when the label states no amount.
+
+    A bare 3000 in front of a customer is a wrong figure, not an unlabelled one — measured
+    on a live reply, where 保險金額：1000 was 100 萬元 of cover written as a thousand dollars.
+    The unit lives one table away in `catalog_entry`, which is why it kept being left
+    behind; `list_policies` now carries it so this can be called wherever the figure is
+    shown.
+
+    """
+    if not sum_insured:
+        return "0"
+    units = sum_insured / UNITS_PER_LABEL
+    if not unit_label or not (found := _UNIT.search(unit_label)):
+        return f"{units:,.10g} 單位"
+    amount = units * int(found.group(1).replace(",", ""))
+    daily = "每日 " if "日" in unit_label else ""
+    if found.group(2) == "萬":
+        return f"{daily}{amount:,.10g} 萬元"
+    return f"{daily}{amount:,.0f} 元"
 
 
 def requires_identity(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -126,19 +170,26 @@ async def list_policies(db: Database, member_id: int, *, today: date) -> list[di
         orphan rider unrepresentable, so a check for one could only ever return false.
 
     """
-    return await db.fetch(
-        """SELECT po.policy_id, po.policy_number, po.sum_insured, po.effective_at, po.lapsed_at,
+    rows = await db.fetch(
+        """SELECT po.policy_id, po.policy_number, po.sum_insured, ce.unit_label,
+                  po.effective_at, po.lapsed_at,
                   main.policy_number AS main_policy_number,
                   pr.name AS product_name, pr.product_id, pr.attachment,
                   ($1::date - po.effective_at) AS days_in_force,
                   (po.lapsed_at IS NOT NULL AND po.lapsed_at <= $1::date) AS is_lapsed
            FROM policy po
            JOIN product pr USING (product_id)
+           LEFT JOIN catalog_entry ce USING (product_id)
            LEFT JOIN policy main ON main.policy_id = po.main_policy_id
            WHERE po.member_id = $2::bigint
            ORDER BY po.effective_at DESC""",
         [today, member_id],
     )
+    for row in rows:
+        # Rendered here, once, so no caller has to know that `sum_insured` counts
+        # thousandths of a unit named in another table.
+        row["insured"] = insured_amount(row.get("sum_insured"), row.get("unit_label"))
+    return rows
 
 
 async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict[str, Any]]:
@@ -488,10 +539,12 @@ async def standing_brief(db: Database, member_id: int, *, today: date) -> dict[s
     age = insurance_age(member["birth_date"], today)
     policies, floors = await asyncio.gather(
         db.fetch(
-            """SELECT po.policy_number, po.sum_insured, po.effective_at, po.lapsed_at,
+            """SELECT po.policy_number, po.sum_insured, ce.unit_label,
+                      po.effective_at, po.lapsed_at,
                       pr.product_id, pr.name AS product_name, pr.line,
                       (po.lapsed_at IS NULL OR po.lapsed_at > $2::date) AS in_force
                FROM policy po JOIN product pr USING (product_id)
+               LEFT JOIN catalog_entry ce USING (product_id)
                WHERE po.member_id = $1::bigint
                ORDER BY po.main_policy_id NULLS FIRST, po.policy_id""",
             [member_id, today],
@@ -523,7 +576,7 @@ async def standing_brief(db: Database, member_id: int, *, today: date) -> dict[s
             {
                 "保單號碼": p["policy_number"],
                 "商品": p["product_name"],
-                "保險金額": p["sum_insured"],
+                "保險金額": insured_amount(p["sum_insured"], p.get("unit_label")),
                 "狀態": "有效" if p["in_force"] else "已停效",
                 "給付項目": by_product.get(p["product_id"], [])[:8],
             }
@@ -648,7 +701,7 @@ async def coverage_summary(db: Database, member_id: int, *, today: date) -> list
         how a customer is told they can claim an amount they cannot.
 
     """
-    return await db.fetch(
+    rows = await db.fetch(
         """SELECT pr.name AS product_name, po.sum_insured, po.policy_number, ce.unit_label
            FROM policy po JOIN product pr USING (product_id)
            LEFT JOIN catalog_entry ce USING (product_id)
@@ -657,6 +710,9 @@ async def coverage_summary(db: Database, member_id: int, *, today: date) -> list
            ORDER BY po.sum_insured DESC""",
         [member_id, today],
     )
+    for row in rows:
+        row["insured"] = insured_amount(row.get("sum_insured"), row.get("unit_label"))
+    return rows
 
 
 @requires_identity

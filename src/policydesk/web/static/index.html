@@ -833,7 +833,7 @@
       <div class="kpis" id="kpis" hidden>
         <div class="kpi"><span class="k">有效保單</span><span class="v" id="kpiActive">—</span></div>
         <div class="kpi"><span class="k">年繳保費</span><span class="v" id="kpiPremium">—</span></div>
-        <div class="kpi"><span class="k">保險金額合計</span><span class="v" id="kpiSum">—</span></div>
+        <div class="kpi"><span class="k">有效保單</span><span class="v" id="kpiSum">—</span></div>
         <div class="kpi" id="kpiTodoBox"><span class="k">待辦</span><span class="v" id="kpiTodo">—</span></div>
       </div>
 
@@ -1264,7 +1264,7 @@ function renderPolicies(policies, c) {
   $("kpis").hidden = policies.length === 0;
   $("kpiActive").innerHTML = `${active.length}<small>張 / 共 ${policies.length}</small>`;
   $("kpiPremium").innerHTML = `${money(active.reduce((t, p) => t + Number(p.annual_premium || 0), 0))}<small>元</small>`;
-  $("kpiSum").innerHTML = `${money(active.reduce((t, p) => t + Number(p.sum_insured || 0), 0))}<small>元</small>`;
+  $("kpiSum").innerHTML = `${active.length}<small>張有效</small>`;
   const todo = (c.documents ?? []).filter(d => !d.signed_at).length;
   $("kpiTodo").innerHTML = todo ? `${todo}<small>項</small>` : `0<small>項</small>`;
   $("kpiTodoBox").classList.toggle("alert", todo > 0);
@@ -1276,7 +1276,7 @@ function renderPolicies(policies, c) {
       <td class="pnum">${esc(p.policy_number)}</td>
       <td><a class="pname" href="/contract/${encodeURIComponent(p.product_id)}?member=${memberId}&token=${encodeURIComponent(DESK_TOKEN)}" target="_blank" title="開啟這張保單的契約條款">${esc(p.product_name)}</a>${
         p.main_policy_number ? `<br><span class="rider">主約 ${esc(p.main_policy_number)}</span>` : ""}</td>
-      <td class="num">${money(p.sum_insured)}</td>
+      <td class="num">${esc(p.insured ?? String(p.sum_insured ?? ""))}</td>
       <td class="num">${money(p.annual_premium)}</td>
       <td class="mono">${esc(p.effective_at)}</td>
       <td>${live(p) ? PILLS.ok("有效") : PILLS.no("已停效")}</td>
@@ -1817,7 +1817,7 @@ async function loadProfile() {
       <tr class="${!p.lapsed_at ? "" : "lapsed"}">
         <td class="pnum">${esc(p.policy_number)}</td>
         <td>${esc(p.product_name)}${p.main_policy_number ? `<br><span class="rider">主約 ${esc(p.main_policy_number)}</span>` : ""}</td>
-        <td class="num">${money(p.sum_insured)}</td>
+        <td class="num">${esc(p.insured ?? String(p.sum_insured ?? ""))}</td>
         <td class="num">${money(p.annual_premium)}</td>
         <td class="mono">${esc(p.effective_at)}</td>
       </tr>`).join("") : `<tr><td colspan="5" class="empty">尚無保單</td></tr>`;

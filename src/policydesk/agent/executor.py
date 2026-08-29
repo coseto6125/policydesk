@@ -425,7 +425,7 @@ def _render(scenario: Scenario, facts: dict[str, Any]) -> str:
             )
         case "coverage":
             rows = facts.get("coverage_summary") or []
-            lines = "\n".join(f"　{r['product_name']}（{r['policy_number']}）：{r['sum_insured']:,} 元" for r in rows)
+            lines = "\n".join(f"　{r['product_name']}（{r['policy_number']}）：{r['insured']}" for r in rows)
             return scenario.template.format(lines=lines or "　（查無有效保單）")
         case _:
             # A template reaching here with a placeholder in it renders the braces to the
