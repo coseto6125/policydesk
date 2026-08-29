@@ -316,3 +316,45 @@ async def test_the_document_template_counts_what_is_actually_unsigned(db):
     got = await tools.pending_signatures(db, row["case_id"])
     assert got["count"] == row["waiting"]
     assert got["names"].count("\n") + 1 == got["count"] or not got["count"]
+
+
+def test_an_insured_amount_is_never_shown_as_a_bare_unit_count():
+    """
+    保險金額：1000 reached a customer, and it meant 100 萬元.
+
+    `policy.sum_insured` counts thousandths of a unit whose size lives in
+    `catalog_entry.unit_label`, one table away — which is why the unit kept being left
+    behind. `billing_summary` knew the rule (`unit_premium * sum_insured / 1000.0`) and
+    nothing that showed the figure did.
+    """
+    from policydesk.agent.tools import insured_amount
+
+    assert insured_amount(3000, "每 100 萬元保額") == "300 萬元"
+    assert insured_amount(1000, "每 100 萬元保額") == "100 萬元"
+    assert insured_amount(2000, "每 10 萬元保額") == "20 萬元"
+    assert insured_amount(1500, "每日 1,000 元住院日額") == "每日 1,500 元"
+    assert insured_amount(1000, "每單位") == "1 單位"
+    assert insured_amount(None, "每單位") == "0"
+    assert insured_amount(3000, None) == "3 單位", "an unknown unit is said, not guessed at"
+
+
+@pytest.mark.asyncio
+async def test_every_tool_that_quotes_a_sum_insured_renders_it(db):
+    from datetime import date
+
+    from policydesk.agent import tools
+
+    member = await db.fetch_val(
+        "SELECT member_id FROM policy GROUP BY member_id ORDER BY count(*) DESC LIMIT 1"
+    )
+    if member is None:
+        pytest.skip("no member holds a policy")
+    today = date(2026, 8, 29)
+    for rows in (
+        await tools.list_policies(db, member, today=today),
+        await tools.coverage_summary(db, member, today=today),
+    ):
+        assert rows, "the fixture member holds nothing"
+        for row in rows:
+            assert row["insured"], f"a policy row carries no rendered amount: {row}"
+            assert "元" in row["insured"] or "單位" in row["insured"], row["insured"]
