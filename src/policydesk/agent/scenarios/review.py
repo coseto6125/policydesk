@@ -165,22 +165,40 @@ async def held_categories(db: Database, product_ids: list[str]) -> list[dict[str
     ]
 
 
-async def category_catalog(db: Database) -> list[dict[str, Any]]:
+CATALOG_FLOOR = 10
+"""How many products must carry a category before it counts as one.
+
+Without a floor the corpus yields 107 categories and 47 of them appear on exactly one
+product — 罹癌基因檢測, 燒燙傷回診, 完全失能生活扶助. Every one is a real clause heading,
+and listing all of them turns a 健檢 into a 90-line list of things the customer does not
+have, which is not a finding but a wall. At ten the list is the nineteen a 保戶 would
+recognise as categories, and a gap in it is a gap worth naming.
+
+The floor is on product count rather than on a hand-written keep-list, so a reingest that
+changes what this insurer sells changes the list with it.
+"""
+
+
+async def category_catalog(db: Database, *, floor: int | None = None) -> list[dict[str, Any]]:
     """
     List every benefit category this insurer's whole catalog recognises.
 
     Args:
         db: The database.
+        floor: Fewest products a category must appear on. None reads `CATALOG_FLOOR` at
+            call time rather than binding it as a default, so a test can move the floor
+            on a stub corpus of two products without the module's real one changing.
 
     Returns:
         One row per distinct category, named after the grant clauses that actually use
-        it, with a count of how many products carry it.
+        it, with a count of how many products carry it, commonest first.
 
     Ungated: this is what the insurer sells generally, not what any one customer holds,
     so it carries no `requires_identity` mark. What the customer holds is
     `held_categories`, and the gap between the two is the whole point of this scenario.
 
     """
+    floor = CATALOG_FLOOR if floor is None else floor
     rows = await _grant_headings(db, [])
     products_by_category: dict[str, set[str]] = {}
     for row in rows:
@@ -189,6 +207,7 @@ async def category_catalog(db: Database) -> list[dict[str, Any]]:
     return [
         {"name": name, "product_count": len(products)}
         for name, products in sorted(products_by_category.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+        if len(products) >= floor
     ]
 
 

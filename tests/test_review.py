@@ -15,7 +15,9 @@ corpus, asking for the exact names an earlier full sweep over 2,521 grant headin
 import pytest
 
 from policydesk.agent import tools
+from policydesk.agent.scenarios import review as review_module
 from policydesk.agent.scenarios.review import (
+    CATALOG_FLOOR,
     REVIEW,
     TOOLS,
     _categories_in,
@@ -106,7 +108,7 @@ async def test_held_categories_returns_empty_for_no_products(db):
     assert await held_categories(db, []) == []
 
 
-async def test_gather_names_a_category_no_policy_covers():
+async def test_gather_names_a_category_no_policy_covers(monkeypatch):
     # A member with one narrow product cannot hold every category the catalog
     # recognises, so at least one gap must come back — against a stub database that
     # needs no live corpus, only the shape `gather` reads.
@@ -139,6 +141,9 @@ async def test_gather_names_a_category_no_policy_covers():
                 ]
             raise AssertionError(sql)
 
+    # Two products in the stub, so the real floor of ten would filter the whole catalogue
+    # away and the gap this test is about would vanish for a reason that is not the gap.
+    monkeypatch.setattr(review_module, "CATALOG_FLOOR", 1)
     facts = await gather(StubDB(), {}, member_id=1)
     assert facts["policies"][0]["effectively_covered"] is True
     assert {b["name"] for b in facts["held_benefits"]} == {"住院日額"}
@@ -250,3 +255,25 @@ def test_the_scenario_module_contract_is_what_the_executor_calls():
     assert "today" in code.co_varnames
     assert "retriever" in code.co_varnames
     assert code.co_flags & 0x08, "the executor always calls with retriever= as a keyword"
+
+
+async def test_the_catalog_floor_keeps_the_categories_a_customer_would_recognise(db):
+    # Without a floor the corpus yields 107 categories, 47 of them on a single product, and
+    # every customer's gap list becomes ninety lines of things nobody sells them. The floor
+    # is on product count rather than a keep-list, so this asserts the shape it produces
+    # rather than the exact membership a reingest would change.
+    catalog = await category_catalog(db)
+    names = [c["name"] for c in catalog]
+    assert len(catalog) < 30, f"a gap list this long is a wall, not a finding: {len(catalog)}"
+    assert {"身故", "完全失能", "住院醫療"} <= set(names)
+    assert all(c["product_count"] >= CATALOG_FLOOR for c in catalog)
+    # Commonest first, so a model reading the list top-down reads the categories that
+    # matter to the most people first.
+    counts = [c["product_count"] for c in catalog]
+    assert counts == sorted(counts, reverse=True)
+
+
+async def test_a_lower_floor_admits_the_long_tail(db):
+    # The floor is the whole mechanism, so prove it is doing something rather than
+    # coinciding with the corpus.
+    assert len(await category_catalog(db, floor=1)) > 3 * len(await category_catalog(db))
