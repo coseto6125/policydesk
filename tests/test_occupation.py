@@ -15,7 +15,7 @@ one guarding that.
 """
 
 import asyncio
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -115,7 +115,7 @@ async def test_occupation_classes_is_the_real_catalogue_unfiltered():
 
 
 async def test_member_occupation_reads_the_members_real_occupation_and_ceilings(db):
-    facts = await member_occupation(db, OCCUPATION_MEMBER_ID, today=date.today())
+    facts = await member_occupation(db, OCCUPATION_MEMBER_ID, today=datetime.now(UTC).date())
     assert facts["occupation"] == "汽車修護技師"
     assert facts["occupation_class"] == 3
     assert facts["policies"], "this member's in-force policies were queried directly before writing this test"
@@ -125,7 +125,7 @@ async def test_member_occupation_reads_the_members_real_occupation_and_ceilings(
 
 
 async def test_member_occupation_missing_member_returns_empty(db):
-    assert await member_occupation(db, 0, today=date.today()) == {}
+    assert await member_occupation(db, 0, today=datetime.now(UTC).date()) == {}
 
 
 async def test_occupation_clause_empty_without_product_ids(db):
@@ -140,7 +140,7 @@ async def test_occupation_clause_reaches_the_clause_through_the_real_hybrid_retr
     # exactly the products this member holds, through the real semantic channel — not a
     # mock, since a mock cannot prove the corpus-specific fusion weighting still ranks
     # this clause first.
-    member = await member_occupation(db, OCCUPATION_MEMBER_ID, today=date.today())
+    member = await member_occupation(db, OCCUPATION_MEMBER_ID, today=datetime.now(UTC).date())
     product_ids = sorted({p["product_id"] for p in member["policies"]})
     rows = await occupation_clause(db, product_ids, concern, retriever=hybrid_retriever)
     assert rows, f"the hybrid retriever returned nothing for {concern!r}"
@@ -156,7 +156,7 @@ async def test_occupation_clause_ilike_fallback_cannot_reach_it_without_a_retrie
     # clause's own heading or verbatim, and none of `_ANCHOR`'s or the customer's words is
     # one — so with no retriever open, this member's own occupation clause is not what
     # comes back, if anything does.
-    member = await member_occupation(db, OCCUPATION_MEMBER_ID, today=date.today())
+    member = await member_occupation(db, OCCUPATION_MEMBER_ID, today=datetime.now(UTC).date())
     product_ids = sorted({p["product_id"] for p in member["policies"]})
     rows = await occupation_clause(db, product_ids, "我換工作了要通知嗎", retriever=None)
     assert all(r["heading"] != "職業或職務變更的通知義務" for r in rows)
@@ -164,7 +164,7 @@ async def test_occupation_clause_ilike_fallback_cannot_reach_it_without_a_retrie
 
 async def test_gather_returns_every_half_when_identity_is_present(db):
     facts = await gather(
-        db, {"concern": "我要去做計程車司機"}, member_id=OCCUPATION_MEMBER_ID, today=date.today()
+        db, {"concern": "我要去做計程車司機"}, member_id=OCCUPATION_MEMBER_ID, today=datetime.now(UTC).date()
     )
     assert facts["occupation_duty"]
     assert facts["occupation_classes"] == occupation_catalogue()
@@ -258,7 +258,7 @@ def test_the_scenario_module_contract_is_what_the_executor_calls():
 
 
 def test_occupation_forbids_deciding_the_consequence():
-    for phrase in ("一定要通知", "一定不用通知", "一定會加費", "一定會終止契約或影響理賠"):
+    for phrase in ("一定要通知", "一定不用通知", "一定會加費、退費、終止契約或影響理賠"):
         assert phrase in OCCUPATION.injection
 
 
@@ -292,3 +292,40 @@ def test_occupation_quick_replies_are_questions_not_commitments():
 def test_occupation_collects_the_customers_own_words_not_company_language():
     concern = next(p for p in OCCUPATION.params if p.name == "concern")
     assert "自己的話" in concern.description
+
+
+@pytest.mark.asyncio
+async def test_a_member_already_above_the_ceiling_is_the_case_this_scenario_exists_for(db):
+    """
+    Four members hold policies their own occupation class now exceeds.
+
+    `plan()` filters by `max_occupation` at issue, so this state is what a job change looks
+    like after the fact: 高壓電力設施維修員 at class 7 holding three contracts none of which
+    would be written for them today. That is the situation 職業或職務變更的通知義務 exists
+    to govern, and the desk must describe what the clause permits without concluding that
+    the cover is gone.
+    """
+    from policydesk.agent.scenarios.occupation import OCCUPATION, member_occupation
+
+    over = await db.fetch_one(
+        """SELECT m.member_id, m.occupation_class FROM member m
+           JOIN policy po USING (member_id) JOIN catalog_entry ce USING (product_id)
+           WHERE ce.max_occupation < m.occupation_class
+           GROUP BY 1, 2 ORDER BY m.occupation_class DESC LIMIT 1"""
+    )
+    if over is None:
+        pytest.skip("nobody has outgrown a product's ceiling")
+    facts = await member_occupation(db, over["member_id"], today=date(2026, 8, 29))
+    assert facts, "the member the clause is about returned nothing"
+    assert "高於" in OCCUPATION.injection, "the model must be told what an exceeded ceiling means"
+    assert "不要說他的保單已經失效" in OCCUPATION.injection, "and told not to conclude the cover is gone"
+
+
+def test_a_missing_ceiling_is_not_read_as_no_limit():
+    # `catalog_entry` covers every held product today, so `max_occupation` is never NULL in
+    # practice — this guards the reading rather than the behaviour, the same way the
+    # zero-weight guard in `rrf` does. A ceiling nobody recorded is not a ceiling nobody has.
+    from policydesk.agent.scenarios.occupation import OCCUPATION
+
+    assert "max_occupation 是空的時候" in OCCUPATION.injection
+    assert "不是他不受限制" in OCCUPATION.injection
