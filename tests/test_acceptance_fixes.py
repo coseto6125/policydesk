@@ -375,3 +375,34 @@ def test_the_multiplier_is_named_as_a_multiplier():
     assert "倍" in injection
     assert "不可以寫成" in injection, "the wrong reading must be named, not just the right one"
     assert "核保理賠人員" in injection, "this scenario still may not decide an amount"
+
+
+@pytest.mark.asyncio
+async def test_the_document_list_comes_from_the_contracts_not_an_empty_table(db):
+    """
+    `required_document` holds four rows across one product out of 660.
+
+    Measured on a live turn: 住院四天要準備什麼理賠文件？ routed correctly and the model
+    answered 系統尚未回傳本次申請所需文件清單, because the table it read was empty for every
+    customer. The contracts carry the lists themselves — 1,398 clauses across 394 products
+    under headings naming 申領 or 保險金的申請 — and each one arrives with a clause_id the
+    reply can cite and the customer can check.
+    """
+    from policydesk.agent import tools
+
+    thin = await db.fetch_val("SELECT count(DISTINCT product_id) FROM required_document")
+    rich = await db.fetch_val(
+        "SELECT count(DISTINCT product_id) FROM clause WHERE heading ~ '申領|保險金的申請|檢具|應檢附'"
+    )
+    assert rich > thin * 100, f"the clause corpus is the wider source: {rich} products against {thin}"
+
+    held = await db.fetch(
+        """SELECT DISTINCT product_id FROM policy
+           WHERE member_id = (SELECT member_id FROM policy GROUP BY member_id
+                              ORDER BY count(*) DESC LIMIT 1)"""
+    )
+    rows = await tools.required_documents(db, [r["product_id"] for r in held])
+    assert rows, "the member who holds the most policies still got no document clauses"
+    for row in rows:
+        assert row["clause_id"], "a document requirement with no clause id cannot be cited"
+        assert row["verbatim"], row
