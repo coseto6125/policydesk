@@ -947,8 +947,27 @@ def _jsonable(value: Any) -> Any:
 
 
 def main() -> None:
-    """Run the desk."""
-    app.run(host="0.0.0.0", port=8100, single_process=True, access_log=False)  # noqa: S104
+    """
+    Run the desk.
+
+    Binds every interface by default, which is what a demo on a hackathon network needs
+    and is also the whole of this deployment's exposure: the page hands `DESK_TOKEN` to
+    every visitor, so anyone who can reach the port can read the console — every
+    customer's national ID, address, transcript and the prompts behind each reply.
+
+    `POLICYDESK_HOST=127.0.0.1` closes that to the machine it runs on. The default is left
+    open because changing it silently would break the demo it was chosen for; the warning
+    below is so nobody has to discover the trade-off from a stranger.
+
+    """
+    host = os.environ.get("POLICYDESK_HOST", "0.0.0.0")  # noqa: S104
+    if host == "0.0.0.0":  # noqa: S104
+        logger.warning(
+            "desk_reachable_on_every_interface",
+            hint="the page carries DESK_TOKEN, so anyone who can reach this port reads the console",
+            close_it="POLICYDESK_HOST=127.0.0.1",
+        )
+    app.run(host=host, port=int(os.environ.get("POLICYDESK_PORT", "8100")), single_process=True, access_log=False)
 
 
 _DOC_STYLE = """
