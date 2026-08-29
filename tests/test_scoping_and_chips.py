@@ -188,3 +188,56 @@ def test_the_router_is_told_to_call_a_scenario_it_cannot_fully_parameterise():
 
     assert "推不出來也要先呼叫情境工具" in ROUTER_INSTRUCTIONS
     assert "留空字串" in ROUTER_INSTRUCTIONS
+
+
+def test_a_refused_customer_is_not_offered_a_question_from_two_turns_ago():
+    """
+    The echo filter ran, and `PUBLIC_OPENERS` then replaced its result.
+
+    So it protected every path except the one that needed it: an unverified customer is
+    handed a fixed list of four, the same four every turn, and the filter's output was
+    discarded on exactly that path. It compares against the whole conversation now, not
+    only the sentence being answered — a chip is stale the turn after it is asked, not
+    just the moment it is asked.
+
+    **It compares characters, so it catches a rephrasing and not a synonym.** 你們有哪些
+    商品？ against 你們有什麼壽險可以保 shares 你們有 and nothing else: 43% of the chip's
+    distinct characters, under the 60% bar. That pair reached a live turn and this filter
+    does not close it — 商品 and 壽險 are the same thing to a customer and different
+    strings to a comparison, which is the retrieval problem wearing a smaller hat.
+    """
+    from policydesk.agent.executor import _fresh
+    from policydesk.agent.scenario import PUBLIC_OPENERS
+
+    # Asked two turns back, and the chip row is rebuilt from scratch every turn.
+    said = ["保單停效還能不能復效", "那要準備什麼"]
+    offered = _fresh(PUBLIC_OPENERS, said)
+    assert "保單停效還能不能復效？" not in offered
+    assert offered, "an empty chip row leaves a customer with nowhere to start"
+
+
+def test_a_chip_row_that_would_empty_keeps_its_chips():
+    # The other direction. A customer who has asked about everything the row offers is
+    # better served by a stale suggestion than by no suggestion at all.
+    from policydesk.agent.executor import _fresh
+    from policydesk.agent.scenario import PUBLIC_OPENERS
+
+    assert _fresh(PUBLIC_OPENERS, list(PUBLIC_OPENERS)) == PUBLIC_OPENERS
+
+
+def test_both_refusal_paths_say_not_to_repeat_the_same_request():
+    """
+    A customer who repeats a question is saying the last answer did not land.
+
+    The desk answered 那我適合哪一張 with 請提供您的身分證字號, and answered it again with
+    the same request in fewer words. The rule reaches both paths that can refuse: the
+    scenario one through `IDENTITY_PENDING`, and the router's free answer, which is where
+    the third of those three turns was written.
+    """
+    import inspect
+
+    from policydesk.agent import executor
+    from policydesk.agent.scenario import ASKED_ALREADY, IDENTITY_PENDING
+
+    assert ASKED_ALREADY in IDENTITY_PENDING
+    assert "ASKED_ALREADY" in inspect.getsource(executor.run_turn)
