@@ -189,7 +189,12 @@ async def _route(
 
     """
     completion = await provider.complete(
-        instructions=ROUTER_INSTRUCTIONS,
+        # WRITING belongs here too. This call answers directly whenever no scenario fits
+        # — `ROUTER_INSTRUCTIONS` says so in as many words — and that answer goes to the
+        # customer at `run_turn`'s `scenario is None` branch. It is also the path where the
+        # model has the most freedom to write a long unstructured paragraph, since no
+        # scenario injection is shaping it.
+        instructions=f"{ROUTER_INSTRUCTIONS}\n\n{WRITING}",
         user_input=f"{past}# 本次訊息\n{text}",
         tools=[tool_schema(s) for s in reachable(stage)],
     )
