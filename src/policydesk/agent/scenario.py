@@ -20,7 +20,27 @@ customer being helped and is the customer being asked nothing.
 
 from policydesk.agent.scenario_base import Emit, Param, Scenario, tool_schema
 
-__all__ = ["BY_NAME", "CATALOGUE", "OPENERS", "ROUTER_INSTRUCTIONS", "WRITING", "Emit", "Param", "Scenario", "tool_schema"]
+__all__ = ["BY_NAME", "CATALOGUE", "IDENTITY_PENDING", "OPENERS", "ROUTER_INSTRUCTIONS", "WRITING", "Emit", "Param", "Scenario", "tool_schema"]
+
+
+IDENTITY_PENDING = (
+    "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料。\n"
+    "材料裡有公開資訊（商品目錄、法規條文這類對誰都一樣的東西）時，先照那些內容把他問得到的部分答完。\n"
+    "材料裡沒有任何公開資訊時，不要補一段商品介紹上去——直接說這個問題要查他名下的資料，"
+    "並具體說明核對身分之後你可以為他查到什麼。\n"
+    "接著請他提供身分證字號。\n"
+    "不要憑空講任何關於他保單、保費、保額或理賠的內容，也不要憑你自己的知識描述本公司賣什麼商品："
+    "本公司賣什麼只能照材料裡的商品目錄講。"
+)
+"""What the model is told when the gate withheld something. One copy, read by four scenarios.
+
+The middle two lines are the correction. It used to say only 照工具回傳的公開資訊說明有哪些
+商品或一般規定, which promises public material — and three of the four scenarios carrying
+this paragraph have no public tool at all, because their whole subject is the customer's
+own book. A model told to describe products from material containing none fills the gap
+from what it already knows, and the old prohibition did not stop it: that clause protected
+claims about *his* policy, not a generic description of what this insurer sells.
+"""
 
 
 POLICY_OVERVIEW = Scenario(
@@ -37,7 +57,7 @@ POLICY_OVERVIEW = Scenario(
         "以及該張保單的給付項目，每一項後面標註 clause_id，例如 [art.5]。"
         "已停效的保單要明講目前不提供保障。"
         "不要說任何未經工具回傳的金額或條款。"
-        "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料。此時照工具回傳的公開資訊說明有哪些商品或一般規定，接著說明要評估是否適合他、或查詢他名下的內容，需要先核對身分，請他提供身分證字號。不要憑空講任何關於他保單、保費、保額或理賠的內容。"
+        + IDENTITY_PENDING
     ),
     tools=("list_policies", "benefit_headings"),
     quick_replies=("這些保障有哪些不賠的情況？", "我想了解保額夠不夠", "想確認有沒有重複投保"),
@@ -55,7 +75,7 @@ EXPLAIN_COVER = Scenario(
         "寫在該句句末的方括號內，例如 [art.12]。等待期則寫 [waiting]。"
         "工具沒有回傳的內容就說查不到，不要補足。"
         "不要說任何金額，金額由計算工具產生。"
-        "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料。此時照工具回傳的公開資訊說明有哪些商品或一般規定，接著說明要評估是否適合他、或查詢他名下的內容，需要先核對身分，請他提供身分證字號。不要憑空講任何關於他保單、保費、保額或理賠的內容。"
+        + IDENTITY_PENDING
     ),
     tools=("find_clause", "list_policies"),
     params=(
@@ -115,10 +135,10 @@ RECOMMEND = Scenario(
         "再照 openings 說明改動哪一個條件就會有商品，並列出那些商品。"
         "openings 為空就直說目前沒有可行的調整方向，不要自己想辦法。"
         "結尾必須載明：本推介由登錄業務員具名負責。"
-        "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料。此時照工具回傳的公開資訊說明有哪些商品或一般規定，接著說明要評估是否適合他、或查詢他名下的內容，需要先核對身分，請他提供身分證字號。不要憑空講任何關於他保單、保費、保額或理賠的內容。"
+        + IDENTITY_PENDING
     ),
     quick_replies=("這幾張的等待期差在哪？", "我想了解各張的除外責任", "想確認保費怎麼算出來的"),
-    tools=("suitable_products", "member_underwriting"),
+    tools=("suitable_products", "member_underwriting", "catalogue_sample"),
     params=(
         Param(name="need", description="保戶自己說的保障需求，照原話填", example="想加保壽險"),
         Param(
@@ -172,7 +192,7 @@ CLAIM_CHECKLIST = Scenario(
         "以及目前還缺什麼。條款依據以工具回傳的 clause_id 原樣標註，"
         "例如 [art.12]、[art.6.carve1]，寫在該句句末。"
         "若需說明給付倍數，一律呼叫 calculate 工具計算，不要自行心算或估計。"
-        "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料。此時照工具回傳的公開資訊說明有哪些商品或一般規定，接著說明要評估是否適合他、或查詢他名下的內容，需要先核對身分，請他提供身分證字號。不要憑空講任何關於他保單、保費、保額或理賠的內容。"
+        + IDENTITY_PENDING
     ),
     quick_replies=("診斷證明書要寫到什麼程度？", "我想了解手術給付倍數怎麼算", "送出後大概多久會有結果？"),
     tools=("required_documents", "list_policies", "find_multiplier"),
@@ -280,10 +300,13 @@ WRITING = """\
 
 保戶是在手機上讀這段字，一整片沒有斷點的文字他要自己找哪裡是重點。\
 """
-"""How a reply is laid out, appended to the answering instructions only.
+"""How a reply is laid out, appended to every call whose output a customer reads.
 
-Not part of the router's instructions: the router calls a tool and writes nothing a
-customer reads, so laying out prose is a rule with no work to do there.
+That is both of them. The answering call is the obvious one. The router is the other: it is
+told to answer directly when no scenario fits, and `run_turn` sends that answer straight to
+the customer — so the claim this docstring used to make, that the router writes nothing a
+customer reads, was false on the one path where no scenario injection shapes the prose and
+the model has the most freedom to write a wall.
 """
 
 

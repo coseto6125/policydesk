@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from policydesk.agent import tools
-from policydesk.agent.scenario import CATALOGUE
+from policydesk.agent.scenario import CATALOGUE, IDENTITY_PENDING
 
 SERVER = Path("src/policydesk/web/server.py").read_text()
 EXECUTOR = Path("src/policydesk/agent/executor.py").read_text()
@@ -329,3 +329,37 @@ async def test_no_scenario_returns_a_value_out_of_the_members_own_row():
         if found := sorted(s for s in sentinels if s in blob):
             leaked[scenario.name] = found
     assert not leaked, f"an unverified session was handed the member's own values: {leaked}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario",
+    [s for s in CATALOGUE if IDENTITY_PENDING in s.injection and not s.tools_module],
+    ids=lambda s: s.name,
+)
+async def test_a_scenario_promising_public_material_actually_returns_some(scenario, db):
+    """
+    The paragraph tells the model to answer from the public material it was handed.
+
+    `recommend` promised that and returned two flags: killing `_public_only` removed the
+    `catalogue_sample` fallback and nothing noticed, because the test guarding this asserted
+    `_public_only is not None` and read the executor's source for a marker.
+
+    A scenario carrying the paragraph either has a public tool that survives the gate, or
+    its own copy of the paragraph is a promise it cannot keep — and the model fills that gap
+    from what it already knows about insurance.
+    """
+    from policydesk.agent.executor import Turn, _gather
+
+    public = tools.permitted(scenario.tools, confirmed=False)
+    facts = await _gather(
+        db, scenario, Turn(1, 4), today=date(2026, 8, 29),
+        params={p.name: p.example or "測試" for p in scenario.params}, confirmed=False,
+    )
+    material = set(facts) - {"_identity_required", "_allowed_clauses"}
+    if public:
+        assert material, f"{scenario.name} declares {sorted(public)} and returned none of it"
+    else:
+        assert "沒有任何公開資訊時" in scenario.injection, (
+            f"{scenario.name} has no public tool, so the paragraph must say what to do with none"
+        )
