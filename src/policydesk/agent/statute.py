@@ -795,14 +795,52 @@ async def unresolved(db: Database, text: str) -> list[tuple[str, str]]:
     pairs = cited(text)
     if not pairs:
         return []
+    known = {row["name"] for row in await db.fetch("SELECT name FROM statute")}
+    resolved = [(_known_suffix(name, known), doc_id) for name, doc_id in pairs]
     rows = await db.fetch(
         """SELECT s.name, a.doc_id
            FROM statute_article a JOIN statute s USING (statute_id)
            WHERE a.doc_id = ANY($1::text[])""",
-        [[doc_id for _, doc_id in pairs]],
+        [[doc_id for _, doc_id in resolved]],
     )
     real = {(row["name"], row["doc_id"]) for row in rows}
-    return [pair for pair in pairs if pair not in real]
+    return [pair for pair in resolved if pair not in real]
+
+
+def _known_suffix(name: str, known: set[str]) -> str:
+    """
+    Trim a captured statute name to the longest real one it ends with.
+
+    Args:
+        name: The name as the pattern captured it, prefix and all.
+        known: Every statute name the corpus holds.
+
+    Returns:
+        The longest known name it ends with, or the name unchanged when it ends with none
+        — which is a statute this corpus does not have, and the thing to report.
+
+    `_STATUTE_NAME` has no left boundary, so any CJK character abutting the name is
+    captured with it: 另依保險法第64條第2項 yields 另依保險法, which matches no row, and a
+    correct citation is reported as invented. Measured on 14 realistic phrasings of one real
+    provision, 10 were voided — 另依, 並依, 這在, 法源是, 請參考, 本公司依, 台灣的, 適用, and
+    both compound statute names. The bracketed form the injections ask for was safe, because
+    〔 is not CJK, so this fired exactly when the model wrote the citation into its own prose
+    — which the sentence before the bracket invites it to do.
+
+    Anchoring the pattern on the left does not fix it: 另 is itself preceded by a comma, so
+    a lookbehind still admits the match. The captured name is not the key this table joins
+    on, so it is resolved to one rather than used as one.
+
+    Longest, not shortest: 保險法施行細則 ends with both 細則 and 保險法施行細則, and only
+    the longer is the statute that was cited. The shorter reading would resolve a citation
+    of the rules to the act, which is the confusion this check exists to catch.
+
+    What this admits: an invented name ending in a real one — 外星人保險法第1條 resolves to
+    保險法 and passes. That is a narrower hole than the one it closes, and the article
+    number is still checked, so the invention has to land on a provision that exists.
+
+    """
+    return max((k for k in known if name.endswith(k)), key=len, default=name)
 
 
 def citation(row: dict[str, Any]) -> str:
