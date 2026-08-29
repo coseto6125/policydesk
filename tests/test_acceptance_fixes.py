@@ -406,3 +406,27 @@ async def test_the_document_list_comes_from_the_contracts_not_an_empty_table(db)
     for row in rows:
         assert row["clause_id"], "a document requirement with no clause id cannot be cited"
         assert row["verbatim"], row
+
+
+@pytest.mark.asyncio
+async def test_an_empty_tool_result_is_given_a_meaning(db):
+    """
+    Twice now the model has read an empty result as a broken system.
+
+    住院四天要準備什麼理賠文件？ produced 系統尚未回傳本次申請所需文件清單, because the table
+    was empty. `find_multiplier` is empty for 55 of the 61 products members hold, and that
+    emptiness is *correct*: only surgery-benefit products carry a 附表, and a pure daily
+    benefit has no surgery schedule to look up. Without being told that, the model reaches
+    for the same sentence.
+    """
+    from policydesk.agent.scenario import BY_NAME
+
+    held = await db.fetch_val("SELECT count(DISTINCT product_id) FROM policy")
+    with_schedule = await db.fetch_val(
+        """SELECT count(DISTINCT p.product_id) FROM policy p
+           JOIN surgery_multiplier sm USING (product_id)"""
+    )
+    assert with_schedule < held, "the sparsity this instruction explains must actually exist"
+    injection = BY_NAME["claim_checklist"].injection
+    assert "沒有回傳任何項目時" in injection
+    assert "不是查詢失敗" in injection
