@@ -149,3 +149,42 @@ def test_the_chips_a_refused_customer_sees_are_ones_the_desk_can_answer():
     )
     for chip in PUBLIC_OPENERS:
         assert chip.endswith(("？", "?")), f"a chip that is not a question is a commitment: {chip}"
+
+
+def test_a_chip_never_repeats_the_question_it_answers():
+    """
+    Measured on two live turns.
+
+    住院四天要準備什麼理賠文件？ was answered and then offered 理賠要準備哪些文件？ as a chip.
+    我想查一下我的保單保什麼 was answered with a request for the national ID and then offered
+    我想了解目前的保單保什麼. Both are one tap back to the same place.
+    """
+    from policydesk.agent.executor import _echoes
+
+    for chip, said in (
+        ("理賠要準備哪些文件？", "住院四天要準備什麼理賠文件？"),
+        ("我想了解目前的保單保什麼", "我想查一下我的保單保什麼"),
+        ("猶豫期是幾天？", "猶豫期是幾天"),
+        ("想確認一年繳多少保費", "我一年繳多少保費？"),
+    ):
+        assert _echoes(chip, said), f"{chip!r} repeats {said!r} and was offered anyway"
+
+    # And the other direction, because a filter that drops everything leaves the customer
+    # with no next step at all.
+    for chip, said in (
+        ("想確認一年繳多少保費", "住院四天要準備什麼理賠文件？"),
+        ("理賠要準備哪些文件？", "嗨"),
+        ("你們有哪些商品？", "我有高血壓要講嗎"),
+    ):
+        assert not _echoes(chip, said), f"{chip!r} was dropped for an unrelated question"
+
+
+def test_the_router_is_told_to_call_a_scenario_it_cannot_fully_parameterise():
+    # Measured: 住院四天要準備什麼理賠文件？ never reached `claim_checklist`, because the
+    # router had no 住院日期 and read 填不出來才問 as "ask instead of calling". The document
+    # list does not depend on the date, so the customer waited a turn for something already
+    # on the shelf.
+    from policydesk.agent.scenario import ROUTER_INSTRUCTIONS
+
+    assert "推不出來也要先呼叫情境工具" in ROUTER_INSTRUCTIONS
+    assert "留空字串" in ROUTER_INSTRUCTIONS
