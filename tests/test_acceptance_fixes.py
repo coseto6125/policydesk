@@ -430,3 +430,179 @@ async def test_an_empty_tool_result_is_given_a_meaning(db):
     injection = BY_NAME["claim_checklist"].injection
     assert "沒有回傳任何項目時" in injection
     assert "不是查詢失敗" in injection
+
+
+@pytest.mark.asyncio
+async def test_an_unverified_turn_never_reads_the_fact_card(db, live_case, monkeypatch):
+    """
+    A visitor types a display name, and a name matching an existing member binds the
+    session to them: `open_case` hands back that member's live case, the id is masked,
+    and `confirmed` is false. `standing_brief` was gated on that flag and `memory.card`
+    was not — so the router's prompt carried `member_fact`, which is scoped to the member
+    and bounded by no time at all, to whoever typed the name.
+
+    The card is replaced by a function that raises, not by one returning nothing: a gate
+    that filtered the card's text after reading it would still have read the rows.
+    """
+    from policydesk.agent import executor
+    from policydesk.llm.provider import Completion
+
+    async def boom(*_args, **_kwargs):
+        raise AssertionError("memory.card was read on a turn that had not proved identity")
+
+    monkeypatch.setattr(executor.memory, "card", boom)
+
+    class Quiet:
+        name = "stub"
+
+        async def complete(self, **_: object) -> Completion:
+            return Completion(text="您好，請問需要什麼協助？", model="stub", provider="stub")
+
+    turn = await executor.run_turn(
+        Quiet(), db, case_id=live_case["case_id"], member_id=live_case["member_id"],
+        text="嗨", confirmed=False,
+    )
+    assert turn.reply
+
+
+@pytest.mark.asyncio
+async def test_a_confirmed_turn_does_read_the_fact_card(db, live_case, monkeypatch):
+    # The other direction. Closing the leak must not blind the desk to a customer who has
+    # proved who they are — the card is what stops the desk re-asking a budget they gave
+    # six turns ago.
+    from policydesk.agent import executor
+    from policydesk.llm.provider import Completion
+
+    seen: list[int] = []
+
+    async def spy_db(_db, *, member_id: int, case_id: int) -> str:
+        seen.append(member_id)
+        return ""
+
+    monkeypatch.setattr(executor.memory, "card", spy_db)
+
+    class Quiet:
+        name = "stub"
+
+        async def complete(self, **_: object) -> Completion:
+            return Completion(text="您好。", model="stub", provider="stub")
+
+    await executor.run_turn(
+        Quiet(), db, case_id=live_case["case_id"], member_id=live_case["member_id"],
+        text="我想查我的保單", confirmed=True,
+    )
+    assert seen == [live_case["member_id"]]
+
+
+@pytest.mark.asyncio
+async def test_a_document_clause_reaches_the_model_whole(db):
+    """
+    The trim is asserted where the material leaves for the model, not where it is read.
+
+    `required_documents` slices the clause at `DOCUMENT_CHARS` in SQL, and `_short` clipped
+    every string at 400 downstream of it — so the slice was dead and the enumeration still
+    arrived cut. The first version of this fix touched only the query and changed nothing
+    that reaches the customer, which is why this test runs the result through `_short`.
+
+    What the cut removes is not trailing context: in one held clause the tail is the
+    substitute document set granted to a claimant who cannot obtain a 重大傷病證明, and in
+    another it is the five-day payment deadline and the interest owed on missing it.
+    """
+    from policydesk.agent.executor import _short
+    from policydesk.agent.tools import DOCUMENT_CHARS, required_documents
+
+    held = await db.fetch(
+        """SELECT DISTINCT c.product_id
+           FROM policy po JOIN clause c USING (product_id)
+           WHERE c.heading ~ '申領|保險金的申請|檢具|應檢附' AND length(c.verbatim) > 400"""
+    )
+    if not held:
+        pytest.skip("no held clause runs past the general clip")
+    rows = await required_documents(db, [r["product_id"] for r in held][:3])
+    sent = _short(rows)
+    assert max(len(r["verbatim"]) for r in sent) > 400, "the clip put the SQL slice back"
+    assert max(len(r["verbatim"]) for r in sent) <= DOCUMENT_CHARS
+
+
+@pytest.mark.asyncio
+async def test_every_product_a_member_holds_appears_in_the_document_list(db):
+    # `_short` keeps twelve rows, and the query ordered by product — so a member holding
+    # five products had two of them cut off the end, and the reply read as a complete
+    # answer that omitted contracts they hold.
+    from policydesk.agent.executor import _short
+    from policydesk.agent.tools import required_documents
+
+    row = await db.fetch_one(
+        """SELECT po.member_id, count(DISTINCT po.product_id) AS held
+           FROM policy po JOIN clause c USING (product_id)
+           WHERE c.heading ~ '申領|保險金的申請|檢具|應檢附'
+           GROUP BY po.member_id ORDER BY count(DISTINCT po.product_id) DESC LIMIT 1"""
+    )
+    if row is None:
+        pytest.skip("no member holds a product carrying a document clause")
+    ids = [r["product_id"] for r in await db.fetch(
+        "SELECT DISTINCT product_id FROM policy WHERE member_id = $1::bigint", [row["member_id"]])]
+    sent = _short(await required_documents(db, ids))
+    assert len({r["product_id"] for r in sent}) == row["held"]
+
+
+@pytest.mark.asyncio
+async def test_an_unverified_connection_reads_none_of_the_earlier_conversation(db):
+    """
+    A visitor types a display name, and a name matching an existing member binds the socket
+    to that member: `open_case` hands back their live case, the id is masked, `confirmed`
+    is false. `memory.recent` cuts on a time gap, which is about continuity — a reload
+    mid-sentence keeps its context — and a time gap cannot tell a reload from a stranger
+    who guessed a name. Inside the window the stranger was handed the transcript.
+
+    The connection's own boundary is the case's newest message at the moment it bound.
+    Written as two messages a second apart so the gap cut cannot be what hides the first:
+    without the floor both are inside the window and both come back.
+    """
+    from policydesk.agent import memory
+    from policydesk.web.server import _last_message
+
+    case_id = await db.fetch_val('SELECT case_id FROM "case" ORDER BY case_id DESC LIMIT 1')
+    if case_id is None:
+        pytest.skip("no case to speak on")
+
+    before = await _last_message(db, case_id)
+    try:
+        await db.execute(
+            """INSERT INTO conversation_message (case_id, speaker, text)
+               VALUES ($1::bigint,'customer','我的預算是每年三萬元')""", [case_id])
+        floor = await _last_message(db, case_id)
+        await db.execute(
+            """INSERT INTO conversation_message (case_id, speaker, text)
+               VALUES ($1::bigint,'customer','你們有賣什麼')""", [case_id])
+
+        unverified = [m["text"] for m in await memory.recent(db, case_id, since=floor)]
+        assert "你們有賣什麼" in unverified
+        assert "我的預算是每年三萬元" not in unverified, "the earlier connection's words reached this one"
+
+        # And the customer's own history comes back once they have proved who they are,
+        # which is what `floor = 0` on a passed check restores.
+        verified = [m["text"] for m in await memory.recent(db, case_id)]
+        assert "我的預算是每年三萬元" in verified
+    finally:
+        await db.execute(
+            "DELETE FROM conversation_message WHERE case_id = $1::bigint AND message_id > $2::bigint",
+            [case_id, before])
+
+
+@pytest.mark.asyncio
+async def test_a_case_nobody_has_spoken_on_has_no_floor(db):
+    # A new enrolment opens a fresh case, and its socket must not start above a boundary
+    # that would hide the customer's own first sentence from their second turn.
+    from policydesk.web.server import _last_message
+
+    member_id = await db.fetch_val("SELECT member_id FROM member ORDER BY member_id DESC LIMIT 1")
+    if member_id is None:
+        pytest.skip("no member")
+    case_id = await db.fetch_val(
+        """INSERT INTO "case" (member_id, kind, stage) VALUES ($1::bigint,'service','inquiry')
+           RETURNING case_id""", [member_id])
+    try:
+        assert await _last_message(db, case_id) == 0
+    finally:
+        await db.execute('DELETE FROM "case" WHERE case_id = $1::bigint', [case_id])

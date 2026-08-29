@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 
 from msgspec import Struct
 
+from policydesk.agent.tools import insured_amount
 from policydesk.bootloader import logger
 from policydesk.core.models import Stage, may_advance
 
@@ -480,7 +481,7 @@ async def snapshot(db: Database, case_id: int) -> dict | None:
     case["policies"] = await db.fetch(
         """SELECT po.policy_id, po.policy_number, po.product_id, po.sum_insured, po.effective_at, po.lapsed_at,
                   po.main_policy_id, main.policy_number AS main_policy_number,
-                  pr.name AS product_name, pr.line,
+                  pr.name AS product_name, pr.line, ce.unit_label,
                   round(coalesce(ce.unit_premium, 0) * po.sum_insured / 1000.0) AS annual_premium
            FROM policy po
            JOIN product pr USING (product_id)
@@ -490,5 +491,11 @@ async def snapshot(db: Database, case_id: int) -> dict | None:
            ORDER BY po.main_policy_id NULLS FIRST, po.policy_id""",
         [case["member_id"]],
     )
+    # Rendered here for the same reason `list_policies` renders it: `sum_insured` counts
+    # thousandths of one `unit_label` unit, so 1000 against 每 100 萬元保額 is 100 萬元,
+    # and a back office printing the raw count shows a figure a thousand times too small
+    # beside a premium that is right. The desk's own renderer, not a second one.
+    for policy in case["policies"]:
+        policy["insured"] = insured_amount(policy["sum_insured"], policy["unit_label"])
     case["generated_at"] = datetime.now(UTC).isoformat()
     return case

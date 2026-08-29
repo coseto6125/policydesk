@@ -43,6 +43,7 @@ from policydesk.agent.scenario import (
     tool_schema,
 )
 from policydesk.bootloader import logger
+from policydesk.llm.pricing import cost
 from policydesk.llm.provider import Completion, Phase, Provider, ProviderError
 from policydesk.skills.calculator import TOOL_SCHEMA, CalculationError, calculate
 from policydesk.validation.validator import Verdict, recheck
@@ -135,13 +136,13 @@ async def _record(db: Database, turn: Turn, phase: Phase, completion: Completion
     await db.execute(
         """INSERT INTO llm_usage (case_id, turn_id, phase, scenario, provider, model,
                                   prompt_tokens, completion_tokens, cached_tokens, total_tokens,
-                                  latency_ms, request, response)
+                                  cost_usd, latency_ms, request, response)
            VALUES ($1::bigint,$2::text,$3::text,$4::text,$5::text,$6::text,
-                   $7::int,$8::int,$9::int,$10::int,$11::int,$12::jsonb,$13::jsonb)""",
+                   $7::int,$8::int,$9::int,$10::int,$11::numeric,$12::int,$13::jsonb,$14::jsonb)""",
         [
             turn.case_id, turn.turn_id, phase.value, scenario, completion.provider, completion.model,
             completion.prompt_tokens, completion.completion_tokens, completion.cached_tokens,
-            completion.total_tokens, completion.latency_ms,
+            completion.total_tokens, cost(completion), completion.latency_ms,
             {"scenario": scenario}, {"text": completion.text[:2000]},
         ],
     )
@@ -213,6 +214,18 @@ async def _route(
             return scenario, {k: str(v) for k, v in args.items() if isinstance(args, dict)}
     turn.reply = completion.text
     return None, {}
+
+
+async def _blank() -> str:
+    """
+    Stand in for a withheld string, so the gather keeps its shape.
+
+    Returns:
+        The empty string, which reads downstream as "nothing is known" — the same thing
+        an unverified session should see.
+
+    """
+    return ""
 
 
 async def _nothing() -> dict[str, Any]:
@@ -448,6 +461,7 @@ async def run_turn(
     confirmed: bool = False,
     index: Retriever | None = None,
     today: date | None = None,
+    since: int = 0,
 ) -> Turn:
     """
     Handle one thing the customer said.
@@ -482,9 +496,17 @@ async def run_turn(
     # The customer's own message is already written, so the window drops its last row
     # and never repeats what the router is reading as this turn.
     stage = await db.fetch_val('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id]) or "inquiry"
+    # The card is gated for the same reason `standing_brief` is, and it was not. A visitor
+    # types a display name; a name matching an existing member binds the session to that
+    # member and reopens their live case, with `confirmed` false and the id masked. The
+    # card then read `member_fact` — which is scoped to the member and bounded by nothing
+    # — and handed a stranger whatever the sweep had extracted about them: budget, health
+    # history, what they hold. `recent` is left alone: it cuts on SESSION_GAP_S, so it
+    # shows only a conversation still in progress, which is the reload-keeps-context
+    # behaviour it was built for.
     messages, profile, brief = await asyncio.gather(
-        memory.recent(db, case_id),
-        memory.card(db, member_id=member_id, case_id=case_id),
+        memory.recent(db, case_id, since=since),
+        memory.card(db, member_id=member_id, case_id=case_id) if confirmed else _blank(),
         tools.standing_brief(db, member_id, today=today) if confirmed else _nothing(),
     )
     # The brief is what turns a clarifying question into a grounded one. Without it the
@@ -702,13 +724,30 @@ def _run_calculations(completion: Completion) -> tuple[tuple[str, int], ...]:
     return tuple(results)
 
 
-def _short(value: Any, limit: int = 12) -> Any:
+CHARS = 400
+"""How much of a string reaches the model. A clause runs to 442,649 characters, so the
+whole tool result is trimmed rather than trusted."""
+
+LONGER: dict[str, int] = {"verbatim": 1200}
+"""Keys whose text the reply reads out rather than reads around, with the room they need.
+
+`verbatim` is here because `required_documents` returns the enumeration itself — 一、二、
+三 — and the injection tells the model to list those lines. Clipped at 400 the cut lands
+mid-enumeration and removes items: 8 held clauses run past it, across 12 members, and one
+of them loses the substitute documents the same clause grants a claimant who cannot obtain
+a 重大傷病證明. The tool already slices at this width in SQL; without this the trim here
+put it back to 400 and made that slice dead code.
+"""
+
+
+def _short(value: Any, limit: int = 12, chars: int = CHARS) -> Any:
     """
     Trim a tool result to what fits in a prompt, in types the encoder accepts.
 
     Args:
         value: Rows or a scalar.
         limit: Most rows to keep.
+        chars: How much of a string to keep.
 
     Returns:
         The value, with long lists truncated, long text clipped, and dates and Decimals
@@ -719,14 +758,18 @@ def _short(value: Any, limit: int = 12) -> Any:
     json, which raises on a `date` — and a tool result carrying a policy's effective
     date is the common case, not the edge one.
 
+    The width is per key rather than global. Raising it for everything is not available:
+    the corpus holds a clause of 442,649 characters, and one row of it would be the whole
+    prompt.
+
     """
     match value:
         case list():
-            return [_short(v) for v in value[:limit]]
+            return [_short(v, limit, chars) for v in value[:limit]]
         case dict():
-            return {k: _short(v) for k, v in value.items()}
+            return {k: _short(v, limit, LONGER.get(k, chars)) for k, v in value.items()}
         case str():
-            return value[:400]
+            return value[:chars]
         case datetime() | date():
             return value.isoformat()
         case _ if hasattr(value, "as_tuple"):  # Decimal

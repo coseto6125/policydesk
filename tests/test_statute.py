@@ -437,3 +437,44 @@ async def test_two_channels_disagreeing_still_yield_statute_rows(loaded):
     )
     assert {r["doc_id"] for r in rows} == {"art.64.2", "art.68.1"}
     assert all(r["verbatim"] for r in rows)
+
+
+REAL_STATUTES_THIS_DESK_DOES_NOT_HOLD = [
+    "依全民健康保險法第41條的規定",
+    "依強制汽車責任保險法第27條",
+    "就業保險法第11條",
+    "依勞工保險條例第53條",
+]
+"""Real Taiwanese law, none of it in this corpus. The first three end in 保險法, and every
+one of their article numbers exists under 保險法 — 第41條 is 再保險人不得向要保人請求交付
+保險費, which has nothing to do with 健保."""
+
+PHRASINGS_OF_A_PROVISION_THE_DESK_DOES_HOLD = [
+    "依保險法第64條第2項", "另依保險法第64條", "改依保險法施行細則第4條",
+    "這在保險法施行細則第14條", "本公司依保險法第116條", "法源是保險法第64條",
+    "請參考保險法第116條", "適用保險法第64條", "台灣的保險法第64條",
+    "〔保險法 第116條第1項〕", "並依金融消費者保護法第13條", "就是保險法第64條",
+]
+
+
+@pytest.mark.parametrize("text", REAL_STATUTES_THIS_DESK_DOES_NOT_HOLD)
+async def test_a_statute_outside_the_corpus_is_reported_however_real_it_is(db, text):
+    """
+    The resolver took the longest known name a capture ended with.
+
+    Every real statute ending in 保險法 therefore resolved to 保險法 and passed, because
+    the article numbers exist there — a customer asking about 健保 could read 依全民健康
+    保險法第41條 attached to a provision about reinsurance premiums, under a statute this
+    desk does not carry. The boundary is the corpus, and it has to hold against real law
+    as well as invented law.
+    """
+    assert await statute.unresolved(db, text), f"{text} was admitted as a citation this desk can support"
+
+
+@pytest.mark.parametrize("text", PHRASINGS_OF_A_PROVISION_THE_DESK_DOES_HOLD)
+async def test_a_carried_provision_survives_the_prose_in_front_of_it(db, text):
+    # The other direction, and the reason the resolver strips at all: `_STATUTE_NAME` has
+    # no left boundary, so 另依保險法 is what the pattern captures and it matches no row.
+    # Trimming a recognised lead keeps a correct citation; an unrecognised one is reported
+    # and repaired, which costs a turn rather than a wrong answer.
+    assert not await statute.unresolved(db, text), f"{text} is a real citation and was voided"
