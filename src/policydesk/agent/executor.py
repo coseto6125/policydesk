@@ -336,10 +336,12 @@ async def _gather(
     facts.update(dict(zip(pending, results, strict=True)))
 
     if "suitable_products" in allowed and confirmed:
-        # `suitable_products` reads the public catalogue and is rightly unmarked, but it
-        # needs the member's insurance age and occupation class to filter by — so the
-        # public tool is a door onto `member_underwriting`, which is marked. The gate has
-        # to see the tool a tool calls, and it cannot, so this one is named here.
+        # Not "a public tool calls a marked one" — `suitable_products` calls nothing, and
+        # an audit of the tool graph comes back clean. It is this function that calls
+        # `member_underwriting`, inline, in a branch keyed on an unmarked tool's name. So
+        # the class to go looking for is a `tools.X(` call site in *this body* that no
+        # `X in allowed` guards, and there are three: this one, and `list_policies` and
+        # `clause_ids_for` in the `else:` above.
         member = await tools.member_underwriting(db, turn.member_id, today=today)
         budget = _as_budget(params.get("budget", ""))
         if member and budget is not None:

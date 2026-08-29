@@ -257,3 +257,57 @@ def test_the_public_catalogue_reaches_an_unverified_visitor():
     assert not tools.reads_identity(BROWSE_PRODUCTS.tools)
     assert not getattr(tools.catalogue_sample, "requires_identity", False)
     assert {p.name for p in BROWSE_PRODUCTS.params} == {"line"}, "no budget: that is a question about them"
+
+
+@pytest.mark.asyncio
+async def test_no_scenario_returns_a_value_out_of_the_members_own_row():
+    """
+    The sentinel form of the gate, over the whole catalogue at once.
+
+    `_RefusingDB` above proves no member query ran. This proves no member *value* came
+    back, which is the stronger statement: it also catches a value arriving from a table
+    nobody thought to forbid, or from a cache, or from a default somebody filled in.
+
+    Ported from the correctness reviewer's sweep, which is the run that established the
+    invariant — sixteen scenarios, unconfirmed, against a real member's real values.
+    """
+    import json
+
+    from policydesk.agent.executor import Turn, _gather
+    from policydesk.core.db import Database
+
+    db = Database()
+    try:
+        await db.fetch_val("SELECT 1")
+    except Exception:
+        pytest.skip("policydesk-pg is not up")
+
+    row = await db.fetch_one(
+        """SELECT m.member_id, m.national_id, m.birth_date, m.beneficiary_relation,
+                  array_agg(po.policy_number) AS numbers
+           FROM member m JOIN policy po USING (member_id)
+           GROUP BY 1, 2, 3, 4 LIMIT 1"""
+    )
+    if row is None:
+        pytest.skip("no member holds a policy")
+
+    sentinels = {str(row["national_id"]), str(row["birth_date"]), str(row["beneficiary_relation"])}
+    sentinels |= {str(n) for n in (row["numbers"] or [])}
+    sentinels = {s for s in sentinels if s and len(s) > 3}
+    assert sentinels, "the sweep proves nothing without values to look for"
+
+    params = {
+        "topic": "住院", "line": "life", "budget": "20000", "need": "加保", "event": "住院四天",
+        "event_date": "2026-08-01", "concern": "我離婚了", "keyword": "", "amount": "1000000",
+        "national_id": "A123456789",
+    }
+    leaked: dict[str, list[str]] = {}
+    for scenario in CATALOGUE:
+        facts = await _gather(
+            db, scenario, Turn(1, row["member_id"]), today=date(2026, 8, 29),
+            params=params, confirmed=False, index=None,
+        )
+        blob = json.dumps({k: str(v) for k, v in facts.items()}, ensure_ascii=False)
+        if found := sorted(s for s in sentinels if s in blob):
+            leaked[scenario.name] = found
+    assert not leaked, f"an unverified session was handed the member's own values: {leaked}"
