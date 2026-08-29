@@ -248,39 +248,52 @@ async def gather(
 
     Returns:
         Every policy the member holds, what his effectively-covered ones actually pay
-        for, and the categories none of them do. Without `list_policies` it returns the
-        catalogue alone.
+        for, and the categories none of them do. Missing `list_policies` returns the
+        catalogue alone; missing `held_categories` returns the catalogue and his
+        policies, but no `held_benefits`/`gaps` — those two keys are absent together,
+        never present with a fabricated value.
 
     `today` defaults to now rather than being required, so a caller in a test can omit
     it the same way `soothe.gather` needs no date at all — the contract is one signature
     for every scenario module, not one a caller has to special-case per scenario.
 
     A gap is only meaningful against a book. Unverified, this returns what the company
-    covers and nothing about what the customer does — because computing gaps from an
-    empty policy list would tell every unverified customer they hold no cover at all,
-    which is a false statement about them rather than a withheld one.
+    covers and nothing about what the customer does — computing gaps from an empty
+    policy list would tell every unverified customer they hold no cover at all, which
+    is a false statement about them rather than a withheld one. That is why `held` is
+    never defaulted to `[]` and fed into a gap calculation when `held_categories` is
+    withheld: an absent `held_benefits` key is honest, a present empty one is not.
 
     """
     def can(name: str) -> bool:
         return allowed is None or name in allowed
 
     today = today or datetime.now(UTC).date()
-    catalog = await category_catalog(db) if can("category_catalog") else []
+    facts: dict[str, Any] = {}
+    catalog = await category_catalog(db) if can("category_catalog") else None
+    if catalog is not None:
+        facts["category_catalog"] = catalog
+
     if not can("list_policies"):
-        return {"category_catalog": catalog}
+        return facts
 
     policies = await tools.list_policies(db, member_id, today=today)
     by_number = {p["policy_number"]: p for p in policies}
     for policy in policies:
         policy["is_main"] = policy["main_policy_number"] is None
         policy["effectively_covered"] = _effectively_covered(policy, by_number)
+    facts["policies"] = policies
+
+    if not can("held_categories"):
+        return facts
 
     covered_product_ids = sorted({p["product_id"] for p in policies if p["effectively_covered"]})
-    held = await held_categories(db, covered_product_ids) if can("held_categories") else []
-    held_names = {b["name"] for b in held}
-    gaps = [c for c in catalog if c["name"] not in held_names]
-
-    return {"policies": policies, "held_benefits": held, "gaps": gaps, "category_catalog": catalog}
+    held = await held_categories(db, covered_product_ids)
+    facts["held_benefits"] = held
+    if catalog is not None:
+        held_names = {b["name"] for b in held}
+        facts["gaps"] = [c for c in catalog if c["name"] not in held_names]
+    return facts
 
 
 REVIEW = Scenario(
@@ -303,10 +316,12 @@ REVIEW = Scenario(
         "你的任務到這裡結束。不建議該買哪一張商品、不比較商品、不推銷、不說「建議您加保」。"
         "保戶自己問要怎麼補這個缺口，就告訴他可以進一步了解方案，由他自己決定要不要繼續，不要你先開口推。\n"
         "不可以引用任何條款號碼，工具回傳的材料裡沒有附上可引用的條款號碼，只有保障類別名稱，講類別名稱就好。\n"
-        "不可以判斷賠不賠，核保理賠人員才有權決定。\n"
-        "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料。"
-        "此時說明本櫃台可以幫他健檢保單，但需要先核對身分，請他提供身分證字號。"
-        "不要憑空講任何關於他保單或保障缺口的內容。"
+        "不可以判斷賠不賠，核保理賠人員才有權決定。\n\n"
+        "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料，"
+        "material 裡也就沒有 policies、held_benefits、gaps 這幾項。"
+        "此時只用 category_catalog 講本公司商品有哪些保障類別可以查，"
+        "接著說明要幫他健檢自己的保單、看他缺什麼，需要先核對身分，請他提供身分證字號。"
+        "不要把 category_catalog 講成他個人的缺口，也不要憑空講任何關於他保單或保障缺口的內容。"
     ),
     tools=("list_policies", "held_categories", "category_catalog"),
     tools_module="policydesk.agent.scenarios.review",

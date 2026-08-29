@@ -39,7 +39,7 @@ import jieba_next as jieba
 import tantivy
 
 from policydesk.bootloader import logger
-from policydesk.retrieval.base import CLAUSE, STATUTE, Hit
+from policydesk.retrieval.base import CLAUSE, QUERY_STOP, STATUTE, Hit
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -404,13 +404,18 @@ class BM25Retriever:
             )
 
         text: list[tuple[Any, Any]] = []
-        for token in cut(query).split(_SEP):
-            if not token:
-                continue
+        # Stop words are dropped here, on the query, and never in `cut` — which the build
+        # also calls. Dropping them from the documents would change every document length
+        # and so every score, to fix a problem that only exists on the query side.
+        kept = [token for token in cut(query).split(_SEP) if token and token not in QUERY_STOP]
+        for token in kept:
             for field, boost in ((F_HEADING, BOOST_HEADING), (F_BODY, BOOST_BODY)):
                 term = tantivy.Query.term_query(SCHEMA, field, token.lower())
                 text.append((tantivy.Occur.Should, tantivy.Query.boost_query(term, boost)))
-        for gram in _grams(query):
+        # Grammed from what survived, not from the raw query. 可以 dropped as a term and
+        # then re-entering as a bigram would put the same filler back at 0.4 of the weight
+        # that made it a problem — quieter, and still the rarest thing in the sentence.
+        for gram in _grams("".join(kept)):
             term = tantivy.Query.term_query(SCHEMA, F_NGRAM, gram)
             text.append((tantivy.Occur.Should, tantivy.Query.boost_query(term, BOOST_NGRAM)))
         if not text:
