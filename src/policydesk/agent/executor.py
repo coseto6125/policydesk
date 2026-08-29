@@ -528,6 +528,10 @@ async def run_turn(
         return turn
 
     if scenario is None:
+        # A chip repeating what was just asked is one tap to the same answer. Measured on a
+        # live turn: 理賠要準備哪些文件？ was offered right under a reply to 住院四天要準備
+        # 什麼理賠文件？.
+        turn.quick_replies = tuple(c for c in turn.quick_replies if not _echoes(c, text)) or turn.quick_replies
         if not confirmed:
             # The chips a refused customer sees must be things this desk can still answer.
             # `OPENERS` is four questions about their own book, so offering them right after
@@ -609,6 +613,30 @@ async def run_turn(
         return turn
     turn.reply = completion.text
     return turn
+
+
+def _echoes(chip: str, text: str) -> bool:
+    """
+    Say whether a quick reply repeats what the customer just typed.
+
+    Args:
+        chip: The offered question.
+        text: What they said.
+
+    Returns:
+        True when the two are the same question in different words.
+
+    Compared on the characters that carry meaning — the punctuation and the polite
+    scaffolding differ between 理賠要準備哪些文件？ and 住院四天要準備什麼理賠文件？, and
+    everything else in them is the same.
+
+    """
+    strip = str.maketrans("", "", "？?。，、 ")
+    a, b = chip.translate(strip), text.translate(strip)
+    if not a or not b:
+        return False
+    shared = sum(1 for ch in set(a) if ch in b)
+    return shared / len(set(a)) >= 0.6
 
 
 async def _unverifiable(db: Database, turn: Turn, text: str, allowed: frozenset[str]) -> bool:
