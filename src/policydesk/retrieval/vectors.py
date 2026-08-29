@@ -236,25 +236,33 @@ async def open_vectors(
     db: Database, *, path: Path = VECTOR_DIR, model_dir: Path = MODEL_DIR
 ) -> EmbeddingRetriever | None:
     """
-    Open the vector channel, building it first when it is not there.
+    Open the vector channel over a matrix somebody else built.
 
     Args:
-        db: The database, for a build.
+        db: Unused, and kept so this reads the same as `open_index` at the call site.
         path: Where the matrix lives.
         model_dir: Where the ONNX export lives.
 
     Returns:
-        The retriever, or None when it could not be opened. None is a degradation the
-        hybrid answers by running on the lexical channel alone — worse on synonyms,
-        still an answer.
+        The retriever, or None when there is no matrix to open. None is a degradation the
+        hybrid answers by running on the lexical channel alone — worse on synonyms, still
+        an answer.
+
+    **This never builds.** `open_index` does, because a BM25 build is two minutes and a
+    desk that starts two minutes late has started. Embedding 12,953 documents through
+    int8 ONNX on CPU is forty, and it runs inside `before_server_start` — so the port
+    never opens, and what an operator sees is a desk that hung. Measured here: a second
+    process started the app while a build was already running, and the two raced for the
+    same `vectors.npy` at 3.2 GB each.
+
+    Build it with `policydesk-index`.
 
     """
+    del db
     try:
         if not await asyncio.to_thread((path / "vectors.npy").is_file):
-            if not await asyncio.to_thread(model_dir.is_dir):
-                logger.info("vectors_skipped", reason="model absent", model=str(model_dir))
-                return None
-            await build(db, path=path, model_dir=model_dir)
+            logger.info("vectors_absent", path=str(path), hint="build them with: policydesk-index")
+            return None
         retriever = await asyncio.to_thread(EmbeddingRetriever, path, model_dir=model_dir)
     except (OSError, ValueError, ImportError) as exc:
         logger.warning("vectors_unavailable", error=str(exc), path=str(path))
