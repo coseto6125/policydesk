@@ -249,8 +249,10 @@ COVERAGE = Scenario(
 # and the catalogue needs the scenario. Below the type definitions is the one place
 # both halves are satisfied.
 from policydesk.agent.scenarios.beneficiary import BENEFICIARY
+from policydesk.agent.scenarios.claim_status import CLAIM_STATUS
 from policydesk.agent.scenarios.cooling_off import COOLING_OFF
 from policydesk.agent.scenarios.disclosure import DISCLOSURE
+from policydesk.agent.scenarios.payment import PAYMENT
 from policydesk.agent.scenarios.quote import QUOTE
 from policydesk.agent.scenarios.reinstate import REINSTATE
 from policydesk.agent.scenarios.review import REVIEW
@@ -273,6 +275,8 @@ CATALOGUE: tuple[Scenario, ...] = (
     BENEFICIARY,
     QUOTE,
     COOLING_OFF,
+    PAYMENT,
+    CLAIM_STATUS,
 )
 
 BY_NAME: dict[str, Scenario] = {s.name: s for s in CATALOGUE}
