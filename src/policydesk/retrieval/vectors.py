@@ -273,6 +273,13 @@ async def open_vectors(
         if not await asyncio.to_thread((path / "vectors.npy").is_file):
             logger.info("vectors_absent", path=str(path), hint="build them with: policydesk-index")
             return None
+        if not await asyncio.to_thread((model_dir / MODEL_FILE).is_file):
+            # Checked separately from the matrix, because the two go missing separately.
+            # A built matrix with no model to embed a query against raised out of
+            # `before_server_start` and the desk did not come up at all — a channel that
+            # cannot open is a degradation, never an outage.
+            logger.info("vectors_skipped", reason="model absent", model=str(model_dir))
+            return None
         retriever = await asyncio.to_thread(EmbeddingRetriever, path, model_dir=model_dir)
     except (OSError, ValueError, ImportError) as exc:
         logger.warning("vectors_unavailable", error=str(exc), path=str(path))

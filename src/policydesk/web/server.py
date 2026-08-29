@@ -134,6 +134,35 @@ async def _close_db(application: Sanic, _loop) -> None:
     await application.ctx.provider.close()
 
 
+def _unauthorised(request: Request, what: str, **detail: object):
+    """
+    Refuse a request that does not carry the desk token.
+
+    Args:
+        request: The incoming request.
+        what: What was being asked for, for the log line.
+        detail: Anything else worth logging with the refusal.
+
+    Returns:
+        A 403 response to return, or None to carry on.
+
+    The reasoning is the same one the document route already carried, and the contract
+    routes did not: an id in the URL is a dial, and a route that answers differently for a
+    hit and a miss is an oracle whoever can reach it may turn. `for i in $(seq 1 30)` over
+    `/doc/<id>` walks every applicant's national ID; `?member=` over `/contract/<id>` walks
+    who holds what, 660 products at a time.
+
+    What the token is worth is written in `console.py`: the page hands it to every visitor,
+    so this is not a boundary between the two panes. It is the boundary between the page
+    and everything that is not the page, which is the one the enumeration crosses.
+
+    """
+    if request.args.get("token", "") == DESK_TOKEN:
+        return None
+    logger.warning("access_rejected", what=what, peer=str(request.ip), **detail)
+    return response.text("需要授權", status=403)
+
+
 @app.get("/")
 async def index(_request: Request):
     """Serve the two-pane page."""
@@ -157,12 +186,11 @@ async def download_document(request: Request, document_id: int):
     the image for no gain the applicant can see.
 
     """
-    # Same guard as the desk socket. document_id is a sequential bigserial, so without
-    # it `for i in $(seq 1 30)` walks every applicant's national ID, birth date,
-    # address and declared conditions — which is exactly what an acceptance run did.
-    if request.args.get("token", "") != DESK_TOKEN:
-        logger.warning("document_access_rejected", document_id=document_id, peer=str(request.ip))
-        return response.text("需要授權", status=403)
+    # document_id is a sequential bigserial, so without this `for i in $(seq 1 30)` walks
+    # every applicant's national ID, birth date, address and declared conditions — which
+    # is exactly what an acceptance run did.
+    if refusal := _unauthorised(request, "document", document_id=document_id):
+        return refusal
 
     row = await request.app.ctx.db.fetch_one(
         """SELECT d.document_id, d.kind, d.title, d.sha, d.signed_at,
@@ -716,6 +744,8 @@ async def clause_page(request: Request, product_id: str, clause_id: str):
     against each other.
 
     """
+    if refusal := _unauthorised(request, "contract", product_id=product_id):
+        return refusal
     try:
         viewer = int(request.args.get("member", ""))
     except (TypeError, ValueError):
@@ -785,6 +815,8 @@ async def contract(request: Request, product_id: str):
     stays one click away for anyone who wants it.
 
     """
+    if refusal := _unauthorised(request, "contract", product_id=product_id):
+        return refusal
     if (viewer := int_arg(request)) is None:
         return response.text("需指定保戶", status=403)
     row = await _held(request.app.ctx.db, product_id, viewer)
@@ -826,6 +858,8 @@ async def contract_page(request: Request, product_id: str, page: int):
     extension outright — `Invalid declaration: <page:int>.png`, raised at import.
 
     """
+    if refusal := _unauthorised(request, "contract", product_id=product_id):
+        return refusal
     if (viewer := int_arg(request)) is None:
         return response.text("需指定保戶", status=403)
     row = await _held(request.app.ctx.db, product_id, viewer)
@@ -1021,7 +1055,9 @@ def _render_contract(row: dict[str, Any], pages: int, viewer: int) -> str:
     )
     images = "".join(
         f'<figure id="p{n}"><img loading="lazy" alt="第 {n} 頁"'
-        f' src="/contract/{_esc(row["product_id"])}/page/{n}?member={viewer}">'
+        # The token travels with each image because the page route is guarded too, and a
+        # viewer page whose images all 403 is a blank contract with no error to read.
+        f' src="/contract/{_esc(row["product_id"])}/page/{n}?member={viewer}&token={_esc(DESK_TOKEN)}">'
         f"<figcaption>第 {n} 頁 · 共 {pages} 頁</figcaption></figure>"
         for n in range(1, pages + 1)
     )

@@ -76,16 +76,26 @@ def test_the_contract_route_serves_only_what_the_viewer_holds():
     """
     The catalogue is public; which contract this visitor may open is not.
 
-    No desk token here — /doc/<id> is gated because it renders an applicant's national
-    ID and address, and a contract PDF renders neither. The member scope is what does
-    the work.
+    The member scope was once described here as doing that work on its own. It cannot:
+    `?member=` is chosen by the requester, so 200-for-a-holding and 404-for-a-miss is an
+    oracle over 48 members by 660 products, answered without a token to anyone who can
+    reach the port. The scope decides *which* contract a reader gets; the token decides
+    whether there is a reader at all. Both are asserted, because removing either one puts
+    the enumeration back.
     """
-    held = SERVER[SERVER.index("async def _held("):SERVER.index("def _viewer(")]
+    from types import SimpleNamespace
+
+    from policydesk.web.server import DESK_TOKEN, _unauthorised
+
+    held = SERVER[SERVER.index("async def _held("):SERVER.index('@app.get("/contract/')]
     assert "EXISTS (SELECT 1 FROM policy po" in held
     assert "po.member_id = $2::bigint" in held
     body = SERVER[SERVER.index("async def contract("):SERVER.index('@app.get("/api/llm-turns")')]
     assert "_held(" in body, "every contract read goes through the ownership check"
     assert "contract_out_of_scope" in body
+    anonymous = SimpleNamespace(args={"member": "4"}, ip="1.2.3.4")
+    assert _unauthorised(anonymous, "contract") is not None, "the scope alone is an oracle"
+    assert _unauthorised(SimpleNamespace(args={"token": DESK_TOKEN}, ip="1.2.3.4"), "contract") is None
 
 
 def test_the_policy_row_links_to_its_contract():
