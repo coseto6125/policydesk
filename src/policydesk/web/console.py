@@ -36,6 +36,7 @@ from sanic import Blueprint, Request, response
 
 from policydesk.bootloader import logger
 from policydesk.synthetic.person import insurance_age
+from policydesk.web.params import int_arg
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
@@ -115,41 +116,8 @@ def _json(payload: Any):
     return response.raw(json.encode(payload), content_type="application/json")
 
 
-def _member_id(request: Request) -> int | None:
-    """
-    Read the member this request is scoped to.
-
-    Args:
-        request: The incoming request.
-
-    Returns:
-        The member id, or None when the parameter is absent or not a number.
-
-    """
-    try:
-        return int(request.args.get("member", ""))
-    except (TypeError, ValueError):
-        return None
 
 
-def _int_arg(request: Request, name: str) -> int | None:
-    """
-    Read an optional integer query parameter.
-
-    Args:
-        request: The incoming request.
-        name: Which parameter.
-
-    Returns:
-        The value, or None when absent or unparseable. None reaches the query as a NULL
-        against an `IS NULL OR` guard, which is how one statement serves the filtered and
-        unfiltered reads without formatting a value into SQL.
-
-    """
-    try:
-        return int(request.args.get(name, ""))
-    except (TypeError, ValueError):
-        return None
 
 
 def _needs_member(request: Request) -> tuple[int | None, Any]:
@@ -166,7 +134,7 @@ def _needs_member(request: Request) -> tuple[int | None, Any]:
     and a member-scoped read here that quietly fell back to every member would hand over
     the same rows the socket refuses.
     """
-    if (member_id := _member_id(request)) is None:
+    if (member_id := int_arg(request)) is None:
         return None, response.text("需指定保戶", status=400)
     return member_id, None
 
@@ -213,7 +181,7 @@ async def inbox(request: Request):
            ) lm ON true
            ORDER BY lm.last_at DESC NULLS LAST, m.member_id DESC""",
     )
-    return _json({"member_id": _member_id(request), "rows": rows, "generated_at": datetime.now(UTC)})
+    return _json({"member_id": int_arg(request), "rows": rows, "generated_at": datetime.now(UTC)})
 
 
 @console.get("/transcript")
@@ -337,7 +305,7 @@ async def llm_list(request: Request):
     """
     db: Database = request.app.ctx.db
     tier = request.args.get("tier", "turn")
-    case_id = _int_arg(request, "case_id")
+    case_id = int_arg(request, "case_id")
     turn_id = request.args.get("turn_id") or None
 
     match tier:
