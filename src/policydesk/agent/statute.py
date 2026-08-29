@@ -41,6 +41,7 @@ import aiohttp
 from msgspec import Struct
 
 from policydesk.bootloader import logger
+from policydesk.retrieval.base import QUERY_STOP
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -465,22 +466,10 @@ async def find_articles(
 
 _CJK = re.compile(r"[\u4e00-\u9fff]{2,}")
 
-_STOP = frozenset({
-    "你們", "我們", "為什麼", "憑什麼", "怎麼", "這樣", "可以", "不可以", "應該", "什麼",
-    "這個", "那個", "已經", "根本", "當初", "知道", "想要", "我要", "沒有", "還有", "現在",
-    "公司", "你們公司", "貴公司",
-})
-"""Words a complaint is made of that no provision is about.
-
-Not a general stop list — 保險, 契約 and 解除 are common and load-bearing here. These are
-the words of complaining rather than the words of insurance.
-
-公司 is in the list for a reason worth stating: in a customer's sentence it is a pronoun
-meaning *you*, and in the statute it is a corporate entity the regulator licenses. 公司說
-要解除我的契約 therefore ranked 第164-1條 — 命公司解除經理人或職員之職務 — above 第64條,
-matching on 公司 and 解除 while answering nothing. The customer's word for the insurer is
-第2條的保險人, and he will never type that.
-"""
+# The stop list lives in `retrieval.base` as QUERY_STOP: it is a property of the questions
+# customers ask rather than of either corpus, and the BM25 channel needs the same one. Two
+# copies would drift, and the drift would show up as a query the fallback answers well and
+# the index does not, or the reverse — the hardest kind of ranking difference to attribute.
 
 _TOKENISER = None
 
@@ -515,7 +504,7 @@ def _tokenise(text: str) -> list[str]:
             _TOKENISER.add_word(term)
     words: list[str] = []
     for word in _TOKENISER.cut(text):
-        if len(word) >= 2 and _CJK.fullmatch(word) and word not in _STOP and word not in words:
+        if len(word) >= 2 and _CJK.fullmatch(word) and word not in QUERY_STOP and word not in words:
             words.append(word)
     return words
 
@@ -673,6 +662,37 @@ async def _ranked_by(
     rank = {key: position for position, key in enumerate(keys)}
     rows.sort(key=lambda r: rank.get((r["statute_id"], r["doc_id"]), len(rank)))
     return rows[:limit]
+
+
+def citation(row: dict[str, Any]) -> str:
+    """
+    Write one provision's citation the way it is cited in Chinese.
+
+    Args:
+        row: A `statute_article` row joined to its statute, as `search_statute` returns.
+
+    Returns:
+        e.g. `〔保險法 第64條第2項〕`, exactly the form soothe's `CITATION` reads back.
+
+    Handed to the model already formatted rather than described in the injection. A
+    citation format explained in prose is one the model approximates; one it can copy is
+    one the checker can verify.
+
+    Public and here rather than private and in each scenario, because three scenarios
+    wrote it and each explained in its own docstring that ten lines were not worth
+    sharing. Three copies is the refutation: the 目 level a future amendment adds would
+    have to be added three times, and two of them would drift.
+
+    """
+    number = f"第{row['article']}"
+    if row.get("branch"):
+        number += f"-{row['branch']}"
+    number += "條"
+    if row.get("paragraph"):
+        number += f"第{row['paragraph']}項"
+    if row.get("subparagraph"):
+        number += f"第{row['subparagraph']}款"
+    return f"〔{row['statute_name']} {number}〕"
 
 
 async def with_siblings(db: Database, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

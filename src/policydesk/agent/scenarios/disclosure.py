@@ -86,30 +86,6 @@ codebase translates them for a reader — `web/server.py` joins the raw codes wi
 a scenario that hands the model 'hypertension' gets a reply that says 'hypertension'."""
 
 
-def _readable(row: dict[str, Any]) -> str:
-    """
-    Write one provision's citation the way it is cited in Chinese.
-
-    Args:
-        row: A `statute_article` row joined to its statute, as `search_statute` returns.
-
-    Returns:
-        e.g. `〔保險法 第64條第3項〕`.
-
-    Duplicated from `soothe.py` rather than imported: that module's copy is private to
-    it, and importing a leading-underscore name across an unrelated scenario module
-    couples the two on an implementation detail neither owns. The formatting is ten
-    lines and has no logic worth sharing beyond them.
-    """
-    number = f"第{row['article']}"
-    if row.get("branch"):
-        number += f"-{row['branch']}"
-    number += "條"
-    if row.get("paragraph"):
-        number += f"第{row['paragraph']}項"
-    if row.get("subparagraph"):
-        number += f"第{row['subparagraph']}款"
-    return f"〔{row['statute_name']} {number}〕"
 
 
 async def disclosure_duty(
@@ -137,7 +113,7 @@ async def disclosure_duty(
     rows = await statute.search_statute(db, topic, STATUTE_SCOPE, limit=limit, retriever=retriever)
     return [
         {
-            "citation": _readable(row),
+            "citation": statute.citation(row),
             "statute": row["statute_name"],
             "doc_id": row["doc_id"],
             "paragraph": row["paragraph"],

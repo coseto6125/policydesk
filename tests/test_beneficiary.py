@@ -16,11 +16,11 @@ a member's own record.
 
 import pytest
 
+from policydesk.agent import statute
 from policydesk.agent.scenarios import beneficiary as beneficiary_module
 from policydesk.agent.scenarios.beneficiary import (
     BENEFICIARY,
     TOOLS,
-    _readable,
     current_beneficiary,
     designation_rules,
     gather,
@@ -91,7 +91,7 @@ async def test_designation_rules_citations_are_the_readable_bracketed_form(db):
 
 def test_readable_formats_111_ii_the_way_it_is_cited():
     row = {"statute_name": "保險法", "article": 111, "branch": None, "paragraph": 2, "subparagraph": None}
-    assert _readable(row) == "〔保險法 第111條第2項〕"
+    assert statute.citation(row) == "〔保險法 第111條第2項〕"
 
 
 async def test_current_beneficiary_reads_the_members_real_recorded_relation(db):

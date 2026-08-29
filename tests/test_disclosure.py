@@ -17,11 +17,11 @@ whether a condition needs declaring. That judgment belongs to underwriting.
 
 import pytest
 
+from policydesk.agent import statute
 from policydesk.agent.scenarios import disclosure as disclosure_module
 from policydesk.agent.scenarios.disclosure import (
     DISCLOSURE,
     TOOLS,
-    _readable,
     disclosure_duty,
     gather,
     medical_declaration,
@@ -78,7 +78,7 @@ async def test_disclosure_duty_citations_are_the_readable_bracketed_form(db):
 
 def test_readable_formats_64_iii_the_way_it_is_cited():
     row = {"statute_name": "保險法", "article": 64, "branch": None, "paragraph": 3, "subparagraph": None}
-    assert _readable(row) == "〔保險法 第64條第3項〕"
+    assert statute.citation(row) == "〔保險法 第64條第3項〕"
 
 
 async def test_medical_declaration_reads_the_members_real_recorded_history(db):
