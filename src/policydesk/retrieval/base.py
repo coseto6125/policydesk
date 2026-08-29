@@ -36,7 +36,7 @@ confident first place cannot outvote the other channel entirely."""
 QUERY_STOP: frozenset[str] = frozenset({
     "你們", "我們", "為什麼", "憑什麼", "怎麼", "這樣", "可以", "不可以", "應該", "什麼",
     "這個", "那個", "已經", "根本", "當初", "知道", "想要", "我要", "沒有", "還有", "現在",
-    "公司", "你們公司", "貴公司",
+    "公司", "你們公司", "貴公司", "保單",
 })
 """Words a question is made of that no document is about. Dropped from a query, never
 from a document — removing them at index time would change every document's length and
@@ -53,6 +53,16 @@ retrieval bug from the outside — it looks like a corpus that does not contain 
 
 公司 earns its place for a different reason: in a customer's sentence it is a pronoun
 meaning *you*, and in the statute it is a corporate entity the regulator licenses.
+
+保單 is the same confusion again, and it costs nothing to drop because of how the corpus
+dictionary cuts. In a customer's sentence 保單 means *my contract*; in 保險法 it appears in
+33 of 1,212 articles, all of them about 保單紅利 or 保單價值準備金 — so its IDF is high for
+a word carrying no signal. 保單停效可以復效嗎 therefore ranked 第140條, 保險公司得簽訂參加
+保單紅利之保險契約, above 第116條. Measured A/B on four queries: dropping it moves that one
+from 第140條 to 第116條 and leaves 保單價值準備金怎麼算, 我的保單借款利息 and the clause
+corpus's 保單停效多久內可以復效 in exactly the same order. The compounds survive because
+the dictionary cuts 保單價值準備金 whole, so removing the standalone token never reaches
+them.
 
 Measured by the session that owns `agent/statute.py`, which holds the same set for its
 SQL fallback and imports it from here.

@@ -35,7 +35,7 @@ import asyncio
 import sys
 
 from policydesk.core.db import Database
-from policydesk.retrieval.base import CLAUSE, STATUTE, Retriever
+from policydesk.retrieval.base import CLAUSE, QUERY_STOP, STATUTE, Retriever
 from policydesk.retrieval.index import cut, open_index
 from policydesk.retrieval.vectors import open_vectors
 
@@ -135,15 +135,24 @@ async def probe(
         limit: How many hits to show.
 
     """
-    words = [w for w in cut(question).split(SEP) if w]
-    frequency = await _document_frequency(db, corpus, words)
+    # Both lists, because the gap between them is the point. `cut` is what the tokeniser
+    # produced; `words` is what the search actually weighted after QUERY_STOP. A term
+    # printed as dropped is one that is no longer steering the ranking, and before the stop
+    # list existed that distinction was the bug.
+    every = [w for w in cut(question).split(SEP) if w]
+    words = [w for w in every if w not in QUERY_STOP]
+    dropped = [w for w in every if w in QUERY_STOP]
+    frequency = await _document_frequency(db, corpus, every)
     total, mean = await _corpus_stats(db, corpus)
 
     print(f"\n{'=' * 78}\n{question}")
     # Rarest first: the top of this list is what the ranking is mostly made of, and seeing
-    # a filler word there is the whole diagnosis.
-    order = sorted(frequency.items(), key=lambda kv: kv[1])
-    print("  cut:  " + "  ".join(f"{w}({n})" for w, n in order) + f"   [of {total}]")
+    # a filler word there is the whole diagnosis. A zero means the word is in no document
+    # at all, so it contributes nothing however rare it looks.
+    order = sorted(((w, frequency[w]) for w in words), key=lambda kv: kv[1])
+    print("  used:    " + "  ".join(f"{w}({n})" for w, n in order) + f"   [of {total}]")
+    if dropped:
+        print("  dropped: " + "  ".join(f"{w}({frequency[w]})" for w in dropped) + "   [QUERY_STOP]")
 
     hits = await asyncio.to_thread(retriever.search, question, corpus=corpus, scope=(), limit=limit)
     if not hits:
@@ -156,9 +165,14 @@ async def probe(
         # `short` is the flag for the length-normalisation case: a document well under the
         # mean wins on one incidental word, and the score alone never shows that.
         marker = " SHORT" if length and length < mean * 0.5 else ""
+        # Which of the query's words this hit did NOT contain. A ranking whose top entries
+        # all miss the same word is the one to read closely: that word is the question, and
+        # something else won on evidence the customer did not ask about.
+        missing = [w for w in words if w not in text and frequency.get(w)]
         print(
             f"  {hit.score:6.2f}  {hit.doc_id:<16} {hit.scope_id:<34} "
             f"{length:>4}c (mean {mean:.0f}){marker}  matched={matched}"
+            + (f"  MISSED={missing}" if missing else "")
         )
         print(f"          {text[:88]}")
 

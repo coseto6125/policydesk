@@ -42,7 +42,7 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import tools
-from policydesk.agent.scenario_base import Param, Scenario
+from policydesk.agent.scenario_base import Param, Scenario, gather_tools
 from policydesk.agent.tools import LINES
 from policydesk.bootloader import logger
 from policydesk.skills.calculator import CalculationError, calculate
@@ -224,14 +224,12 @@ async def gather(
     line = params.get("line", "health")
     keyword = params.get("keyword", "")
     amount = _as_amount(params.get("amount", ""))
-    facts: dict[str, Any] = {}
-    if _permitted(allowed, "product_rate"):
-        facts["product_rate"] = await product_rate(db, line, keyword, amount)
-    if _permitted(allowed, "member_underwriting") and member_id is not None:
-        facts["member_underwriting"] = await tools.member_underwriting(
+    factories: dict[str, Any] = {"product_rate": lambda: product_rate(db, line, keyword, amount)}
+    if member_id is not None:
+        factories["member_underwriting"] = lambda: tools.member_underwriting(
             db, member_id, today=today or datetime.now(UTC).date()
         )
-    return facts
+    return await gather_tools(factories, allowed=allowed)
 
 
 QUOTE = Scenario(
