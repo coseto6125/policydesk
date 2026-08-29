@@ -106,14 +106,49 @@ class Retriever(Protocol):
         ...
 
 
-def rrf(rankings: Iterable[list[Hit]], *, limit: int, k: int = RRF_K) -> list[Hit]:
+WEIGHTS: dict[str, dict[str, float]] = {
+    CLAUSE: {"bm25": 0.5, "embedding": 1.0},
+    STATUTE: {"bm25": 1.0, "embedding": 0.5},
+}
+"""How much each channel's rank counts, per corpus. Unlisted channels count 1.0.
+
+Unweighted RRF gives a wrong channel's first place the same 1/(k+1) as a right channel's,
+so a confident answer gets diluted by a confident mistake. Measured on this corpus, that
+happens in opposite directions on the two halves, which is why the weights are per corpus
+rather than global:
+
+- **Clause.** 換工作會不會影響保險 is the query this whole channel exists for. Embedding
+  returns 職業或職務變更的通知義務 first; BM25 returns 本商品說明書僅供參考 boilerplate,
+  because the customer's words appear nowhere in the contract. Unweighted, the boilerplate
+  came first. 什麼情況不賠 is the same shape: embedding finds 除外責任, BM25 finds
+  海外醫療專機運送服務, and the fusion led with the aeroplane.
+- **Statute.** The other way round. 我有據實說明啊 has BM25 on 第64條 and embedding on
+  第149-8條第2項第1款 了結現務, which is not about anything the customer said. The law is
+  short, precise, and written in words a complaint sometimes uses verbatim; a contract is
+  long and shares no vocabulary with the question at all.
+
+0.5 halves a channel's vote rather than removing it: the weaker channel still breaks a tie
+and still promotes a document both agree on, which is the property RRF is for. Removing it
+would be running one channel per corpus and calling it a hybrid.
+"""
+
+
+def rrf(
+    rankings: Iterable[tuple[str, list[Hit]]] | Iterable[list[Hit]],
+    *,
+    limit: int,
+    k: int = RRF_K,
+    weights: dict[str, float] | None = None,
+) -> list[Hit]:
     """
     Fuse several rankings by reciprocal rank.
 
     Args:
-        rankings: One ranked list per channel.
+        rankings: One ranked list per channel, each optionally paired with its channel
+            name as `(name, hits)`. A bare list counts 1.0.
         limit: Most hits to return.
         k: The rank offset.
+        weights: Channel name to weight. None counts every channel 1.0.
 
     Returns:
         The fused ranking, best first. `score` carries the fused value, not any
@@ -128,10 +163,12 @@ def rrf(rankings: Iterable[list[Hit]], *, limit: int, k: int = RRF_K) -> list[Hi
     """
     fused: dict[tuple[str, str], float] = {}
     seen: dict[tuple[str, str], Hit] = {}
-    for ranking in rankings:
+    for entry in rankings:
+        name, ranking = entry if isinstance(entry, tuple) else ("", entry)
+        weight = (weights or {}).get(name, 1.0)
         for position, hit in enumerate(ranking):
             key = (hit.scope_id, hit.doc_id)
-            fused[key] = fused.get(key, 0.0) + 1.0 / (k + position + 1)
+            fused[key] = fused.get(key, 0.0) + weight / (k + position + 1)
             seen.setdefault(key, hit)
     ordered = sorted(fused.items(), key=lambda item: item[1], reverse=True)[:limit]
     return [
@@ -151,9 +188,16 @@ class HybridRetriever:
 
     name = "hybrid"
 
-    def __init__(self, retrievers: Sequence[Retriever], *, depth: int = 4) -> None:
+    def __init__(
+        self,
+        retrievers: Sequence[Retriever],
+        *,
+        depth: int = 4,
+        weights: dict[str, dict[str, float]] | None = None,
+    ) -> None:
         self._retrievers = [r for r in retrievers if r is not None]
         self._depth = depth
+        self._weights = WEIGHTS if weights is None else weights
 
     @property
     def channels(self) -> list[str]:
@@ -184,6 +228,7 @@ class HybridRetriever:
 
         """
         rankings = [
-            r.search(query, corpus=corpus, scope=scope, limit=limit * self._depth) for r in self._retrievers
+            (r.name, r.search(query, corpus=corpus, scope=scope, limit=limit * self._depth))
+            for r in self._retrievers
         ]
-        return rrf(rankings, limit=limit)
+        return rrf(rankings, limit=limit, weights=self._weights.get(corpus))

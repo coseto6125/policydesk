@@ -238,3 +238,45 @@ def test_a_stop_word_no_longer_decides_the_ranking(index):
     rescind = [h.doc_id for h in index.search("猶豫期幾天可以撤銷", corpus=STATUTE, limit=3)]
     assert lapse != rescind, "two different questions returned one ranking"
     assert lapse[0].startswith("art.116"), f"停效復效 should reach 第116條, got {lapse}"
+
+
+def test_weighting_is_per_corpus_and_leaves_a_beaten_channel_a_vote():
+    from policydesk.retrieval.base import CLAUSE, STATUTE, WEIGHTS
+
+    assert WEIGHTS[CLAUSE]["embedding"] > WEIGHTS[CLAUSE]["bm25"], "the contract shares no words with the question"
+    assert WEIGHTS[STATUTE]["bm25"] > WEIGHTS[STATUTE]["embedding"], "the law is short and sometimes quoted verbatim"
+    for corpus in (CLAUSE, STATUTE):
+        assert min(WEIGHTS[corpus].values()) > 0, (
+            "a weight of zero is one channel per corpus wearing a hybrid's name"
+        )
+
+
+def test_a_confident_channel_is_not_diluted_by_a_confident_mistake():
+    # Unweighted RRF gives a wrong channel's first place the same 1/(k+1) as a right
+    # channel's. Measured: 換工作會不會影響保險 had embedding on 職業或職務變更的通知義務
+    # and BM25 on 本商品說明書僅供參考 boilerplate, and the fusion led with the boilerplate.
+    from policydesk.retrieval.base import CLAUSE, Hit, rrf
+
+    right = [Hit(corpus=CLAUSE, doc_id="art.18", scope_id="p1", score=0.6)]
+    wrong = [Hit(corpus=CLAUSE, doc_id="art.6", scope_id="p1", score=9.0)]
+    flat = rrf([("bm25", wrong), ("embedding", right)], limit=2)
+    weighted = rrf([("bm25", wrong), ("embedding", right)], limit=2, weights={"bm25": 0.5, "embedding": 1.0})
+    assert flat[0].doc_id == "art.6", "unweighted, the two first places tie and insertion order decides"
+    assert weighted[0].doc_id == "art.18"
+    assert [h.doc_id for h in weighted] == ["art.18", "art.6"], "the halved channel still ranks, it does not vanish"
+
+
+def test_the_weighted_hybrid_reaches_what_only_one_channel_can(index):
+    # The query this whole second channel exists for. 換工作 and 職業變更 share no
+    # character, so the lexical side has nothing to rank on.
+    import asyncio
+
+    from policydesk.core.db import Database
+    from policydesk.retrieval.base import CLAUSE, HybridRetriever
+    from policydesk.retrieval.vectors import open_vectors
+
+    semantic = asyncio.run(open_vectors(Database()))
+    if semantic is None:
+        pytest.skip("no vectors built")
+    hits = HybridRetriever([index, semantic]).search("換工作會不會影響保險", corpus=CLAUSE, scope=(), limit=3)
+    assert hits, "the hybrid returned nothing for a question the corpus answers"
