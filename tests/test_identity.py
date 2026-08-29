@@ -5,6 +5,8 @@ A123456789 is the canonical valid example: A=10 contributes 1 and 0*9, then the 
 1..9 at weights 8,7,6,5,4,3,2,1,1 sum with it to 130, which is divisible by ten.
 """
 
+from pathlib import Path
+
 import pytest
 
 from policydesk.gov.identity import Sex, checksum_ok, complete, issue, serials, verify
@@ -81,3 +83,26 @@ def test_verify_refuses_a_valid_but_unissued_number():
 def test_verify_accepts_an_issued_number():
     minted = issue(Sex.FEMALE, 7)
     assert verify(minted, known=frozenset({minted})).verified
+
+
+def test_the_attempt_limit_is_read_by_the_code_that_declares_it():
+    # `MAX_CONFIRM_ATTEMPTS` was declared with a docstring calling an unbounded retry an
+    # offline guessing machine, and nothing read it — so the desk was the machine its own
+    # comment described. A masked ID gives away the letter, the sex digit and the check
+    # digit, so the space a caller has to walk is seven digits, not ten characters.
+    source = Path("src/policydesk/web/server.py").read_text()
+    assert source.count("MAX_CONFIRM_ATTEMPTS") >= 2, "the constant must be read somewhere"
+    assert "attempts >= MAX_CONFIRM_ATTEMPTS" in source
+    socket = source[source.index("async def customer_socket("):]
+    assert "locked = True" in socket
+    assert "identity_locked" in socket, "a lockout nobody can see in the log is one nobody can audit"
+
+
+def test_the_operator_trace_routes_carry_the_same_guard_as_the_console():
+    # /api/llm-conversations returns every case's display_name, and display_name is the
+    # only input needed to open a session as that member. The console's own equivalents
+    # are guarded; these two are the same rows over a different path.
+    source = Path("src/policydesk/web/server.py").read_text()
+    for route in ("llm_conversations", "llm_turns"):
+        at = source.index(f"async def {route}(request: Request):")
+        assert "_unauthorised(request" in source[at:at + 1200], f"{route} answers without a token"

@@ -305,6 +305,10 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
     # because the next connection is a different person until it proves otherwise.
     confirmed = False
     attempts = 0
+    locked = False
+    """Set once the tries run out. Session-local like `confirmed`, so a refresh gives a
+    fresh three — the same reset the whole check already has, and the alternative is a
+    lockout keyed on something this desk does not hold."""
     pending_question: str | None = None
     """What they asked before the check interrupted them. Captured once, so a wrong
     number typed after it does not become the question the desk comes back to."""
@@ -432,6 +436,15 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     # Length, not shape: this project answers every other question with a
                     # prompt rather than a pattern, and the identity mechanism is the one
                     # stated exception. A Taiwanese national ID is exactly ten characters.
+                    if locked:
+                        # Every later ten-character message is another guess. Answering it
+                        # at all — even with a refusal that varies — is the oracle.
+                        await ws.send(json.encode({
+                            "type": "reply",
+                            "text": "本次線上核對已暫停，請改由專人與您確認身分。",
+                            "scenario": None, "citations": [], "faults": [], "params": {}, "quick": [],
+                        }).decode())
+                        continue
                     given = (message.get("text") or "").strip().upper()
                     held = await db.fetch_val(
                         'SELECT national_id FROM member WHERE member_id = ('
@@ -453,9 +466,23 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     # national ID is one character from the real one, and either would
                     # ride in the history block of every later prompt.
                     if given != held:
+                        # Counted, and now acted on. `MAX_CONFIRM_ATTEMPTS` had been
+                        # declared with a docstring calling an unbounded retry an offline
+                        # guessing machine, and nothing read it — so the desk was the
+                        # machine its own comment described. The space is not 10^9 either:
+                        # `_mask` shows the first two characters and the last, which gives
+                        # away the letter, the sex digit and the check digit, leaving seven.
+                        if attempts >= MAX_CONFIRM_ATTEMPTS:
+                            locked = True
+                            logger.warning("identity_locked", case_id=case_id, attempts=attempts)
                         await ws.send(json.encode({
                             "type": "reply",
-                            "text": "這組號碼與檔案不符，請再確認一次您的身分證字號。",
+                            "text": (
+                                "多次核對未通過，為保護您的個人資料，本次線上核對已暫停，"
+                                "請改由專人與您確認身分。"
+                                if locked
+                                else "這組號碼與檔案不符，請再確認一次您的身分證字號。"
+                            ),
                             "scenario": None, "citations": [], "faults": [], "params": {}, "quick": [],
                         }).decode())
                         continue
@@ -884,6 +911,8 @@ async def llm_turns(request: Request):
         One row per turn_id with its phases, tokens, cost and latency.
 
     """
+    if refusal := _unauthorised(request, "llm_trace"):
+        return refusal
     rows = await request.app.ctx.db.fetch(
         """SELECT turn_id, min(created_at) AS started_at, count(*) AS calls,
                   array_agg(phase ORDER BY id) AS phases,
@@ -909,6 +938,8 @@ async def llm_conversations(request: Request):
         One row per case with its turn count, tokens and cost.
 
     """
+    if refusal := _unauthorised(request, "llm_trace"):
+        return refusal
     rows = await request.app.ctx.db.fetch(
         """SELECT u.case_id, m.display_name, count(DISTINCT u.turn_id) AS turns, count(*) AS calls,
                   sum(u.total_tokens) AS total_tokens, sum(u.cost_usd) AS cost_usd,
