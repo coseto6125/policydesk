@@ -183,14 +183,44 @@ def test_the_scenario_module_contract_is_what_the_executor_calls():
     assert code.co_flags & 0x08, "member_id and today are passed to every scenario module"
 
 
-def test_beneficiary_prepares_and_never_writes_to_member():
-    import inspect
+@pytest.mark.asyncio
+async def test_beneficiary_prepares_and_never_writes_to_member():
+    """
+    The desk prepares a change of beneficiary. It does not make one.
+
+    Asserted by running `gather` against a database that raises on anything but a read,
+    rather than by searching this module's source for the word UPDATE. A string search
+    sees only this file — a write reached through a helper it imports is invisible to it,
+    and the helper is exactly where a write would arrive.
+    """
+    from datetime import date
 
     from policydesk.agent.scenarios import beneficiary
 
-    source = inspect.getsource(beneficiary)
-    assert "UPDATE" not in source.upper()
-    assert "INSERT" not in source.upper()
+    class ReadOnlyDB:
+        def _check(self, sql: str) -> None:
+            head = sql.strip().split(None, 1)[0].upper()
+            if head not in {"SELECT", "WITH"}:
+                raise AssertionError(f"this scenario wrote to the database: {head}")
+
+        async def fetch(self, sql: str, params: object = None) -> list[dict[str, object]]:
+            self._check(sql)
+            return []
+
+        async def fetch_one(self, sql: str, params: object = None) -> dict[str, object] | None:
+            self._check(sql)
+            return None
+
+        async def fetch_val(self, sql: str, params: object = None) -> object:
+            self._check(sql)
+            return None
+
+        async def execute(self, sql: str, params: object = None) -> None:
+            raise AssertionError("this scenario executed a statement")
+
+    await beneficiary.gather(
+        ReadOnlyDB(), {"concern": "我離婚了要換人"}, member_id=1, today=date(2026, 8, 29), allowed=None
+    )
     assert "已經幫您改好了" in beneficiary.BENEFICIARY.injection, "named as the exact phrase to forbid"
 
 

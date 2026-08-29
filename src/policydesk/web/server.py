@@ -42,6 +42,7 @@ from policydesk.synthetic.person import generate, insurance_age, occupation_cata
 from policydesk.synthetic.portfolio import DEFAULT_PRESET, enrol, preset_catalogue
 from policydesk.web.console import console
 from policydesk.web.highlight import page_count, page_image
+from policydesk.web.params import int_arg
 from policydesk.web.session import Registry
 
 STATIC = Path(__file__).parent / "static"
@@ -763,21 +764,6 @@ async def _held(db: Database, product_id: str, viewer: int) -> dict[str, Any] | 
     )
 
 
-def _viewer(request: Request) -> int | None:
-    """
-    Read the member this request is scoped to.
-
-    Args:
-        request: The request.
-
-    Returns:
-        The member id, or None when it is absent or not a number.
-
-    """
-    try:
-        return int(request.args.get("member", ""))
-    except (TypeError, ValueError):
-        return None
 
 
 @app.get("/contract/<product_id:str>")
@@ -799,7 +785,7 @@ async def contract(request: Request, product_id: str):
     stays one click away for anyone who wants it.
 
     """
-    if (viewer := _viewer(request)) is None:
+    if (viewer := int_arg(request)) is None:
         return response.text("需指定保戶", status=403)
     row = await _held(request.app.ctx.db, product_id, viewer)
     if row is None:
@@ -840,7 +826,7 @@ async def contract_page(request: Request, product_id: str, page: int):
     extension outright — `Invalid declaration: <page:int>.png`, raised at import.
 
     """
-    if (viewer := _viewer(request)) is None:
+    if (viewer := int_arg(request)) is None:
         return response.text("需指定保戶", status=403)
     row = await _held(request.app.ctx.db, product_id, viewer)
     if row is None:
