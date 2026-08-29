@@ -176,3 +176,24 @@ def test_a_scenario_says_what_an_empty_tool_result_means(scenario):
     assert EXPLAINS.search(scenario.injection), (
         f"{scenario.name} runs {sorted(scenario.tools)} and never says what an empty one means"
     )
+
+
+def test_every_scenario_carries_an_operator_summary():
+    """
+    A scenario with no summary is a blank cell in the console.
+
+    `description` cannot stand in for it. That field is routing material written for the
+    model — a list of example questions followed by the cases to route elsewhere — and
+    its opening clause reads as a rule about when to pick the scenario rather than as a
+    statement of what the scenario does. The console showed the English key alone before
+    this field existed, which an operator has to already know to read.
+    """
+    missing = [s.name for s in CATALOGUE if not s.summary.strip()]
+    assert not missing, f"no summary, so the console shows these as a bare key: {missing}"
+
+
+def test_a_summary_is_one_short_line():
+    # Long enough to say what the scenario does, short enough for a table cell. The
+    # failure it guards is someone pasting the routing description in.
+    too_long = [(s.name, len(s.summary)) for s in CATALOGUE if len(s.summary) > 40]
+    assert not too_long, f"summary is a table cell, not a paragraph: {too_long}"

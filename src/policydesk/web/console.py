@@ -35,6 +35,8 @@ from typing import TYPE_CHECKING, Any
 from msgspec import json
 from sanic import Blueprint, Request, response
 
+from policydesk.agent.scenario import CATALOGUE
+from policydesk.agent.tools import insured_amount
 from policydesk.bootloader import logger
 from policydesk.synthetic.person import insurance_age
 from policydesk.web.params import int_arg
@@ -262,7 +264,7 @@ async def profile(request: Request):
     policies = await db.fetch(
         """SELECT po.policy_id, po.policy_number, po.product_id, po.sum_insured, po.effective_at,
                   po.lapsed_at, po.main_policy_id, main.policy_number AS main_policy_number,
-                  pr.name AS product_name, pr.line, pr.attachment,
+                  pr.name AS product_name, pr.line, pr.attachment, ce.unit_label,
                   round(coalesce(ce.unit_premium, 0) * po.sum_insured / 1000.0)::float8 AS annual_premium
            FROM policy po
            JOIN product pr USING (product_id)
@@ -286,6 +288,13 @@ async def profile(request: Request):
     # sees what they bought and nothing about what has happened since — no premium behind or
     # ahead, nobody named on the contract, no claim in flight. Those are the three things the
     # customer is most likely to be ringing about.
+    # Rendered here for the same reason `list_policies` renders it: `sum_insured` counts
+    # thousandths of one `unit_label` unit, so 1000 against 每 100 萬元保額 is 100 萬元,
+    # and a back office printing the raw count shows a figure a thousand times too small
+    # beside a premium that is right. The desk's own renderer, not a second one.
+    for policy in policies:
+        policy["insured"] = insured_amount(policy["sum_insured"], policy["unit_label"])
+
     payments, beneficiaries, claims = await asyncio.gather(
         db.fetch(
             """SELECT pp.due_at, pp.paid_at, pp.amount, pp.method, po.policy_number
@@ -525,6 +534,16 @@ async def scenarios(request: Request):
            GROUP BY u.scenario
            ORDER BY sum(u.total_tokens) DESC""",
     )
+    # The table stores the scenario's key and nothing else, which is the right thing for
+    # it to store — the Chinese name and the one-line summary are display copy and they
+    # change without the rows meaning anything different. Joined here from the catalogue
+    # so the console shows an operator both names and what the scenario does, rather than
+    # an English identifier they have to already know.
+    named = {s.name: s for s in CATALOGUE}
+    for row in rows:
+        found = named.get(row["scenario"] or "")
+        row["display_name"] = found.display_name if found else None
+        row["summary"] = found.summary if found else None
     return _json({"rows": rows})
 
 

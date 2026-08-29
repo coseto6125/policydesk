@@ -370,6 +370,7 @@
     font-size: 11px; letter-spacing: .13em; text-transform: uppercase;
     color: var(--ink-3); font-weight: 700;
   }
+  .none { color: var(--ink-3); }
   .count { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; letter-spacing: 0; }
 
   .kv { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 7px var(--s3); margin: 0; font-size: 13px; }
@@ -535,33 +536,57 @@
   }
 
   /* ── 即時流程圖 ── */
-  /* Six nodes have to fit a pane the chat leaves 770px of, so the basis is what makes
-     the whole pipeline visible without a sideways scroll — a diagram whose last node is
-     off-screen is where every settled turn parks, which is the half worth seeing. */
-  .flow { display: flex; align-items: stretch; overflow-x: auto; padding: var(--s3); gap: 0; }
-  .node { flex: 1 1 108px; min-width: 108px; display: grid; grid-template-rows: auto 1fr; gap: var(--s2); }
-  .node .cap { display: flex; align-items: center; gap: 5px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700; color: var(--ink-2); white-space: nowrap; }
-  .node .cap i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
-  .node .bay {
-    border: 1px dashed var(--rule); border-radius: var(--radius); background: var(--paper-2);
-    min-height: 150px; max-height: 300px; overflow-y: auto;
-    padding: var(--s2); display: grid; gap: 6px; align-content: start;
+  /* A vertical stack of stages, one section each, after enoract's diagnostics rail: a
+     faint label and a count on one line, the rows under it, and a rule between sections
+     instead of a box drawn around every one.
+
+     It replaces a six-column board. With the chat open the pane is 770px, so a column
+     got 108px and every field on a card — name, turn id, scenario, tokens — was cut by
+     an ellipsis, with no two figures sharing a left edge. Down the page each row has
+     the pane's full width, so the numbers right-align into a column that reads. */
+  .stages { display: flex; flex-direction: column; }
+  /* The spine. These sections are a pipeline and their order carries meaning, which a
+     plain stack of cards does not say. The rule runs from each dot to the next one, so
+     the six stages read as one chain — the only thing added beyond the panel this
+     layout is taken from, and it is here because that panel's sections are unordered. */
+  .stage { position: relative; border-bottom: 1px solid var(--rule-soft); }
+  .stage::before {
+    content: ""; position: absolute; left: calc(var(--s3) + 4px); top: 22px; bottom: 0;
+    width: 1px; background: var(--rule);
   }
-  .node.hot .bay { border-style: solid; border-color: var(--accent); background: var(--accent-wash); }
-  /* Pinned to the top of the bay row rather than centred: the bays stretch to the
-     fullest one, and a centred arrow then floats halfway down an empty column. */
-  .arrow { align-self: start; padding: 34px 2px 0; color: var(--ink-3); font-family: var(--mono); font-size: 13px; }
-  .turncard {
-    background: var(--paper); border: 1px solid var(--rule); border-left: 3px solid var(--accent);
-    border-radius: 6px; padding: 6px 8px; display: grid; gap: 1px; box-shadow: var(--shadow-1);
-  }
-  .turncard b { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* One line each, clipped. A 108px node wraps a turn_id to four lines otherwise, and
-     four wrapped cards fill the bay with an id nobody reads in full anyway. */
-  .turncard span { font-family: var(--mono); font-size: 10px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .turncard.settled { opacity: .55; border-left-color: var(--ink-3); }
+  .stage:last-child { border-bottom: 0; }
+  .stage:last-child::before { display: none; }
+  .stage-head { display: flex; align-items: center; gap: var(--s2); padding: 9px var(--s3); }
+  .stage-head .dot { width: 9px; height: 9px; border-radius: 999px; flex: none; position: relative; z-index: 1; }
+  .stage-head .count { margin-left: auto; }
+  .stage.hot .stage-head { background: var(--accent-wash); }
+  /* Indented to clear the spine, so a row starts where the dot's label starts. */
+  .stage-body { padding: 2px var(--s3) var(--s3) calc(var(--s3) + 17px); display: grid; gap: var(--s3); }
+
+  .turnrow { display: grid; gap: 4px; }
+  .turnrow .top { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s2); }
+  .turnrow .who { font-size: 13px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .turnrow .num { flex: none; font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .turnrow .sub { display: flex; gap: var(--s2); min-width: 0; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+  .turnrow .sub span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .turnrow .sub .id { flex: 1 1 auto; }
+  /* Fills as the turn's silence approaches the threshold past which it is counted as
+     answered, so a nearly-full bar is a turn about to leave the board. A settled row's
+     bar is full by definition, and goes grey rather than reading as a finished race. */
+  .wait-bar { height: 3px; border-radius: 999px; background: var(--rule-soft); overflow: hidden; }
+  .wait-bar i { display: block; height: 100%; border-radius: 999px; }
+  .turnrow.settled .who { font-weight: 500; color: var(--ink-2); }
+  .turnrow.settled .wait-bar i { background: var(--rule); }
 
   /* ── 各情境 token 消耗 / dashboard ── */
+  /* Three lines in one cell: the Chinese name reads first because that is what an
+     operator calls the scenario, the key sits beside it because that is what a trace
+     row carries, and the summary sits under both. */
+  .scen { display: grid; gap: 2px; }
+  .scen .nm { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+  .scen b { font-size: 13px; font-weight: 600; }
+  .scen code { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+  .scen .what { font-size: 11.5px; color: var(--ink-2); line-height: 1.5; }
   .bar-cell { display: grid; grid-template-columns: 1fr; gap: 3px; min-width: 90px; }
   .track { height: 7px; border-radius: 999px; background: var(--rule-soft); overflow: hidden; }
   .track i { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
@@ -833,7 +858,7 @@
       <div class="kpis" id="kpis" hidden>
         <div class="kpi"><span class="k">有效保單</span><span class="v" id="kpiActive">—</span></div>
         <div class="kpi"><span class="k">年繳保費</span><span class="v" id="kpiPremium">—</span></div>
-        <div class="kpi"><span class="k">有效保單</span><span class="v" id="kpiSum">—</span></div>
+        <div class="kpi" id="kpiLapsedBox"><span class="k">已停效</span><span class="v" id="kpiLapsed">—</span></div>
         <div class="kpi" id="kpiTodoBox"><span class="k">待辦</span><span class="v" id="kpiTodo">—</span></div>
       </div>
 
@@ -1020,7 +1045,7 @@
       </div>
       <div class="card">
         <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-workflow"/></svg>回合流程</h3><span class="spacer"></span><span class="count" id="flowCount"></span></header>
-        <div class="body flush"><div class="flow" id="flowCanvas"><div class="empty">載入中</div></div></div>
+        <div class="body flush"><div class="stages" id="flowCanvas"><div class="empty">載入中</div></div></div>
       </div>
     </div>
 
@@ -1037,6 +1062,7 @@
         <div class="kpi"><span class="k">總 token</span><span class="v" id="tkTotal">—</span></div>
         <div class="kpi"><span class="k">快取 token</span><span class="v" id="tkCached">—</span></div>
         <div class="kpi"><span class="k">情境數</span><span class="v" id="tkScenarios">—</span></div>
+        <div class="kpi"><span class="k">成本（API 牌價）</span><span class="v" id="tkCost">—</span></div>
       </div>
       <div class="card">
         <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-coins"/></svg>情境用量</h3><span class="spacer"></span><span class="count" id="tokenCount"></span></header>
@@ -1285,7 +1311,14 @@ function renderPolicies(policies, c) {
   $("kpis").hidden = policies.length === 0;
   $("kpiActive").innerHTML = `${active.length}<small>張 / 共 ${policies.length}</small>`;
   $("kpiPremium").innerHTML = `${money(active.reduce((t, p) => t + Number(p.annual_premium || 0), 0))}<small>元</small>`;
-  $("kpiSum").innerHTML = `${active.length}<small>張有效</small>`;
+  // 保險金額合計 stood here until summing `sum_insured` across policies with different
+  // `unit_label`s turned out to mean nothing, and the tile was relabelled rather than
+  // replaced — leaving two adjacent tiles both reading 有效保單 with the same number.
+  // A lapsed policy is a conversation somebody has to start, so it earns the slot the
+  // way 待辦 next to it does.
+  const lapsed = policies.length - active.length;
+  $("kpiLapsed").innerHTML = `${lapsed}<small>張</small>`;
+  $("kpiLapsedBox").classList.toggle("alert", lapsed > 0);
   const todo = (c.documents ?? []).filter(d => !d.signed_at).length;
   $("kpiTodo").innerHTML = todo ? `${todo}<small>項</small>` : `0<small>項</small>`;
   $("kpiTodoBox").classList.toggle("alert", todo > 0);
@@ -2031,20 +2064,48 @@ async function loadLive() {
     const running = data.turns.filter(t => !t.settled);
     $("flowCount").textContent = `進行中 ${running.length} · 顯示 ${data.turns.length}`;
     $("flowNote").textContent = `每 ${LIVE_POLL_MS / 1000} 秒輪詢 /api/console/live · 超過 ${data.idle_after_s} 秒未寫入即視為已回覆`;
-    canvas.innerHTML = data.nodes.map((node, i) => {
+    canvas.innerHTML = data.nodes.map(node => {
       const cards = data.turns.filter(t => t.node === node);
-      return `<div class="node ${cards.some(t => !t.settled) ? "hot" : ""}">
-          <span class="cap"><i style="background:${phaseColour(node)}"></i>${esc(PHASE_NAMES[node] ?? node)}</span>
-          <div class="bay">${cards.map(t => `
-            <div class="turncard ${t.settled ? "settled" : ""}" style="border-left-color:${phaseColour(t.phase)}">
-              <b>${esc(t.display_name ?? "—")}</b>
-              <span>${esc(t.turn_id)}</span>
-              <span>${t.scenario ? esc(t.scenario) : "未歸屬"} · ${money(t.total_tokens)} tok</span>
-              <span>${ago(t.last_at)}</span>
-            </div>`).join("") || `<div class="empty" style="padding:var(--s2)">—</div>`}</div>
-        </div>${i < data.nodes.length - 1 ? `<span class="arrow">→</span>` : ""}`;
+      // An empty stage keeps its header and drops its body. Six stages are mostly empty
+      // at any moment, and six empty bays down a page is a screen of nothing; the header
+      // row alone still shows the stage exists and holds none, which is what the board
+      // version spent a whole column to say.
+      return `<section class="stage ${cards.some(t => !t.settled) ? "hot" : ""}">
+          <div class="stage-head">
+            <span class="dot" style="background:${phaseColour(node)}"></span>
+            <span class="label">${esc(PHASE_NAMES[node] ?? node)}</span>
+            <span class="count">${cards.length}</span>
+          </div>
+          ${cards.length ? `<div class="stage-body">${cards.map(t => turnRow(t, data.idle_after_s)).join("")}</div>` : ""}
+        </section>`;
     }).join("");
   } catch (err) { fail(canvas, err); }
+}
+
+/**
+ * One turn as a row: who is waiting, what the turn has cost, and how far its silence
+ * has run toward the threshold that parks it on 已回覆.
+ *
+ * The bar measures the silence rather than the spend. Every row inside a stage has
+ * reached the same phase, so a bar drawn from progress would be identical down the
+ * whole section and encode nothing; how long a turn has sat there is the one figure
+ * that differs between two rows of the same stage, and it is what the pane is watched
+ * for. `age_s` keeps growing after a turn settles, so the fill is clamped.
+ */
+function turnRow(t, idleAfter) {
+  const pct = Math.min(1, (Number(t.age_s) || 0) / Math.max(1, idleAfter)) * 100;
+  return `<div class="turnrow ${t.settled ? "settled" : ""}">
+      <div class="top">
+        <span class="who">${esc(t.display_name ?? "—")}</span>
+        <span class="num">${money(t.total_tokens)} tok</span>
+      </div>
+      <div class="sub">
+        <span class="id">${esc(t.turn_id)}</span>
+        <span>${t.scenario ? esc(t.scenario) : "未歸屬"}</span>
+        <span>${ago(t.last_at)}</span>
+      </div>
+      <div class="wait-bar"><i style="width:${pct.toFixed(0)}%;background:${phaseColour(t.phase)}"></i></div>
+    </div>`;
 }
 
 /* ── 各情境 token 消耗 ── */
@@ -2060,11 +2121,24 @@ async function loadTokens() {
     $("tkTotal").innerHTML = `${money(sum("total_tokens"))}<small>tok</small>`;
     $("tkCached").innerHTML = `${money(sum("cached_tokens"))}<small>tok</small>`;
     $("tkScenarios").innerHTML = `${rows.filter(r => r.scenario).length}<small>個</small>`;
+    // A row whose model is absent from the rate table comes back with cost_usd NULL.
+    // Counted and named rather than folded into the total as a zero: a bill that
+    // silently omits a model reads as a cheaper deployment, not as an incomplete one.
+    const unpriced = rows.filter(r => r.cost_usd === null || r.cost_usd === undefined).length;
+    $("tkCost").innerHTML = `${usd(rows.some(r => r.cost_usd != null) ? sum("cost_usd") : null)}`
+      + (unpriced ? `<small>${unpriced} 列未定價</small>` : "<small>USD</small>");
     $("tokenCount").textContent = rows.length || "";
     body.innerHTML = rows.length ? rows.map(r => `
       <tr>
         <td>${r.scenario
-          ? esc(r.scenario)
+          // Both names, then what it does. The key alone is an identifier an operator
+          // has to already know; the Chinese name alone cannot be matched against a
+          // trace row, which carries the key. The summary is the line that makes a
+          // scenario nobody has opened this month legible.
+          ? `<div class="scen">
+               <span class="nm"><b>${esc(r.display_name ?? r.scenario)}</b><code>${esc(r.scenario)}</code></span>
+               ${r.summary ? `<span class="what">${esc(r.summary)}</span>` : ""}
+             </div>`
           // route runs before a scenario exists and the offline sweep answers no
           // message, so both land with scenario NULL. Shown as its own row: these are
           // most of the bill, and dropping them under-counts every other line.
@@ -2079,7 +2153,7 @@ async function loadTokens() {
           <span class="track"><i style="width:${(100 * Number(r.total_tokens || 0) / top).toFixed(1)}%"></i></span>
         </div></td>
         <td class="num mono tight">${round(r.p50_ms)} / ${round(r.p95_ms)}</td>
-        <td class="num mono">${usd(r.cost_usd)}</td>
+        <td class="num mono">${r.cost_usd == null ? `<span class="none">未定價</span>` : usd(r.cost_usd)}</td>
       </tr>`).join("") : `<tr><td colspan="8" class="empty">尚無紀錄</td></tr>`;
   } catch (err) { fail(body, err); }
 }

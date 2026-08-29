@@ -200,6 +200,7 @@ async def gather(
 DISCLOSURE = Scenario(
     name="disclosure",
     display_name="健康告知說明",
+    summary="說明據實說明義務與未告知的後果",
     description=(
         "保戶問健康告知或據實說明義務，例如自己有沒有的病史、開過的刀、"
         "算不算要寫進健康告知、沒寫會怎樣時使用。這個情境不判斷該不該寫，只說明規則、"

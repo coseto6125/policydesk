@@ -167,6 +167,7 @@ async def gather(
 SOOTHE = Scenario(
     name="soothe",
     display_name="疑義與申訴",
+    summary="保戶不滿或引法條質問時的回應與申訴管道",
     description=(
         "保戶表達不滿、質疑公司做法、認為被騙、提到要申訴或提告、或引用法條質問時使用。"
         "例如「你們憑什麼解約」「這根本是騙人的」「我要去金管會申訴」「保險法不是寫…嗎」。"
