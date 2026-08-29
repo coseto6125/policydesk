@@ -47,6 +47,18 @@ def test_scenarios_touching_the_customer_book_derive_the_gate(scenario):
     assert tools.reads_identity(scenario.tools), f"{scenario.name} reaches member data ungated"
 
 
+@pytest.fixture(scope="module")
+async def db():
+    from policydesk.core.db import Database
+
+    pool = Database()
+    try:
+        await pool.fetch_val("SELECT 1")
+    except Exception:
+        pytest.skip("policydesk-pg is not up")
+    return pool
+
+
 class _RefusingDB:
     """
     A database that raises the moment a query names a member table.
@@ -135,7 +147,8 @@ def test_the_number_is_compared_on_the_server():
     assert "national_id ===" not in page, "the page must not compare the number itself"
 
 
-def test_a_greeting_is_answered_rather_than_frisked():
+@pytest.mark.asyncio
+async def test_a_greeting_is_answered_rather_than_frisked(db):
     """
     Saying 嗨 is not a request for anyone's policy data.
 
@@ -143,13 +156,18 @@ def test_a_greeting_is_answered_rather_than_frisked():
     check belongs to the question that needs it, so an unconfirmed turn still routes and
     still answers — only the member queries are withheld.
     """
-    from policydesk.agent.executor import _public_only
+    from policydesk.agent.executor import Turn, _gather
+    from policydesk.agent.scenario import BY_NAME
 
-    marker = "        # The gate withholds the member queries, not the conversation."
-    body = EXECUTOR[EXECUTOR.index(marker):]
-    assert "turn.awaiting_identity = True" in body[:900]
-    assert "return turn" not in body[:body.index("turn.scenario = scenario.name")]
-    assert _public_only is not None
+    # A scenario an unverified customer can reach must still produce material, not a bare
+    # refusal. `browse_products` is the case: its one tool is the public catalogue, and it
+    # is what 你們有什麼壽險 routes to before anyone has proved who they are.
+    facts = await _gather(
+        db, BY_NAME["browse_products"], Turn(1, 1), today=date(2026, 8, 29),
+        params={"line": "life"}, confirmed=False,
+    )
+    assert facts.get("catalogue_sample"), "the desk answered a public question with nothing"
+    assert facts.get("_identity_required") is True, "and it must still say a part is withheld"
 
 
 def test_a_number_typed_in_answer_is_never_routed():

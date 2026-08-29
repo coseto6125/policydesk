@@ -134,20 +134,6 @@ function is the one that actually reaches `policy`.
 """
 
 
-def _permitted(allowed: frozenset[str] | None, name: str) -> bool:
-    """
-    Say whether this turn's gate lets a tool run.
-
-    Args:
-        allowed: What the executor computed, or None for a direct call — a test, most
-            often — which is not gated at all.
-        name: The tool's name, as `TOOLS` keys it.
-
-    Returns:
-        True when the tool may run.
-
-    """
-    return allowed is None or name in allowed
 
 
 async def gather(

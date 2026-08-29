@@ -392,29 +392,6 @@ async def _gather(
     return facts
 
 
-async def _public_only(db: Database, scenario: Scenario, params: dict[str, str]) -> dict[str, Any]:
-    """
-    Gather what can be said to someone who has not proved who they are.
-
-    Args:
-        db: The database.
-        scenario: Which scenario is running.
-        params: What the router collected.
-
-    Returns:
-        Public material only, plus a marker the injection reads. No member row is
-        touched, so the decorator's promise holds at the query and not merely in the
-        prose written afterwards.
-
-    """
-    # No member, so no contracts, so no clause id is legitimately citable. A citation
-    # written here fails the recheck and the reply is withheld — which is the correct
-    # outcome: an unverified session being told a clause number from someone's policy is
-    # the leak this whole gate exists to prevent.
-    facts: dict[str, Any] = {"_identity_required": True, "_allowed_clauses": frozenset()}
-    if {"suitable_products", "catalogue_sample"} & set(scenario.tools):
-        facts["catalogue_sample"] = await tools.catalogue_sample(db, params.get("line", "health"))
-    return facts
 
 
 def _render(scenario: Scenario, facts: dict[str, Any]) -> str:

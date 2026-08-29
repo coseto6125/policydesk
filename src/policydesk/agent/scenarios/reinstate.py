@@ -53,7 +53,7 @@ def _citation(row: dict[str, Any]) -> str:
     Returns:
         e.g. `〔保險法 第116條第3項〕`.
 
-    Handed to the model already formatted, the same reasoning `soothe._readable`
+    Handed to the model already formatted, the same reasoning `statute.citation`
     documents at length: a citation format explained in prose is one the model
     approximates, one it can copy is one the citation checker can verify.
 
