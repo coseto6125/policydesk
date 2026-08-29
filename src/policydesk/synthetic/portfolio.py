@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 from msgspec import Struct
 
 from policydesk.bootloader import logger
+from policydesk.synthetic import service
 from policydesk.synthetic.seed import rng_for
 
 if TYPE_CHECKING:
@@ -321,6 +322,11 @@ async def enrol(
                 ],
             )
         )
+
+    # The contract is only half of what a customer rings up about. Premiums, beneficiaries
+    # and claims are written here rather than left for a backfill, so a visitor created in
+    # the demo can be asked 我這期繳了嗎 in the same session.
+    await service.furnish(db, member_id, today=today or date.today())  # noqa: DTZ011 - the same clock `plan` used
 
     logger.info(
         "member_enrolled",
