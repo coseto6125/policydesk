@@ -241,10 +241,24 @@ def test_a_stop_word_no_longer_decides_the_ranking(index):
 
 
 def test_weighting_is_per_corpus_and_leaves_a_beaten_channel_a_vote():
+    """
+    The statute half of this test asserted the opposite and was wrong.
+
+    It held `bm25 > embedding` on the reasoning that the law is short and a complaint
+    sometimes quotes it verbatim. `scripts/recall.py` scores fourteen statute questions,
+    each pairing a sentence a scenario says it answers with the article that scenario
+    names, and every setting that lifts embedding above 0.5 beats the shipped 1.0/0.5:
+    MRR went 0.41 → 0.55 and R@3 0.43 → 0.64 at 0.75/1.0.
+
+    What survives the measurement is the comparison across corpora, not within one. BM25
+    keeps a larger share of the statute vote than of the clause vote, because the law
+    really is sometimes quoted word for word and a contract never is — 我有據實說明啊 is
+    the query that earns it. That is the claim asserted here now.
+    """
     from policydesk.retrieval.base import CLAUSE, STATUTE, WEIGHTS
 
     assert WEIGHTS[CLAUSE]["embedding"] > WEIGHTS[CLAUSE]["bm25"], "the contract shares no words with the question"
-    assert WEIGHTS[STATUTE]["bm25"] > WEIGHTS[STATUTE]["embedding"], "the law is short and sometimes quoted verbatim"
+    assert WEIGHTS[STATUTE]["bm25"] > WEIGHTS[CLAUSE]["bm25"], "the law is short and sometimes quoted verbatim"
     for corpus in (CLAUSE, STATUTE):
         assert min(WEIGHTS[corpus].values()) > 0, (
             "a weight of zero is one channel per corpus wearing a hybrid's name"

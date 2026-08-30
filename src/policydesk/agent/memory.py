@@ -126,7 +126,11 @@ ORDER BY message_id DESC
 LIMIT $2::int"""
 
 _LOAD_FACTS = """\
-SELECT key, value, category FROM member_fact
+SELECT key, value, category,
+       source_message_id IS NOT NULL AND EXISTS (
+           SELECT 1 FROM conversation_message m WHERE m.message_id = source_message_id
+       ) AS evidenced
+FROM member_fact
 WHERE member_id = $1::bigint
 ORDER BY updated_at DESC
 LIMIT $2::int"""
@@ -206,6 +210,19 @@ async def card(db: Database, *, member_id: int, case_id: int) -> str:
     Returns:
         A profile block, empty when nothing has been extracted yet.
 
+    **A fact whose evidence is gone is marked rather than dropped.** The migration says it
+    outright — `source_message_id` "is what makes the difference checkable" — and the card
+    loaded three columns and not that one, so a fact nobody can trace reached the model
+    with the same authority as one quoted from a message still on file, under an
+    instruction to use it directly and not ask again.
+
+    Marked, not dropped, because the fact is still probably true: 已離婚 does not stop
+    being true when a case is closed and its messages age out. What changes is whether the
+    desk may say 您上次提到 about it, and that is the distinction the mark carries.
+
+    The pointer goes on its own, without anyone deleting a fact: `source_message_id` is
+    `ON DELETE SET NULL`, so any message deletion or retention cut produces this state.
+
     """
     facts, row = await asyncio.gather(
         db.fetch(_LOAD_FACTS, [member_id, FACTS_MAX]),
@@ -218,8 +235,24 @@ async def card(db: Database, *, member_id: int, case_id: int) -> str:
     parts = ["# 已知的保戶資訊（來自先前對話，可能不在上面的對話紀錄裡）"]
     if summary:
         parts.append(f"目前進度：{summary}")
-    parts.extend(f"- {f['key']}（{f['category']}）：{f['value']}" for f in facts)
-    parts.append("回答時直接沿用這些資訊，不要重問。保戶若說了相反的話，以新的說法為準。\n")
+    def line(fact: dict[str, Any]) -> str:
+        return f"- {fact['key']}（{fact['category']}）：{fact['value']}"
+
+    # Two blocks, and the caveat written once. Tagging each unevidenced line put the same
+    # twenty-six characters on eleven rows of one card, which is how a warning stops being
+    # read — the model skims a repeated marker the way a person does.
+    traceable = [f for f in facts if f["evidenced"]]
+    parts.extend(line(f) for f in traceable)
+    if traceable:
+        parts.append("回答時直接沿用這些資訊，不要重問。保戶若說了相反的話，以新的說法為準。")
+    if untraceable := [f for f in facts if not f["evidenced"]]:
+        parts.append("\n## 以下這幾項的原始對話已經不在了")
+        parts.extend(line(f) for f in untraceable)
+        parts.append(
+            "這幾項多半仍然成立，但你不可以說「您上次提到」或當成他講過的話引用。"
+            "要用到的時候先問他一句確認。"
+        )
+    parts.append("")
     return "\n".join(parts)
 
 

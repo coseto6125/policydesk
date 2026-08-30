@@ -108,7 +108,7 @@ class Retriever(Protocol):
 
 WEIGHTS: dict[str, dict[str, float]] = {
     CLAUSE: {"bm25": 0.5, "embedding": 1.0},
-    STATUTE: {"bm25": 1.0, "embedding": 0.5},
+    STATUTE: {"bm25": 0.75, "embedding": 1.0},
 }
 """How much each channel's rank counts, per corpus. Unlisted channels count 1.0.
 
@@ -130,6 +130,24 @@ rather than global:
 0.5 halves a channel's vote rather than removing it: the weaker channel still breaks a tie
 and still promotes a document both agree on, which is the property RRF is for. Removing it
 would be running one channel per corpus and calling it a hybrid.
+
+**The statute pair was 1.0/0.5 and is measured wrong at that setting.** Those numbers came
+from a handful of queries; `scripts/recall.py` scores fourteen, each pairing a question a
+scenario says it answers with the article that scenario names, and the ranking there is:
+
+    bm25  embed   R@1   R@3   R@5    MRR
+    1.00   0.50  0.36  0.43  0.50   0.41   <- what shipped
+    1.00   1.00  0.43  0.57  0.57   0.49
+    0.75   1.00  0.50  0.64  0.64   0.55   <- now
+    0.50   1.00  0.43  0.64  0.64   0.51
+
+Every setting that lifts embedding over 0.5 beats the shipped one, so the direction holds
+independently of where the optimum sits. 我有據實說明啊 is still the reason bm25 keeps the
+larger share it has: the law is short and a complaint sometimes uses its words verbatim.
+
+The clause pair is unchanged. That half of the gold set has three questions, both extremes
+score 1.00 and everything between scores 0.73 — an artefact of n=3, not a signal, and too
+thin to overturn the queries the current pair was set on.
 """
 
 

@@ -167,3 +167,103 @@ def test_enrol_reports_what_it_actually_wrote():
     page = Path("src/policydesk/web/static/index.html").read_text()
     assert "已為您帶入既有保單" in page
     assert "所選組合中的商品目前無法投保" in page
+
+
+@pytest.fixture(scope="module")
+async def db():
+    from policydesk.core.db import Database
+
+    pool = Database()
+    try:
+        await pool.fetch_val("SELECT 1")
+    except Exception:
+        pytest.skip("policydesk-pg is not up")
+    return pool
+
+
+@pytest.mark.asyncio
+async def test_a_fact_whose_source_is_gone_is_not_quoted_back_as_something_he_said(db):
+    """
+    `source_message_id` is `ON DELETE SET NULL`, and the card never loaded it.
+
+    So a fact nobody can trace reached the model beside one quoted from a message still on
+    file, under one instruction covering both: 直接沿用，不要重問. The migration's own
+    comment says that column "is what makes the difference checkable", and nothing checked
+    it — the column changed no behaviour at all.
+
+    Marked, not dropped. 已離婚 does not stop being true when a case is closed and its
+    messages age out; what changes is whether the desk may say 您上次提到 about it.
+    """
+    from policydesk.agent import memory
+
+    member_id = await db.fetch_val("SELECT member_id FROM member ORDER BY member_id DESC LIMIT 1")
+    case_id = await db.fetch_val(
+        """INSERT INTO "case" (member_id, kind, stage) VALUES ($1::bigint,'service','inquiry')
+           RETURNING case_id""", [member_id])
+    kept = await db.fetch(
+        "SELECT key, value, category, source_message_id FROM member_fact WHERE member_id = $1::bigint",
+        [member_id])
+    try:
+        await db.execute("DELETE FROM member_fact WHERE member_id = $1::bigint", [member_id])
+        message_id = await db.fetch_val(
+            """INSERT INTO conversation_message (case_id, speaker, text)
+               VALUES ($1::bigint,'customer','我的預算是每年三萬元') RETURNING message_id""", [case_id])
+        await db.execute_many(
+            """INSERT INTO member_fact (member_id, key, value, category, source_message_id)
+               VALUES ($1::bigint,$2::text,$3::text,$4::text,$5::bigint)""",
+            [
+                [member_id, "預算", "每年三萬元", "cons", message_id],
+                [member_id, "婚姻狀態", "已離婚", "hist", None],
+            ],
+        )
+        card = await memory.card(db, member_id=int(member_id), case_id=int(case_id))
+        assert "每年三萬元" in card
+        assert "已離婚" in card
+        # The traceable one keeps the plain instruction; the other is quarantined under its
+        # own heading with the caveat stated once, not stapled to every line.
+        heading = "以下這幾項的原始對話已經不在了"
+        assert heading in card
+        assert card.index("每年三萬元") < card.index(heading) < card.index("已離婚")
+        assert card.count("您上次提到") == 1
+    finally:
+        await db.execute("DELETE FROM member_fact WHERE member_id = $1::bigint", [member_id])
+        if kept:
+            await db.execute_many(
+                """INSERT INTO member_fact (member_id, key, value, category, source_message_id)
+                   VALUES ($1::bigint,$2::text,$3::text,$4::text,$5::bigint)""",
+                [[member_id, r["key"], r["value"], r["category"], r["source_message_id"]] for r in kept])
+        await db.execute('DELETE FROM "case" WHERE case_id = $1::bigint', [case_id])
+
+
+@pytest.mark.asyncio
+async def test_a_card_of_only_traceable_facts_carries_no_warning(db):
+    # The other direction: the quarantine block must not appear when nothing is in it, or
+    # every card grows a section about a problem it does not have.
+    from policydesk.agent import memory
+
+    member_id = await db.fetch_val("SELECT member_id FROM member ORDER BY member_id LIMIT 1")
+    case_id = await db.fetch_val(
+        """INSERT INTO "case" (member_id, kind, stage) VALUES ($1::bigint,'service','inquiry')
+           RETURNING case_id""", [member_id])
+    kept = await db.fetch(
+        "SELECT key, value, category, source_message_id FROM member_fact WHERE member_id = $1::bigint",
+        [member_id])
+    try:
+        await db.execute("DELETE FROM member_fact WHERE member_id = $1::bigint", [member_id])
+        message_id = await db.fetch_val(
+            """INSERT INTO conversation_message (case_id, speaker, text)
+               VALUES ($1::bigint,'customer','我一年只能付兩萬') RETURNING message_id""", [case_id])
+        await db.execute(
+            """INSERT INTO member_fact (member_id, key, value, category, source_message_id)
+               VALUES ($1::bigint,'預算','每年兩萬元','cons',$2::bigint)""", [member_id, message_id])
+        card = await memory.card(db, member_id=int(member_id), case_id=int(case_id))
+        assert "每年兩萬元" in card
+        assert "原始對話已經不在了" not in card
+    finally:
+        await db.execute("DELETE FROM member_fact WHERE member_id = $1::bigint", [member_id])
+        if kept:
+            await db.execute_many(
+                """INSERT INTO member_fact (member_id, key, value, category, source_message_id)
+                   VALUES ($1::bigint,$2::text,$3::text,$4::text,$5::bigint)""",
+                [[member_id, r["key"], r["value"], r["category"], r["source_message_id"]] for r in kept])
+        await db.execute('DELETE FROM "case" WHERE case_id = $1::bigint', [case_id])
