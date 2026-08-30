@@ -81,6 +81,12 @@ async def cooling_off_clause(db: Database, limit: int = 1) -> list[dict[str, Any
     )
 
 
+LONGEST_WINDOW_DAYS = 14
+"""The longest 撤銷期間 any contract in this corpus grants. Ten and fourteen days both
+appear, and the clause's own verbatim is what a reply quotes — this constant only bounds
+the one inference the dates support."""
+
+
 @requires_identity
 async def member_rescission(db: Database, member_id: int, *, today: date) -> list[dict[str, Any]]:
     """
@@ -117,7 +123,15 @@ async def member_rescission(db: Database, member_id: int, *, today: date) -> lis
             **row,
             "policy_number": by_product[row["product_id"]]["policy_number"],
             "effective_at": by_product[row["product_id"]]["effective_at"],
-            "days_in_force": by_product[row["product_id"]]["days_in_force"],
+            "days_in_force": (days := by_product[row["product_id"]]["days_in_force"]),
+            # The one thing about the window that IS computable. Delivery happens on or
+            # after the effective date, so days-since-delivery never exceeds
+            # `days_in_force`: a policy in force for fewer days than the longest window
+            # in the corpus is certainly still inside its own. The converse does not
+            # hold — a policy in force 600 days could have been delivered last week, so
+            # false means unknown, never expired, and the field is named for what it
+            # asserts rather than for the guess it would license.
+            "certainly_within_window": days is not None and days <= LONGEST_WINDOW_DAYS,
         }
         for row in clauses
     ]
@@ -206,6 +220,12 @@ COOLING_OFF = Scenario(
         "說明時要講清楚這是「一般約定」，實際內容以保戶自己保單為準。"
         "member_rescission 回傳的才是保戶自己保單的條款，兩者都有的話優先使用 member_rescission。"
         "member_rescission 裡沒有出現的保單，代表查無撤銷權條款，不要用另一張保單的內容套用過去。\n\n"
+        "**保戶名下不只一張保單時，先確定他問的是哪一張，再說「您這張」。**\n"
+        "他說「上禮拜買的」「剛簽的」而 member_rescission 每一列的 certainly_within_window "
+        "都是假的時候，代表他名下沒有任何一張是最近生效的。此時照實說明：把每一張的保單號碼與"
+        "生效日列出來，問他指的是哪一張，不要挑其中一張當作「您這張保單」。\n"
+        "certainly_within_window 為真，代表那張保單生效還沒超過最長的撤銷期間，一定還在期限內；"
+        "為假只代表無法判斷，不代表已經過期——送達日還是只有他知道。\n\n"
         "條號一律照工具回傳的 clause_id 原樣標註，寫在該句句末的方括號內，例如 [art.7]。\n\n"
         "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他自己保單的條款。"
         "此時只用 cooling_off_clause 的一般約定回答期間是幾天、從什麼時候起算，"

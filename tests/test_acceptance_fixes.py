@@ -769,3 +769,48 @@ async def test_a_reply_that_denies_a_promise_is_not_withheld(db, live_case):
     )
     assert turn.reply != PROMISED
     assert "可保證明" in turn.reply
+
+
+def test_an_article_number_is_read_the_way_a_contract_writes_it():
+    # Contracts write 第三條 and 第十二條, not 第3條. A reference nobody can parse is
+    # skipped rather than guessed at, so an unreadable one costs context and never
+    # fetches the wrong clause.
+    from policydesk.agent.tools import _article_number
+
+    assert [_article_number(w) for w in ("3", "三", "十", "十二", "二十", "二十二", "一百")] == [
+        3, 3, 10, 12, 20, 22, 100]
+    assert _article_number("甲") is None
+
+
+def test_a_clause_brings_back_the_sibling_it_points_at():
+    """
+    因第三條約定而住院 reached a customer with 第三條 not retrieved.
+
+    The desk then said 目前回傳的條款內容沒有第三條 — machine words wrapped around an
+    incomplete answer, while `art.3` sat in the same table saying 因疾病或傷害住院診療,
+    which is the sentence that decides whether cancer admission is covered. 4,276 of the
+    corpus's 11,741 clauses cross-reference, so this is a third of the material.
+    """
+    from policydesk.agent.tools import CROSS_LIMIT, _referenced
+
+    rows = [
+        {"product_id": "p1", "clause_id": "art.4", "verbatim": "因第三條約定而住院時，依第十二條給付。"},
+        {"product_id": "p1", "clause_id": "art.3", "verbatim": "因疾病或傷害住院診療。"},
+    ]
+    # art.3 is already in hand, so only art.12 is wanted — a clause is not re-fetched
+    # because a neighbour happened to name it.
+    assert _referenced(rows) == [("p1", "art.12")]
+
+    many = [{"product_id": "p1", "clause_id": "art.1",
+             "verbatim": "依第二條、第三條、第四條、第五條、第六條、第七條辦理。"}]
+    assert len(_referenced(many)) == CROSS_LIMIT, "six siblings around one hit is context drowning answer"
+
+
+def test_a_reference_is_resolved_inside_its_own_contract():
+    # Article numbering restarts per policy, so 第三條 in one contract is a different
+    # sentence from 第三條 in another. Resolving across products would quote a clause the
+    # customer does not hold.
+    from policydesk.agent.tools import _referenced
+
+    rows = [{"product_id": "p1", "clause_id": "art.4", "verbatim": "因第三條約定而住院。"}]
+    assert _referenced(rows) == [("p1", "art.3")]

@@ -317,3 +317,35 @@ async def test_a_gated_turn_offers_only_what_the_desk_can_still_answer(db, live_
         f"a refused customer was offered {turn.quick_replies}, which the same gate refuses"
     )
     assert not set(turn.quick_replies) & set(BY_NAME["coverage"].quick_replies)
+
+
+@pytest.mark.asyncio
+async def test_a_sampled_catalogue_says_how_much_it_left_out(db):
+    """
+    Five of seventy-six health products reached a customer under 目前有以下醫療險商品.
+
+    That reads as the whole catalogue, so the customer compared a list already cut to the
+    five cheapest and never learned the other seventy-one existed. The count travels with
+    the rows because the rows are a sample, and `count(*) OVER ()` runs before `LIMIT` so
+    it is the real total rather than the length of what came back.
+    """
+    from policydesk.agent.tools import catalogue_sample
+
+    rows = await catalogue_sample(db, "health", 3)
+    if not rows:
+        pytest.skip("no health products on sale")
+    total = await db.fetch_val(
+        """SELECT count(*) FROM catalog_entry ce JOIN product p USING (product_id)
+           WHERE ce.on_sale AND p.line = 'health'""")
+    assert len(rows) == 3
+    assert all(r["on_sale_in_line"] == total for r in rows)
+    assert total > len(rows), "this test says nothing unless the sample is actually short"
+
+
+def test_the_injections_that_sample_a_catalogue_name_the_total():
+    # A field nobody reads is the `source_message_id` failure: present, populated, and
+    # changing no behaviour. Both scenarios that show a cut list must state the count.
+    from policydesk.agent.scenario import BY_NAME
+
+    assert "on_sale_in_line" in BY_NAME["browse_products"].injection
+    assert "matching_in_line" in BY_NAME["quote"].injection
