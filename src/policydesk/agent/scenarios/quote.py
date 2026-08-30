@@ -98,6 +98,51 @@ def _as_amount(raw: str) -> int | None:
     return value if value > 0 else None
 
 
+def _escaped(keyword: str) -> str:
+    """
+    Make a keyword safe to sit inside a LIKE pattern.
+
+    Args:
+        keyword: What the customer typed.
+
+    Returns:
+        The same text with LIKE's own wildcards neutralised, so a customer who types a
+        percent sign searches for one.
+
+    """
+    return keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _in_order(keyword: str) -> str:
+    """
+    Build a pattern matching a name that contains these characters in this order.
+
+    Args:
+        keyword: What the customer typed.
+
+    Returns:
+        A LIKE pattern, or one matching nothing when the keyword is empty.
+
+    **A customer does not type the middle of a product name.** 新iLife定期壽險 is what
+    someone calls 國泰人壽新iLife一年期定期壽險, and a contiguous `%…%` matches nothing
+    because 一年期 sits between 新iLife and 定期壽險 — measured on a live turn, where the
+    desk answered that the product does not exist while its rate card was in the table.
+
+    It is loose. 壽險定期 matches 國泰人壽美智守護利率變動型美元終身保險（定期給付型），
+    because 壽 sits in 人壽 and 定期 comes later — the order holds and the characters are
+    far apart. That is the cost of the fix and it is the right way round: this tool hands
+    back candidates rather than a decision, the contiguous form still ranks first so an
+    exact fragment wins, and `limit` caps what the model sees. A customer who names a
+    product the desk cannot find is worse off than one shown three and asked which.
+
+    """
+    if not keyword:
+        # Matches nothing, and no NUL byte: psqlpy binds this parameter whether or not
+        # the caller's `= ''` short-circuit uses it, and Postgres rejects 0x00 in text.
+        return ""
+    return "%" + "%".join(_escaped(c) for c in keyword) + "%"
+
+
 async def product_rate(
     db: Database, line: str, keyword: str = "", amount: int | None = None, limit: int = 5
 ) -> list[dict[str, Any]]:
@@ -107,8 +152,9 @@ async def product_rate(
     Args:
         db: The database.
         line: Which product line, one of `policydesk.agent.tools.LINES`.
-        keyword: A fragment of the product's own name, when the customer means one in
-            particular. Empty matches every on-sale product on the line.
+        keyword: Part of the product's own name, when the customer means one in
+            particular. Empty matches every on-sale product on the line. It need not be
+            contiguous — see `_in_order`.
         amount: The coverage the customer wants, in NT dollars, at the product's own
             unit. None returns the published rate with no estimate attached.
         limit: Most products to return.
@@ -130,15 +176,17 @@ async def product_rate(
     if line not in LINES:
         logger.warning("unsellable_line", line=line)
         return []
+    wanted = keyword.strip()
     rows = await db.fetch(
         """SELECT p.product_id, p.name, p.line, p.attachment, ce.unit_premium, ce.unit_label,
-                  ce.issue_age_min, ce.issue_age_max, ce.max_occupation, ce.requires_main
+                  ce.issue_age_min, ce.issue_age_max, ce.max_occupation, ce.requires_main,
+                  count(*) OVER () AS matching_in_line
            FROM catalog_entry ce JOIN product p USING (product_id)
            WHERE ce.on_sale AND p.line = $1::text
-             AND ($2::text = '' OR p.name ILIKE '%' || $2::text || '%')
-           ORDER BY ce.unit_premium ASC
-           LIMIT $3::int""",
-        [line, keyword.strip(), limit],
+             AND ($2::text = '' OR p.name ILIKE $3::text OR p.name ILIKE $4::text)
+           ORDER BY (p.name ILIKE $3::text) DESC, ce.unit_premium ASC
+           LIMIT $5::int""",
+        [line, wanted, f"%{_escaped(wanted)}%", _in_order(wanted), limit],
     )
     if amount is None:
         return rows
@@ -231,6 +279,7 @@ QUOTE = Scenario(
         "product_rate 是空的時候，代表本公司沒有符合這個名稱或這個保險種類的在售商品，"
         "不是系統查不到。照實說沒有這張，並請他改用險種（壽險、醫療、意外、年金、投資型）"
         "或換個關鍵字讓你再查一次。不要憑印象講一張你以為我們有的商品。\n"
+        "matching_in_line 比回傳的列數多的時候，先講清楚符合條件的一共有幾項、這裡列的是保費最低的幾項，不要讓保戶以為只有這幾張可以選。\n"
         "你正在為保戶試算保費，這是試算，不是核保結果——"
         "職業等級、健康告知與核保結果都可能讓實際保費不同，這句話一定要說。\n\n"
         "product_rate 回傳的 unit_premium 與 unit_label 是這張商品的公開費率，"

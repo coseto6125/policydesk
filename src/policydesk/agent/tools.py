@@ -240,6 +240,78 @@ async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict
     return rows
 
 
+_CROSS = re.compile(r"第([一二三四五六七八九十百]+|\d+)條")
+"""A clause pointing at a sibling. 4,276 of the corpus's 11,741 clauses carry one."""
+
+_DIGIT = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+CROSS_LIMIT = 4
+"""Most referenced clauses fetched per search. A clause naming five siblings, six hits
+deep, would otherwise hand the model thirty rows of context around six of answer."""
+
+
+def _article_number(written: str) -> int | None:
+    """
+    Read an article number as a contract writes it.
+
+    Args:
+        written: The digits between 第 and 條, Arabic or Chinese.
+
+    Returns:
+        The number, or None when it is not one this reads — a reference nobody can
+        resolve is skipped rather than guessed at.
+
+    Handles 十 as both a digit and a place: 十二 is 12, 二十 is 20, 二十二 is 22.
+
+    """
+    if written.isdigit():
+        return int(written)
+    total = section = 0
+    for char in written:
+        if char == "百":
+            total += (section or 1) * 100
+            section = 0
+        elif char == "十":
+            section = (section or 1) * 10
+        elif (digit := _DIGIT.get(char)) is not None:
+            section = section + digit if section % 10 == 0 and section else digit
+        else:
+            return None
+    return (total + section) or None
+
+
+def _referenced(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """
+    Name the clauses these clauses point at.
+
+    Args:
+        rows: Clauses already found, carrying `product_id` and `verbatim`.
+
+    Returns:
+        (product_id, clause_id) pairs not already in `rows`, in the order met.
+
+    **A clause that cites a sibling is half an answer without it.** 因第三條約定而住院時，
+    可依日額給付型或實支實付型擇優給付 reached a customer with 第三條 not retrieved, and
+    the desk told them 目前回傳的條款內容沒有第三條 — machine words over an incomplete
+    answer, while `art.3` sat in the same table saying 因疾病或傷害住院診療. Measured on a
+    live turn; a third of this corpus cross-references.
+
+    Same product only. Article numbering restarts per contract, so 第三條 in one policy
+    is a different sentence from 第三條 in another.
+
+    """
+    have = {(r["product_id"], r["clause_id"]) for r in rows}
+    wanted: list[tuple[str, str]] = []
+    for row in rows:
+        for written in _CROSS.findall(row.get("verbatim") or ""):
+            if (number := _article_number(written)) is None:
+                continue
+            key = (row["product_id"], f"art.{number}")
+            if key not in have and key not in wanted:
+                wanted.append(key)
+    return wanted[:CROSS_LIMIT]
+
+
 @requires_identity
 async def find_clause(
     db: Database, product_ids: list[str], topic: str, limit: int = 6, index: Retriever | None = None
@@ -260,6 +332,10 @@ async def find_clause(
     match the words. A customer asking what their policy covers is answered wrongly by
     a grant clause alone, and those three are exactly what a keyword search buries.
 
+    A clause naming a sibling brings that sibling back with it, capped at `CROSS_LIMIT`.
+    Without it the model reads 因第三條約定而住院 with no 第三條 in front of it and has to
+    say so — which it did, to a customer asking whether cancer admission is covered.
+
     Ranked by the retriever when one is open, by ILIKE when none is. The difference is
     not subtle on this corpus: ILIKE returned the same three clauses for three unrelated
     questions, because the words a customer uses are not substrings of the words a
@@ -271,7 +347,12 @@ async def find_clause(
     if not product_ids:
         return []
     if index is not None and (hits := index.search(topic, corpus=CLAUSE, scope=product_ids, limit=limit)):
-        return await _clauses_by_id(db, [(h.scope_id, h.doc_id) for h in hits])
+        found = await _clauses_by_id(db, [(h.scope_id, h.doc_id) for h in hits])
+        # Appended after the ranked hits, not mixed into them: a clause is here because
+        # another one pointed at it, not because it matched the question.
+        if cross := _referenced(found):
+            found += await _clauses_by_id(db, cross)
+        return found
     return await db.fetch(
         """SELECT c.product_id, c.clause_id, c.kind, c.heading, c.verbatim, c.page, p.name AS product_name
            FROM clause c JOIN product p USING (product_id)
@@ -489,8 +570,15 @@ async def catalogue_sample(db: Database, line: str, limit: int = 5) -> list[dict
         limit: Most products to name.
 
     Returns:
-        Products with their unit premium and issue-age band, cheapest first. Empty for
-        a line this desk does not sell from.
+        Products with their unit premium and issue-age band, cheapest first, each
+        carrying `on_sale_in_line` — how many the line actually holds. Empty for a line
+        this desk does not sell from.
+
+    **The count travels with the rows because the rows are a sample.** Five of the
+    seventy-six health products reached a customer under the words 目前有以下醫療險商品,
+    which reads as the whole catalogue; they then compared a list that had been cut to
+    the five cheapest. The window function runs before `LIMIT`, so the total is the real
+    one rather than the length of what came back.
 
     Deliberately ungated. The catalogue is a public document — an insurer publishes it —
     so a visitor who has not proved who they are can still be told what exists. What they
@@ -503,7 +591,8 @@ async def catalogue_sample(db: Database, line: str, limit: int = 5) -> list[dict
         return []
     return await db.fetch(
         """SELECT p.product_id, p.name, p.line, ce.unit_premium, ce.unit_label,
-                  ce.issue_age_min, ce.issue_age_max, ce.requires_main
+                  ce.issue_age_min, ce.issue_age_max, ce.requires_main,
+                  count(*) OVER () AS on_sale_in_line
            FROM catalog_entry ce JOIN product p USING (product_id)
            WHERE ce.on_sale AND p.line = $1::text
            ORDER BY ce.unit_premium ASC
