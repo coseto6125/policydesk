@@ -349,3 +349,46 @@ def test_the_injections_that_sample_a_catalogue_name_the_total():
 
     assert "on_sale_in_line" in BY_NAME["browse_products"].injection
     assert "matching_in_line" in BY_NAME["quote"].injection
+
+
+def test_nothing_the_customer_reads_points_at_the_caseworker_console():
+    """
+    「各張保單明細請見左側後台的保單清單」 went to a customer on a phone.
+
+    The console is the caseworker's half of a two-pane page. The customer is looking at a
+    chat window; that pane is not theirs and they cannot open it, so the sentence sends
+    them to check a total against something that does not exist for them.
+    """
+    from policydesk.agent.scenario import CATALOGUE, WRITING
+
+    console_words = ("左側", "後台", "右邊的面板", "上方分頁")
+    offending = [
+        (s.name, word)
+        for s in CATALOGUE
+        for word in console_words
+        if word in s.template or word in s.injection
+    ]
+    assert not offending, f"a customer cannot open the console: {offending}"
+    assert not [w for w in console_words if w in WRITING]
+
+
+def test_the_reinstatement_answer_names_the_paragraph_that_protects_him():
+    # 〔保險法 第116條第4項〕 — the insurer is deemed to agree when it does not refuse
+    # within fifteen days. The tool returns it among thirteen paragraphs and the model
+    # left it out, so the reply told the customer what to prepare and never that the
+    # company is on a clock too.
+    from policydesk.agent.scenario import BY_NAME
+
+    assert "第116條第4項" in BY_NAME["reinstate"].injection
+
+
+def test_the_beneficiary_answer_keeps_the_estate_rule_to_death_benefits():
+    # §112 is about a death benefit paid to a named beneficiary. Stated as a class —
+    # 已指定受益人的保單，其保險金額不作為遺產 — it sweeps in 住院日額 and 實支實付,
+    # which the insured collects while alive and which are not an estate question. A
+    # customer could plan an estate on the wider reading.
+    from policydesk.agent.scenario import BY_NAME
+
+    injection = BY_NAME["beneficiary"].injection
+    assert "身故保險金" in injection
+    assert "生前" in injection

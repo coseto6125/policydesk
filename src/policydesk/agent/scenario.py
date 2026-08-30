@@ -258,7 +258,10 @@ BILLING = Scenario(
     summary="查商品費率算出的年繳保費與繳費紀錄",
     description="保戶詢問保費、繳費紀錄、下期應繳時使用。",
     emit=Emit.TEMPLATE,
-    template="您名下有效保單共 {active} 張，年繳保費合計 {premium} 元。\n各張保單明細請見左側後台的保單清單。",
+    # 各張保單明細請見左側後台的保單清單 stood here, which points a customer on a phone at
+    # the caseworker's console. They are looking at a chat window; the pane is not theirs
+    # and they cannot open it. What they can do is ask, so the line offers that instead.
+    template="您名下有效保單共 {active} 張，年繳保費合計 {premium} 元。\n想知道每一張分別繳多少，跟我說一聲就可以。",
     quick_replies=("我想了解可以改成月繳嗎？", "沒繳到會怎麼樣？", "想確認下一期的繳費日"),
     tools=("billing_summary",),
     transitions=(),
