@@ -144,6 +144,12 @@ async def copy_corpus(sqlite_path: Path, db: Database) -> tuple[int, int]:
         clauses,
     )
 
+    # **After the inserts, and that order is load-bearing.** Each statement here is its
+    # own transaction, so a crash between them decides what survives: written-then-
+    # withdrawn leaves the new text in and the stale rows still there, which is exactly
+    # the state before this delete existed. Withdrawn-then-written would leave a contract
+    # with half its clauses and a desk that answers from them.
+    #
     # Withdrawn as well as written. An upsert alone cannot retract: a clause the parser
     # used to emit and no longer does stayed in Postgres for good, was rebuilt into both
     # retrieval indexes, and passed the citation check — which validates a model's

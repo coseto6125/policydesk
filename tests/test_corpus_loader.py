@@ -156,3 +156,19 @@ async def test_a_clause_the_parser_stopped_emitting_is_withdrawn(tmp_path):
         await db.execute(
             "DELETE FROM clause WHERE product_id = $1::text AND clause_id = 'art.9999'", [str(product_id)]
         )
+
+
+def test_the_reload_writes_before_it_withdraws():
+    """
+    Each statement in `copy_corpus` is its own transaction, so the order decides the
+    wreckage. Written-then-withdrawn leaves the new text in and the stale rows present,
+    which is the state this delete was added to improve on. Withdrawn-then-written
+    leaves a contract holding half its clauses, and a desk that answers from them.
+
+    Asserted by position because there is no way to observe it: a crash between two
+    statements is not something a test can stage, and the failure it produces looks like
+    a corpus that was always short.
+    """
+    insert = SOURCE.index("INSERT INTO clause ")
+    delete = SOURCE.index("DELETE FROM clause c")
+    assert insert < delete, "the reload withdraws before it writes; a crash between them empties contracts"
