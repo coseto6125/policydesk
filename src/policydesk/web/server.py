@@ -37,6 +37,7 @@ from policydesk.gov.identity import Sex, verify
 from policydesk.llm.provider import build_provider
 from policydesk.retrieval.base import HybridRetriever
 from policydesk.retrieval.index import open_index
+from policydesk.retrieval.rerank import open_reranker
 from policydesk.retrieval.vectors import open_vectors
 from policydesk.synthetic.alias import mint
 from policydesk.synthetic.person import generate, insurance_age, occupation_catalogue
@@ -129,8 +130,12 @@ async def _open_db(application: Sanic, _loop) -> None:
         open_index(application.ctx.db), open_vectors(application.ctx.db)
     )
     channels = [r for r in (lexical, semantic) if r is not None]
-    application.ctx.clauses = HybridRetriever(channels) if channels else None
-    logger.info("retrieval_ready", channels=[r.name for r in channels])
+    # Third model in this process, and the only one that reads a question and a document
+    # together. Loaded here for the same reason as the other two: the session costs about
+    # a second to build, and a customer should not wait on it.
+    encoder = await asyncio.to_thread(open_reranker)
+    application.ctx.clauses = HybridRetriever(channels, reranker=encoder) if channels else None
+    logger.info("retrieval_ready", channels=[r.name for r in channels], rerank=encoder is not None)
     if not os.environ.get("POLICYDESK_DESK_TOKEN"):
         logger.warning("desk_token_generated", token=DESK_TOKEN, hint="set POLICYDESK_DESK_TOKEN to fix it across restarts")
 

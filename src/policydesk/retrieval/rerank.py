@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, TypeVar
 from policydesk.bootloader import logger
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
 MODEL_DIR = Path(os.environ.get("POLICYDESK_RERANK_MODEL", "/home/enor/enoract/tmp/bge-reranker-v2-m3-onnx"))
 """The int8 export. Absent, no reranking happens and the fused ranking stands."""
@@ -46,11 +46,17 @@ DEPTH = 12
 and 17 score within one question of each other on a forty-question gold set, so this is
 the cheapest depth in a band whose members cannot be told apart, not the best of them."""
 
+STATUTE_FLOOR: float | None = None
+"""Score below which a provision is not cited at all. None until measured — the number
+is being calibrated against questions the corpus answers and questions it does not, and
+a guessed floor either silences the law or lets the same misfit citation through."""
+
 CHARS = 900
 """Of the document. Past this the pair stops fitting the window, and truncation inside
 the tokenizer is silent."""
 
 K = TypeVar("K")
+R = TypeVar("R")
 
 
 class CrossEncoder:
@@ -135,3 +141,36 @@ def open_reranker(model_dir: Path = MODEL_DIR, *, threads: int = 4) -> CrossEnco
         return None
     logger.info("rerank_ready", path=str(model_dir), depth=DEPTH)
     return encoder
+
+
+def sift[R](
+    encoder: CrossEncoder | None,
+    query: str,
+    rows: Sequence[R],
+    *,
+    passage: Callable[[R], str],
+    limit: int,
+    floor: float | None = None,
+) -> list[R]:
+    """
+    Reorder rows by the cross-encoder, and drop the ones it says do not belong.
+
+    Args:
+        encoder: The cross-encoder, or None to leave the rows exactly as they came.
+        query: What the customer asked.
+        rows: Whatever the caller fetched, in the fused ranking's order.
+        passage: Reads the text to score out of one row.
+        limit: Most rows to return.
+        floor: Score below which a row is dropped. None keeps every row and only
+            reorders them.
+
+    Returns:
+        The rows the encoder ranked highest, cut to `limit`. Empty when the floor
+        rejected all of them, which is a caller's signal to say the corpus does not
+        answer this rather than to show its closest miss.
+
+    """
+    if encoder is None or not rows:
+        return list(rows)[:limit]
+    ordered = encoder.order(query, [(position, passage(row)) for position, row in enumerate(rows)])
+    return [rows[position] for position, score in ordered if floor is None or score >= floor][:limit]

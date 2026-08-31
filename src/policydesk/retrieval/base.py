@@ -217,10 +217,19 @@ class HybridRetriever:
         *,
         depth: int = 4,
         weights: dict[str, dict[str, float]] | None = None,
+        reranker: object | None = None,
     ) -> None:
         self._retrievers = [r for r in retrievers if r is not None]
         self._depth = depth
         self._weights = WEIGHTS if weights is None else weights
+        self.reranker = reranker
+        """The cross-encoder, carried here and not used here.
+
+        `search` is synchronous and holds nothing but ids; reranking needs the document
+        text, and the only code that can read it is the async caller that was going to
+        fetch the rows anyway. So this rides on the object every caller already receives,
+        instead of a keyword threaded through `gather` in each of the ten scenario
+        modules. None is a desk with the fused ranking unchanged."""
 
     @property
     def channels(self) -> list[str]:
