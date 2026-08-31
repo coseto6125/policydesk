@@ -40,21 +40,30 @@ def test_a_reparsed_product_reaches_the_table():
     assert "name = excluded.name" in _conflict_clause("product")
 
 
-def test_a_rebuild_never_moves_an_issued_policy_s_premium():
+def test_a_rebuild_moves_a_premium_only_where_the_line_moved():
     """
-    `catalog_entry` is fabricated, and a policy bills against its `unit_premium`.
+    `catalog_entry` is fabricated, and a member's policy bills against its `unit_premium`.
 
-    `_stable_premium` is deterministic, so a rebuild would usually write the same figure
-    back — usually is not a property to bill somebody on. A contract that reclassified
-    into another line would take a new rate with it, and the customer's premium would
-    move on a rebuild that touched no contract of theirs.
+    Held at `DO NOTHING` first, so a rebuild could not move anybody's premium. That was
+    too blunt once `product` began to update: three contracts renamed out of
+    認證編號：0610132-31 reclassified into `life` and kept `other`'s 每單位 and its
+    1,100 元, which sorted them to the head of 最便宜的壽險 beside real policies priced
+    per 100 萬元保額. Every column here except the id is a function of the line.
+
+    The guard is the WHERE, not the conflict action. `_stable_premium` hashes the id
+    with the line, so an unchanged line produces the identical figure and nothing is
+    written — a rebuild that reclassifies no contract still moves no premium.
     """
-    assert "DO NOTHING" in _conflict_clause("catalog_entry")
+    conflict = _conflict_clause("catalog_entry")
+    assert "DO UPDATE" in conflict
+    assert "IS DISTINCT FROM" in conflict, "an unconditional update moves premiums on every rebuild"
+    assert "unit_premium = excluded.unit_premium" in conflict
 
 
-def test_every_upsert_states_which_of_the_two_it_is():
+def test_every_upsert_states_which_of_the_three_it_is():
     # A fourth table added later gets the same decision made deliberately: parsed from
-    # the contract, or fabricated beside it.
+    # the contract and always updated, fabricated and updated only where its inputs
+    # moved, or neither.
     inserts = re.findall(r"INSERT INTO (\w+)\s", SOURCE)
     assert set(inserts) == {"product", "clause", "catalog_entry"}, (
         f"a table was added to the loader without a conflict rule this file names: {inserts}"

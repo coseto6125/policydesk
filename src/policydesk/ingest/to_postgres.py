@@ -188,18 +188,30 @@ async def build_catalog(db: Database) -> int:
             )
         )
 
-    # `DO NOTHING` here, and `DO UPDATE` on product and clause above. The difference is
-    # what each row is: product and clause are parsed out of the PDF, so a better parser
-    # is a correction and must reach the table — the whitespace fix wrote clean text into
-    # SQLite and every one of the 11,741 rows in Postgres kept the old spacing, because
-    # this loader could not correct a row it had already written. A catalog_entry is
-    # fabricated (`_stable_premium`), and a member's policy bills against `unit_premium`;
-    # overwriting it would move somebody's premium on a rebuild that touched no contract.
+    # Rewritten only where the product line moved. Every field above except the id and
+    # `requires_main` is a function of `line`, so a reclassified product whose entry
+    # stands still is an entry describing the line it used to be in — three contracts
+    # renamed out of 認證編號：0610132-31 landed in `life` carrying `other`'s 每單位 and
+    # its 1,100 元, sorted to the head of 最便宜的壽險, and were read as the cheapest
+    # policies on sale beside real ones priced per 100 萬元保額.
+    #
+    # `_stable_premium` hashes the id and the line together, so an unchanged line
+    # produces the identical figure and the WHERE writes nothing: a rebuild that
+    # reclassifies no contract moves nobody's premium, which is the property that made
+    # this `DO NOTHING` in the first place. Product and clause above take the update
+    # unconditionally, because those are parsed out of the PDF and a better parser is a
+    # correction — the whitespace fix wrote 11,741 clean clauses into SQLite and every
+    # row in Postgres kept the old spacing until that changed.
     await db.execute_many(
         """INSERT INTO catalog_entry
              (product_id, issue_age_min, issue_age_max, max_occupation, unit_premium, unit_label, requires_main, on_sale)
            VALUES ($1::text,$2::int,$3::int,$4::int,$5::numeric,$6::text,$7::bool,$8::bool)
-           ON CONFLICT (product_id) DO NOTHING""",
+           ON CONFLICT (product_id) DO UPDATE SET
+             issue_age_min = excluded.issue_age_min, issue_age_max = excluded.issue_age_max,
+             max_occupation = excluded.max_occupation, unit_premium = excluded.unit_premium,
+             unit_label = excluded.unit_label, requires_main = excluded.requires_main
+           WHERE (catalog_entry.unit_premium, catalog_entry.unit_label)
+                 IS DISTINCT FROM (excluded.unit_premium, excluded.unit_label)""",
         entries,
     )
     logger.info("catalog_built", entries=len(entries))
