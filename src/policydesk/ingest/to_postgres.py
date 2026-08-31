@@ -144,8 +144,40 @@ async def copy_corpus(sqlite_path: Path, db: Database) -> tuple[int, int]:
         clauses,
     )
 
+    # Withdrawn as well as written. An upsert alone cannot retract: a clause the parser
+    # used to emit and no longer does stayed in Postgres for good, was rebuilt into both
+    # retrieval indexes, and passed the citation check — which validates a model's
+    # 〔art.25〕 against this very table. A clause that no longer exists in any contract
+    # therefore reached a customer as a clause of their own policy, with a page number.
+    #
+    # Scoped to the products this load actually carried. A partial run — one directory, a
+    # crash halfway — must not read as "every other contract has no clauses".
+    #
+    # Clauses only. `policy.product_id` references `product` with no `ON DELETE CASCADE`
+    # (`20260829000000_initial.sql:126`), so the database refuses to drop a product
+    # somebody holds a policy on — and it is right to: retracting the contract text under
+    # an issued policy is a decision for a person, not for a rebuild.
+    # Counted through a CTE because `db.execute` returns None — a rebuild that silently
+    # withdrew four hundred clauses and a rebuild that withdrew none look identical in
+    # the log otherwise, and this is the one statement here that destroys anything.
+    removed = 0
+    if clauses:
+        removed = int(
+            await db.fetch_val(
+                """WITH gone AS (
+                     DELETE FROM clause c
+                     WHERE c.product_id IN (SELECT DISTINCT p FROM unnest($1::text[]) AS t(p))
+                       AND NOT EXISTS (SELECT 1 FROM unnest($1::text[], $2::text[]) AS keep(p, cl)
+                                       WHERE keep.p = c.product_id AND keep.cl = c.clause_id)
+                     RETURNING 1)
+                   SELECT count(*) FROM gone""",
+                [[c[0] for c in clauses], [c[1] for c in clauses]],
+            )
+            or 0
+        )
+
     src.close()
-    logger.info("corpus_copied", products=len(products), clauses=len(clauses))
+    logger.info("corpus_copied", products=len(products), clauses=len(clauses), withdrawn=removed)
     return len(products), len(clauses)
 
 
