@@ -152,7 +152,12 @@ def _title_of(first_page: str) -> str:
 
     """
     for raw in first_page.splitlines():
-        if len(line := _tidy(raw)) < 8 or _FURNITURE.search(line):
+        # `.strip()`, not `_tidy` alone: `_tidy` only rstrips, and `_FURNITURE` anchors
+        # three of its branches at `^`. One leading space and 「 第 1 頁」 stops looking
+        # like furniture and becomes the product's name — measured, `_title_of` returned
+        # 「 第   1   頁」 as a title. That is the bug this filter was widened to fix, back
+        # through a different door.
+        if len(line := _tidy(raw).strip()) < 8 or _FURNITURE.search(line):
             continue
         return line
     return ""
@@ -252,11 +257,17 @@ def build_index(pdf_path: Path) -> ClauseIndex:
         end = marks[i + 1][0] if i + 1 < len(marks) else len(full)
         body = full[body_at:end].strip()
         clause_id = f"art.{number}"
+        # Tidied before it is classified, not after. `_kind_for` looks for 保險金 in the
+        # heading, and the text layer prints 癌症住院手術醫療保險 金 — so three cancer
+        # surgery benefits were filed as `procedure`, and `benefit_headings` asks for
+        # `grant`. Storing the clean heading while classifying the dirty one left a row
+        # that reads correctly and is still invisible to the tool that needs it.
+        heading = _tidy(heading)
         kind = _kind_for(heading)
         clauses[clause_id] = Clause(
             clause_id=clause_id,
             kind=kind,
-            heading=_tidy(heading),
+            heading=heading,
             verbatim=_tidy(body),
             page=_page_of(start, page_ends),
         )

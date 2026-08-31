@@ -401,7 +401,14 @@ async def _gather(
             if not given
         ]:
             facts["_still_needed"] = missing
-        if member and budget is not None:
+        # `elif`, not a second `if`. With a budget and no line, both branches used to
+        # run: `_still_needed` said the filter had not been asked for, while
+        # `suitable_products` searched `line=""`, found nothing, and `alternatives`
+        # came back offering 改看 life、改看 health and three more — five "relaxations"
+        # of a condition nobody set, with `binding` empty because no condition was
+        # binding. Two stories about the same turn, and six probe queries to build the
+        # one the injection then forbids the model to tell.
+        elif member and budget is not None:
             age = member["insurance_age"]
             facts["suitable_products"] = await tools.suitable_products(
                 db,

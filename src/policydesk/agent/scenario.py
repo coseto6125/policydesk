@@ -109,11 +109,12 @@ EXPLAIN_COVER = Scenario(
     params=(
         Param(
             name="topic",
-            description=(
-                "保戶想了解的保障主題。保戶沒有指明主題時填「全部」，工具會回傳整份條款，"
-                "不要為了這個參數回頭問保戶"
-            ),
+            description="保戶想了解的保障主題",
             example="住院日額",
+            when_unsaid=(
+                "保戶沒有指明主題時填「全部」，工具會回傳整份條款，"
+                "不要為了這個參數回頭問保戶，也不要填空字串。"
+            ),
         ),
     ),
     transitions=("recommend", "claim_checklist"),
@@ -129,8 +130,11 @@ BROWSE_PRODUCTS = Scenario(
         "只需要商品線一個參數，不要問預算。"
     ),
     injection=(
-        "catalogue_sample 是空的時候，代表這個險種目前沒有在售商品，不是系統查不到。"
-        "說明本公司目前有哪幾個險種可以看（壽險、醫療、意外、年金、投資型），請他挑一個。\n"
+        "catalogue_sample 是空的時候有兩種可能，講之前先分清楚。"
+        "line 有值而 sample 是空的，代表那個險種目前沒有在售商品，不是系統查不到。"
+        "line 是空字串則代表保戶還沒挑險種——這時候不可以說任何險種沒有商品，"
+        "他根本還沒提到哪一種。兩種情況都一樣：說明本公司目前有哪幾個險種可以看"
+        "（壽險、醫療、意外、年金、投資型），請他挑一個。\n"
         "你正在介紹目錄上公開販售的商品，這些資訊對任何人都可以說。\n"
         "**工具回傳的是保費最低的前幾項，不是全部。** on_sale_in_line 是這條商品線實際在售的"
         "數量，先照那個數字說「這條線目前有 N 項在售，以下是保費最低的幾項」，"
@@ -334,7 +338,17 @@ CATALOGUE: tuple[Scenario, ...] = (
 
 BY_NAME: dict[str, Scenario] = {s.name: s for s in CATALOGUE}
 
-ROUTER_INSTRUCTIONS = """\
+ANSWERABLE = "、".join(s.display_name for s in CATALOGUE if s.tools)
+"""What this desk can look up, read off the scenarios that can look something up.
+
+Written by hand first, and the hand-written list named seven of the eighteen. The
+sentence around it says 就這些, so a customer whose wording missed `disclosure` or
+`occupation` — both real scenarios with real tools — would be told this counter cannot
+answer and sent to a salesperson. That is the failure the sentence was added to stop,
+back through the scenarios it forgot to mention."""
+
+
+ROUTER_INSTRUCTIONS = f"""\
 你是台灣壽險公司的保險櫃台助理，面對的是保戶本人。
 
 選擇一個最符合保戶當下訴求的情境工具並呼叫它。
@@ -378,8 +392,7 @@ ROUTER_INSTRUCTIONS = """\
 這種直接回答不可以出現任何天數、金額、比例或條號——那些只能來自情境工具查回來的資料。
 問到這些就改呼叫對應的情境工具，工具查不到就說這部分需要查證，不要憑印象給一個數字。
 
-本櫃台查得到的東西就這些：保戶名下的保單與保障內容、保費與繳費紀錄、保額、
-理賠應備文件、受益人、保單復效、在售商品目錄，以及那三部法規。
+本櫃台查得到的東西就這些：{ANSWERABLE}，以及保險法、保險法施行細則、金融消費者保護法。
 問到這個範圍以外的事（營業時間、據點地址、客服電話、業務員的聯絡方式、其他公司的商品），
 照實說這一項本櫃台查不到，請他洽客服或原業務員，然後把上面查得到的那幾項講給他聽。
 **不要寫「請告訴我您想前往的服務據點，我再協助您確認」這種句子。**

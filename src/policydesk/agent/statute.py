@@ -669,7 +669,14 @@ async def _ranked_by(
     # on the clause half, scoped the way that tool runs, it takes 167 of 180 down to 161.
     # Nothing is withheld on a score — `rerank/__doc__` has the calibration that rules a
     # floor out.
-    return rerank.sift(encoder, topic, rows, passage=_provision_text, limit=limit)
+    # Off the event loop, the same as the search two dozen lines up. This process runs
+    # `single_process=True` (`web/server.py`), so one blocking call stalls every other
+    # customer's turn and not just this one — measured, a 10 ms ticker's worst gap goes
+    # from 10.9 ms to 764 ms when this line runs inline. The search above was already
+    # wrapped; this is the slower of the two and was not.
+    return await asyncio.to_thread(
+        rerank.sift, encoder, topic, rows, passage=_provision_text, limit=limit
+    )
 
 
 def _provision_text(row: dict[str, Any]) -> str:

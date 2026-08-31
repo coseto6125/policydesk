@@ -151,7 +151,8 @@ async def product_rate(
 
     Args:
         db: The database.
-        line: Which product line, one of `policydesk.agent.tools.LINES`.
+        line: Which product line, one of `policydesk.agent.tools.LINES`. Empty searches
+            every line, which is what a customer naming a product and no category means.
         keyword: Part of the product's own name, when the customer means one in
             particular. Empty matches every on-sale product on the line. It need not be
             contiguous — see `_in_order`.
@@ -173,7 +174,13 @@ async def product_rate(
     be told is whether it fits them, which is what `member_underwriting` is for.
 
     """
-    if line not in LINES:
+    # An empty line is *every* line, not an invalid one. The router leaves a parameter
+    # empty when the customer did not say it, and 真大心 PLUS 住院醫療這張一年多少錢 says
+    # a product name and no line at all — a name is what identifies a product, and
+    # filtering on the line first threw it away. Measured: with the name 國泰人壽美利,
+    # `line='life'` returns 5 rows and `line=''` returned none, and this scenario's
+    # injection reads an empty result as 本公司沒有這張 — said about a product on sale.
+    if line and line not in LINES:
         logger.warning("unsellable_line", line=line)
         return []
     wanted = keyword.strip()
@@ -182,7 +189,7 @@ async def product_rate(
                   ce.issue_age_min, ce.issue_age_max, ce.max_occupation, ce.requires_main,
                   count(*) OVER () AS matching_in_line
            FROM catalog_entry ce JOIN product p USING (product_id)
-           WHERE ce.on_sale AND p.line = $1::text
+           WHERE ce.on_sale AND ($1::text = '' OR p.line = $1::text)
              AND ($2::text = '' OR p.name ILIKE $3::text OR p.name ILIKE $4::text)
            ORDER BY (p.name ILIKE $3::text) DESC, ce.unit_premium ASC
            LIMIT $5::int""",
@@ -255,7 +262,10 @@ async def gather(
         against a band it already has, instead of being asked to guess whether they fit.
 
     """
-    line = params.get("line", "health")
+    # No fallback line. `required` guarantees the key exists and the schema tells the
+    # router to leave it empty when unsaid, so a default here was dead and the value it
+    # named was a guess at the customer's question.
+    line = params.get("line", "")
     keyword = params.get("keyword", "")
     amount = _as_amount(params.get("amount", ""))
     factories: dict[str, Any] = {"product_rate": lambda: product_rate(db, line, keyword, amount)}

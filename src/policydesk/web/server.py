@@ -126,14 +126,16 @@ async def _open_db(application: Sanic, _loop) -> None:
     application.ctx.sweep = asyncio.create_task(memory.sweep_loop(application.ctx.db, application.ctx.provider))
     # Opened once. A directory walk and an analyzer registration do not belong on the
     # path a customer is waiting on, and the first build takes twenty seconds.
-    lexical, semantic = await asyncio.gather(
-        open_index(application.ctx.db), open_vectors(application.ctx.db)
+    # Third model in this process, and the only one that reads a question and a document
+    # together. In the same gather as the other two: it reads its own export from its own
+    # path and depends on neither, and building the two ONNX sessions back to back costs
+    # their sum (1.48 s + 0.86 s measured) where it should cost the larger.
+    lexical, semantic, encoder = await asyncio.gather(
+        open_index(application.ctx.db),
+        open_vectors(application.ctx.db),
+        asyncio.to_thread(open_reranker),
     )
     channels = [r for r in (lexical, semantic) if r is not None]
-    # Third model in this process, and the only one that reads a question and a document
-    # together. Loaded here for the same reason as the other two: the session costs about
-    # a second to build, and a customer should not wait on it.
-    encoder = await asyncio.to_thread(open_reranker)
     application.ctx.clauses = HybridRetriever(channels, reranker=encoder) if channels else None
     logger.info("retrieval_ready", channels=[r.name for r in channels], rerank=encoder is not None)
     if not os.environ.get("POLICYDESK_DESK_TOKEN"):
