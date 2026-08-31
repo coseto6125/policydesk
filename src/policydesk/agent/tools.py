@@ -18,6 +18,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from policydesk.bootloader import logger
+from policydesk.retrieval import rerank
 from policydesk.retrieval.base import CLAUSE, Retriever
 from policydesk.synthetic.person import insurance_age
 
@@ -207,6 +208,11 @@ async def list_policies(db: Database, member_id: int, *, today: date) -> list[di
     return rows
 
 
+def _passage(row: dict[str, Any]) -> str:
+    """Build the text a cross-encoder reads for one clause: its heading, then its body."""
+    return f"{row.get('heading') or ''}\n{row.get('verbatim') or ''}"
+
+
 async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict[str, Any]]:
     """
     Read the clauses the index named, in the order it ranked them.
@@ -346,8 +352,17 @@ async def find_clause(
     """
     if not product_ids:
         return []
-    if index is not None and (hits := index.search(topic, corpus=CLAUSE, scope=product_ids, limit=limit)):
+    # More candidates than the caller asked for when a cross-encoder is open, because
+    # reranking has nothing to do with a list already cut to its final length.
+    encoder = getattr(index, "reranker", None)
+    wanted = max(limit, rerank.DEPTH) if encoder is not None else limit
+    if index is not None and (hits := index.search(topic, corpus=CLAUSE, scope=product_ids, limit=wanted)):
         found = await _clauses_by_id(db, [(h.scope_id, h.doc_id) for h in hits])
+        # No floor on this corpus. These are the customer's own contracts, already
+        # narrowed to the products they hold, and a clause that only sort of matches is
+        # still their policy — dropping it leaves them with nothing where the statute
+        # half would rightly say the law does not cover this.
+        found = rerank.sift(encoder, topic, found, passage=_passage, limit=limit)
         # Appended after the ranked hits, not mixed into them: a clause is here because
         # another one pointed at it, not because it matched the question.
         if cross := _referenced(found):

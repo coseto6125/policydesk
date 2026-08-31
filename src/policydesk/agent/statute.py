@@ -641,10 +641,13 @@ async def _ranked_by(
     contract clauses out of an answer about the law. Whole-article rows are dropped for
     the reason they are dropped everywhere: the text is its paragraphs concatenated.
     """
+    from policydesk.retrieval import rerank
     from policydesk.retrieval.base import STATUTE
 
+    encoder = getattr(retriever, "reranker", None)
+    wanted = max(limit * 2, rerank.DEPTH) if encoder is not None else limit * 2
     hits = await asyncio.to_thread(
-        retriever.search, topic, corpus=STATUTE, scope=tuple(statute_ids or ()), limit=limit * 2
+        retriever.search, topic, corpus=STATUTE, scope=tuple(statute_ids or ()), limit=wanted
     )
     keys = [(h.scope_id, h.doc_id) for h in hits]
     if not keys:
@@ -661,7 +664,24 @@ async def _ranked_by(
     )
     rank = {key: position for position, key in enumerate(keys)}
     rows.sort(key=lambda r: rank.get((r["statute_id"], r["doc_id"]), len(rank)))
-    return rows[:limit]
+    # The floor applies on this corpus and not on the clause half. Both channels return
+    # their best guess whether or not a best guess exists, and on the law that produces a
+    # citation: 為什麼不願意跟我說原因 came back with 金融消費者保護法 第19條, the
+    # confidentiality of a dispute proceeding the customer is not in, and it reads to him
+    # as the law excusing the desk from explaining. An empty return sends the caller to
+    # the rule it already has for an empty result — say the three acts do not cover this
+    # and give the complaint channel — which is the honest answer to that question.
+    kept = rerank.sift(
+        encoder, topic, rows, passage=_provision_text, limit=limit, floor=rerank.STATUTE_FLOOR
+    )
+    if encoder is not None and not kept and rows:
+        logger.info("statute_all_below_floor", topic=topic[:40], candidates=len(rows))
+    return kept
+
+
+def _provision_text(row: dict[str, Any]) -> str:
+    """Build the text a cross-encoder reads for one provision: its statute, then its words."""
+    return f"{row.get('statute_name') or ''}\n{row.get('verbatim') or ''}"
 
 
 _LEAD = r"(?:依|依據|依照|按|按照|根據|參照|見|據)?"
