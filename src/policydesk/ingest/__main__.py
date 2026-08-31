@@ -1,7 +1,7 @@
 """
 Rebuild the corpus end to end: parse the PDFs, then load what came out.
 
-Run as `policydesk-ingest`. Three steps that were three separate invocations, and the
+Run as `policydesk-ingest`. Four steps that were four separate invocations, and the
 middle two had no caller at all — `copy_corpus` and `build_catalog` were imported by the
 compose `ingest` service and never run by it, so the documented path fetched 1.19 GB of
 PDFs and stopped. Every parser improvement since then reached SQLite and no further.
@@ -25,6 +25,7 @@ from policydesk.core.db import Database
 from policydesk.ingest.build_db import build
 from policydesk.ingest.cathay import fetch_all
 from policydesk.ingest.to_postgres import build_catalog, copy_corpus
+from policydesk.retrieval.__main__ import rebuild as index_rebuild
 
 CORPUS = Path("data/cathay")
 STORE = Path("data/policydesk.db")
@@ -52,6 +53,13 @@ async def rebuild(corpus: Path = CORPUS, store: Path = STORE, *, fetch: bool = F
     logger.info("ingest_copied", products=copied_products, clauses=copied_clauses)
     entries = await build_catalog(db)
     logger.info("ingest_catalogued", entries=entries)
+    # The fourth step, and it is not optional. `open_index` builds only when `meta.json`
+    # is absent, so an existing BM25 index never refreshes on its own: a parser fix would
+    # reach Postgres and the desk would go on ranking against the text it replaced. The
+    # vector half takes about an hour on CPU, which is why this is the end of the command
+    # rather than something a developer is trusted to remember afterwards.
+    await index_rebuild()
+    logger.info("ingest_reindexed")
 
 
 def main() -> None:
