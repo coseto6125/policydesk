@@ -174,12 +174,18 @@ async def product_rate(
     be told is whether it fits them, which is what `member_underwriting` is for.
 
     """
-    # An empty line is *every* line, not an invalid one. The router leaves a parameter
-    # empty when the customer did not say it, and 真大心 PLUS 住院醫療這張一年多少錢 says
-    # a product name and no line at all — a name is what identifies a product, and
-    # filtering on the line first threw it away. Measured: with the name 國泰人壽美利,
-    # `line='life'` returns 5 rows and `line=''` returned none, and this scenario's
-    # injection reads an empty result as 本公司沒有這張 — said about a product on sale.
+    # An empty line is *every sellable* line, and the distinction is not pedantic. The
+    # router leaves a parameter empty when the customer did not say it, and 真大心 PLUS
+    # 住院醫療這張一年多少錢 names a product and no line — a name identifies a product,
+    # and filtering on the line first threw it away, so this used to answer 本公司沒有
+    # 這張 about a product on sale.
+    #
+    # The first fix dropped the filter entirely, which sells `other`. `LINES` says why
+    # that line exists: it is everything the catalogue could not classify. Measured with
+    # no filter, three of the five cheapest results were 本商品說明書僅供參考，詳細內容
+    # 請以保險單條款為準 — a PDF heading the parser could not read, quoted to a customer
+    # at 1,030 元 a unit.
+    lines = [line] if line else sorted(LINES)
     if line and line not in LINES:
         logger.warning("unsellable_line", line=line)
         return []
@@ -189,11 +195,11 @@ async def product_rate(
                   ce.issue_age_min, ce.issue_age_max, ce.max_occupation, ce.requires_main,
                   count(*) OVER () AS matching_in_line
            FROM catalog_entry ce JOIN product p USING (product_id)
-           WHERE ce.on_sale AND ($1::text = '' OR p.line = $1::text)
+           WHERE ce.on_sale AND p.line = ANY($1::text[])
              AND ($2::text = '' OR p.name ILIKE $3::text OR p.name ILIKE $4::text)
            ORDER BY (p.name ILIKE $3::text) DESC, ce.unit_premium ASC
            LIMIT $5::int""",
-        [line, wanted, f"%{_escaped(wanted)}%", _in_order(wanted), limit],
+        [lines, wanted, f"%{_escaped(wanted)}%", _in_order(wanted), limit],
     )
     if amount is None:
         return rows
@@ -262,9 +268,13 @@ async def gather(
         against a band it already has, instead of being asked to guess whether they fit.
 
     """
-    # No fallback line. `required` guarantees the key exists and the schema tells the
-    # router to leave it empty when unsaid, so a default here was dead and the value it
-    # named was a guess at the customer's question.
+    # The default is `""` and it is load-bearing, not dead. `required` in the tool schema
+    # is a request to the model, not a guarantee to this code: `_route` sets `args = {}`
+    # on a `DecodeError` and on a call carrying no arguments at all, and those params
+    # reach here unfilled. `""` is what an unsaid line already means — search every line
+    # — so the malformed-call path degrades into the same behaviour rather than a
+    # KeyError. What it must never be again is `health`, which answers a question about
+    # medical cover to a customer who named a product and no category.
     line = params.get("line", "")
     keyword = params.get("keyword", "")
     amount = _as_amount(params.get("amount", ""))
