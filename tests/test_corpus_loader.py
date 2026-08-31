@@ -10,6 +10,8 @@ already held.
 import re
 from pathlib import Path
 
+import pytest
+
 SOURCE = Path("src/policydesk/ingest/to_postgres.py").read_text(encoding="utf-8")
 
 
@@ -68,3 +70,89 @@ def test_every_upsert_states_which_of_the_three_it_is():
     assert set(inserts) == {"product", "clause", "catalog_entry"}, (
         f"a table was added to the loader without a conflict rule this file names: {inserts}"
     )
+
+
+async def test_a_clause_the_parser_stopped_emitting_is_withdrawn(tmp_path):
+    """
+    An upsert cannot retract, and the citation check validates against this table.
+
+    A clause the parser used to emit and no longer does stayed in Postgres for good, was
+    rebuilt into both retrieval indexes, and passed the check that validates a model's
+    〔art.25〕 — so a clause belonging to no contract could reach a customer as a clause
+    of their own policy, page number and all.
+
+    Driven through `copy_corpus` against the real database rather than by matching the
+    DELETE's text: the conflict target, the scoping to loaded products, and the
+    `NOT EXISTS` are three ways to write this wrong that a string assertion cannot tell
+    apart. The row is planted and removed inside the test, and the corpus it plants
+    beside is the real one, so a mistake in the scoping shows up as the rest of that
+    product's clauses disappearing.
+    """
+    import sqlite3
+
+    from policydesk.core.db import Database
+    from policydesk.ingest.to_postgres import copy_corpus
+
+    db = Database()
+    try:
+        await db.fetch_val("SELECT 1")
+    except Exception:
+        pytest.skip("policydesk-pg is not up")
+
+    product_id = await db.fetch_val("SELECT product_id FROM clause GROUP BY product_id ORDER BY count(*) DESC LIMIT 1")
+    if product_id is None:
+        pytest.skip("no product carries a clause")
+    held = await db.fetch(
+        "SELECT clause_id, kind, heading, verbatim, page FROM clause WHERE product_id = $1::text",
+        [str(product_id)],
+    )
+
+    # A SQLite index holding exactly what the parser emits now: this product's clauses,
+    # and not the invented one.
+    store = tmp_path / "corpus.db"
+    src = sqlite3.connect(store)
+    src.execute(
+        "CREATE TABLE product (product_id TEXT PRIMARY KEY, doc_sha TEXT, insurer TEXT, name TEXT,"
+        " line TEXT, attachment TEXT, approval TEXT, pages INT, source_url TEXT)"
+    )
+    src.execute(
+        "CREATE TABLE clause (product_id TEXT, clause_id TEXT, kind TEXT, heading TEXT,"
+        " verbatim TEXT, page INT, overrides TEXT)"
+    )
+    row = await db.fetch_one(
+        "SELECT doc_sha, insurer, name, line, attachment, approval, pages, source_url"
+        " FROM product WHERE product_id = $1::text",
+        [str(product_id)],
+    )
+    src.execute("INSERT INTO product VALUES (?,?,?,?,?,?,?,?,?)", (str(product_id), *row.values()))
+    src.executemany(
+        "INSERT INTO clause VALUES (?,?,?,?,?,?,?)",
+        [(str(product_id), c["clause_id"], c["kind"], c["heading"], c["verbatim"], c["page"], "[]") for c in held],
+    )
+    src.commit()
+
+    await db.execute(
+        "INSERT INTO clause (product_id, clause_id, kind, heading, verbatim, page, overrides)"
+        " VALUES ($1::text, 'art.9999', 'grant', '撤回測試', '這一條不存在於任何契約', 1, $2::text[])"
+        " ON CONFLICT (product_id, clause_id) DO NOTHING",
+        [str(product_id), []],
+    )
+    planted = await db.fetch_val(
+        "SELECT count(*) FROM clause WHERE product_id = $1::text AND clause_id = 'art.9999'", [str(product_id)]
+    )
+    assert int(planted) == 1, "the row to be withdrawn was not planted"
+
+    try:
+        await copy_corpus(store, db)
+        left = await db.fetch_val(
+            "SELECT count(*) FROM clause WHERE product_id = $1::text AND clause_id = 'art.9999'", [str(product_id)]
+        )
+        assert int(left) == 0, "a clause the parser no longer emits survived the reload"
+        kept = await db.fetch_val("SELECT count(*) FROM clause WHERE product_id = $1::text", [str(product_id)])
+        assert int(kept) == len(held), f"the reload took {len(held) - int(kept)} clauses it should have kept"
+        others = await db.fetch_val("SELECT count(*) FROM clause WHERE product_id <> $1::text", [str(product_id)])
+        assert int(others) > 0, "a load carrying one product emptied every other product"
+    finally:
+        await db.execute(
+            "DELETE FROM clause WHERE product_id = $1::text AND clause_id = 'art.9999'", [str(product_id)]
+        )
