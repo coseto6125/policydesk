@@ -475,3 +475,31 @@ def test_the_router_names_every_scenario_it_can_answer_from():
 
     absent = [s.display_name for s in CATALOGUE if s.tools and s.display_name not in ROUTER]
     assert not absent, f"the desk can answer these and the router's list does not say so: {absent}"
+
+
+@pytest.mark.parametrize(
+    ("summary", "expect", "reject"),
+    [
+        ({"active": 5, "premium": 74106, "no_schedule": 0, "uncosted": 0}, "74,106", "（"),
+        ({"active": 5, "premium": 60000, "no_schedule": 2, "uncosted": 0}, "2 張查無繳費紀錄", "未計入"),
+        ({"active": 5, "premium": 60000, "no_schedule": 0, "uncosted": 1}, "1 張查不到費率", "費率估算"),
+        ({"active": 5, "premium": 60000, "no_schedule": 2, "uncosted": 1}, "；", None),
+    ],
+)
+def test_the_billing_total_says_which_policies_it_could_not_price(summary, expect, reject):
+    """
+    A figure the customer reads as their bill has to say what it left out.
+
+    Three states and they are not the same claim. Instalments are what the policy bills.
+    A rate card is an estimate, and the reply has said so since the day the two figures
+    disagreed by six dollars. A policy with neither can only contribute nothing — and
+    counting it among the estimated ones says the desk priced it at zero, which is the
+    same overclaim in a smaller place.
+    """
+    from policydesk.agent.executor import _render
+    from policydesk.agent.scenario import BILLING
+
+    reply = _render(BILLING, {"billing_summary": summary})
+    assert expect in reply
+    if reject is not None:
+        assert reject not in reply

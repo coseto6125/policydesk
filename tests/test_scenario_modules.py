@@ -210,14 +210,17 @@ def test_every_parameter_says_what_to_do_when_the_customer_has_not_said_it():
     the fix belongs where the pressure is — one rule per parameter in `tool_schema`
     covers the fifteen spread across ten modules, and the sixteenth gets it for free.
     """
-    from policydesk.agent.scenario_base import tool_schema
+    # Not a substring search for 填空字串: the four sentinel parameters end with
+    # 不要填空字串, which contains it, so the guard passed on the instruction it was
+    # written to reject. What every parameter must carry is *a* rule about the unsaid
+    # case, and `when_unsaid` is where a parameter with its own says so.
+    from policydesk.agent.scenario_base import UNSAID, tool_schema
 
     without = [
-        f"{s.name}.{name}"
+        f"{s.name}.{p.name}"
         for s in CATALOGUE
-        if s.params
-        for name, spec in tool_schema(s)["parameters"]["properties"].items()
-        if "填空字串" not in spec["description"]
+        for p in s.params
+        if not p.when_unsaid and UNSAID not in tool_schema(s)["parameters"]["properties"][p.name]["description"]
     ]
     assert not without, f"these parameters invite the example when the customer said nothing: {without}"
 

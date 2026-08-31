@@ -68,15 +68,11 @@ services:
       DATABASE_URL: postgres://policydesk:policydesk@postgres:5432/policydesk
     volumes:
       - ./data:/app/data
-    # Fetch, then parse and load. The second half used to be missing: this imported
+    # Fetch, parse, load — one command. The load half used to be missing: this imported
     # `copy_corpus` and `build_catalog` and ran neither, so the documented rebuild
-    # downloaded 1.19 GB of contracts and stopped — every parser correction reached
-    # SQLite and no further, and Postgres kept whatever it already held.
-    command: >
-      sh -c "
-      python -c \"import asyncio; from pathlib import Path; from policydesk.ingest.cathay import fetch_all; asyncio.run(fetch_all(Path('/app/data/cathay')))\" &&
-      policydesk-ingest /app/data/cathay
-      "
+    # downloaded 1.19 GB of contracts and stopped, every parser correction reaching
+    # SQLite and no further while Postgres kept whatever it already held.
+    command: policydesk-ingest --fetch /app/data/cathay
 
 volumes:
   pgdata:

@@ -11,7 +11,7 @@ products and clauses into Postgres, and `build_catalog` reads `product.line` bac
 derive the rate card — so a line the parser has just corrected has to be in Postgres
 before the catalogue is rebuilt against it.
 
-Not run at startup, and not on a schedule. It reparses 661 documents and rewrites 11,741
+Not run at startup, and not on a schedule. It reparses 660 documents and rewrites 11,741
 rows; a desk that did that while somebody was mid-conversation would change the contract
 text under a reply already being written.
 """
@@ -23,21 +23,28 @@ from pathlib import Path
 from policydesk.bootloader import logger
 from policydesk.core.db import Database
 from policydesk.ingest.build_db import build
+from policydesk.ingest.cathay import fetch_all
 from policydesk.ingest.to_postgres import build_catalog, copy_corpus
 
 CORPUS = Path("data/cathay")
 STORE = Path("data/policydesk.db")
 
 
-async def rebuild(corpus: Path = CORPUS, store: Path = STORE) -> None:
+async def rebuild(corpus: Path = CORPUS, store: Path = STORE, *, fetch: bool = False) -> None:
     """
     Parse the corpus and load it, in the one order that works.
 
     Args:
         corpus: Directory of fetched PDFs, alongside their manifest.
         store: Where the parser's SQLite index lives.
+        fetch: Download the contracts first. Off by default because it is 1.19 GB over
+            somebody's network and the usual reason to run this is a parser change, not
+            a missing corpus.
 
     """
+    if fetch:
+        await fetch_all(corpus)
+        logger.info("ingest_fetched", corpus=str(corpus))
     products, clauses = await asyncio.to_thread(build, corpus, store)
     logger.info("ingest_parsed", products=products, clauses=clauses, store=str(store))
     db = Database()
@@ -48,12 +55,22 @@ async def rebuild(corpus: Path = CORPUS, store: Path = STORE) -> None:
 
 
 def main() -> None:
-    """Entry point for `policydesk-ingest`."""
-    corpus = Path(sys.argv[1]) if len(sys.argv) > 1 else CORPUS
-    if not corpus.is_dir():
-        logger.error("corpus_absent", path=str(corpus), hint="fetch it first; see README")
+    """
+    Entry point for `policydesk-ingest [--fetch] [corpus]`.
+
+    `--fetch` folds the download in, so the whole pipeline is one command with one entry
+    point. It was four stages and the first three had scripts; the download sat in
+    `docker-compose.yml` as a `python -c` string nested inside an `sh -c` string inside a
+    YAML block scalar, which is four levels of quoting for the one stage nobody could
+    run by name.
+    """
+    args = [a for a in sys.argv[1:] if a != "--fetch"]
+    corpus = Path(args[0]) if args else CORPUS
+    fetch = "--fetch" in sys.argv[1:]
+    if not fetch and not corpus.is_dir():
+        logger.error("corpus_absent", path=str(corpus), hint="pass --fetch, or see README")
         raise SystemExit(1)
-    asyncio.run(rebuild(corpus))
+    asyncio.run(rebuild(corpus, fetch=fetch))
 
 
 if __name__ == "__main__":

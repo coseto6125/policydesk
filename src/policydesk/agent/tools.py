@@ -312,6 +312,16 @@ def _referenced(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return wanted[:CROSS_LIMIT]
 
 
+ANY_TOPIC: frozenset[str] = frozenset({"全部", "全部條款", "所有", "不限"})
+"""What a customer who named no topic is filled in as. Read here as no topic at all.
+
+A sentinel only works where something reads it. `explain_cover.topic` has promised
+工具會回傳整份條款 since it was written, and this module had never heard of the word —
+so 全部 went into BM25 as a query term and into the fallback as `ILIKE '%全部%'`, and a
+customer asking 我這幾張保單保什麼 was ranked against that word rather than against
+nothing."""
+
+
 @requires_identity
 async def find_clause(
     db: Database, product_ids: list[str], topic: str, limit: int = 6, index: Retriever | None = None
@@ -346,6 +356,8 @@ async def find_clause(
     """
     if not product_ids:
         return []
+    if topic.strip() in ANY_TOPIC:
+        topic = ""
     # No cross-encoder on this half, and the reason is measured. `statutory_floor`
     # reranks and gains four of twenty-four; here it loses six of a hundred and eighty.
     #
@@ -863,6 +875,12 @@ async def billing_summary(db: Database, member_id: int, *, today: date) -> dict[
     told `active=0` and `premium=0` — every policy they hold disappears, not merely the
     one, and the customer reads that as owning nothing.
 
+    That leaves three states and they are counted apart. A policy with instalments is
+    read from them. A policy without them but with a rate falls back to the rate and is
+    `no_schedule`, which the reply reports as an estimate. A policy with neither can only
+    contribute nothing, and calling that an estimate would be the same overclaim in a
+    smaller place — it is `uncosted`, and the reply says the total leaves it out.
+
     **`due_at <= today`.** Without it `ORDER BY due_at DESC` reaches for the newest row
     in the table rather than the newest one that has fallen due, so a schedule written
     ahead of time would have this quoting next year's instalment as what a year costs
@@ -875,7 +893,10 @@ async def billing_summary(db: Database, member_id: int, *, today: date) -> dict[
                                     WHEN ce.unit_premium IS NOT NULL
                                       THEN ce.unit_premium * po.sum_insured / 1000.0
                                     ELSE 0 END), 0) AS premium,
-                  count(*) FILTER (WHERE due.amount IS NULL) AS no_schedule
+                  count(*) FILTER (WHERE due.amount IS NULL AND ce.unit_premium IS NOT NULL)
+                    AS no_schedule,
+                  count(*) FILTER (WHERE due.amount IS NULL AND ce.unit_premium IS NULL)
+                    AS uncosted
            FROM policy po
            LEFT JOIN catalog_entry ce USING (product_id)
            CROSS JOIN LATERAL (SELECT CASE po.premium_mode
@@ -888,7 +909,7 @@ async def billing_summary(db: Database, member_id: int, *, today: date) -> dict[
              AND (po.lapsed_at IS NULL OR po.lapsed_at > $2::date)""",
         [member_id, today],
     )
-    return row or {"active": 0, "premium": 0, "no_schedule": 0}
+    return row or {"active": 0, "premium": 0, "no_schedule": 0, "uncosted": 0}
 
 
 @requires_identity

@@ -463,10 +463,16 @@ def _render(scenario: Scenario, facts: dict[str, Any]) -> str:
             # A total mixing instalment rows with rate-card estimates says so. Without
             # this the estimate disappears into a figure the customer reads as their bill.
             unscheduled = int(summary.get("no_schedule") or 0)
+            uncosted = int(summary.get("uncosted") or 0)
+            caveats = [
+                f"其中 {unscheduled} 張查無繳費紀錄，以商品費率估算" if unscheduled else "",
+                f"另有 {uncosted} 張查不到費率，未計入這個金額" if uncosted else "",
+            ]
+            said = "；".join(c for c in caveats if c)
             return scenario.template.format(
                 active=summary.get("active", 0),
                 premium=f"{float(summary.get('premium') or 0):,.0f}",
-                caveat=f"（其中 {unscheduled} 張查無繳費紀錄，以商品費率估算）" if unscheduled else "",
+                caveat=f"（{said}）" if said else "",
             )
         case "coverage":
             rows = facts.get("coverage_summary") or []
