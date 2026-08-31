@@ -437,3 +437,25 @@ async def test_a_year_of_premiums_is_what_the_instalments_add_to(db):
         if round(float(summary["premium"])) != round(a_year):
             apart.append(f"member {member_id}: billing {summary['premium']} vs instalments {a_year}")
     assert not apart, f"{len(apart)} of {len(members)} members are told two different totals: {apart[:3]}"
+
+
+def test_the_router_is_told_what_it_cannot_look_up():
+    """
+    「請告訴我您想前往的服務據點，我再協助您確認。」
+
+    That is what 你們幾點上班? got in a replay of the real transcript. The desk holds no
+    branch, no address, no phone number — there is no table with any of it — so the next
+    turn cannot keep the promise the sentence makes. The existing rule for this branch
+    forbids a figure, a proportion and an article number, and that reply carried none of
+    them: it is well formed, it is polite, and it commits the desk to a lookup it will
+    fail.
+
+    The failing sentence is quoted into the rule rather than described. A rule about
+    「不要承諾查不到的事」 leaves the model to decide what it can look up, which is the
+    judgement it just got wrong.
+    """
+    from policydesk.agent.scenario import ROUTER_INSTRUCTIONS as ROUTER
+
+    assert "請告訴我您想前往的服務據點" in ROUTER, "the rule names a shape, not the sentence"
+    for holds in ("營業時間", "據點地址", "客服電話"):
+        assert holds in ROUTER, f"{holds} is not named as outside what this desk can read"

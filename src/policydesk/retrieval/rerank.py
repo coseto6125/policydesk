@@ -6,20 +6,33 @@ the question: one counts term overlap, the other compares two vectors computed a
 cross-encoder reads the pair together, which is why it can tell 保密義務 from 據實說明 on
 a complaint that mentions neither by name.
 
-**The score is worth more than the order here.** Reranking moved recall@5 from 0.80 to
-0.88 on the forty-question gold set, which is two questions; the depths between 8 and 17
-are indistinguishable at that size, and any claim that one of them is best would be a
-claim about noise. What the ranking alone cannot express is *nothing here answers this* —
-and every channel above returns its best guess whether or not a best guess exists. Asked
-為什麼不願意跟我說原因, the hybrid returns 金融消費者保護法 第19條, 爭議過程的保密義務:
-a real article, about a situation the customer is not in, and it reads to him as the law
-excusing the desk from explaining. The cross-encoder scores all twenty candidates
-negative, which is the correct reading of a complaint the three acts do not address.
+**One caller, and it is the statute half.** On 24 statute questions reranking takes
+recall@5 from 0.67 to 0.83 — four questions — and MRR from 0.50 to 0.60. On the clause
+half it loses: measured the way `find_clause` actually runs, scoped to the three to five
+contracts one member holds and cut to the six clauses it returns, the fused order is
+right 167 times in 180 and the reranked order 161.
 
-So callers take two things from here: an order, and a floor. The floor is per corpus,
-because the two corpora fail differently — a clause that only sort of matches is still
-the customer's own contract and worth showing, and a statute that only sort of matches is
-a citation that misleads.
+An earlier measurement said the opposite about clauses, and it was measuring a search
+the desk never performs. Unscoped across 660 products, the same `art.2` filled all five
+top slots — a distribution production cannot produce, because a member does not hold 660
+contracts. Reranking that pile improved a ranking nobody sees. **A result that violates
+what the live system can produce is a broken harness, not a finding**, and five identical
+clause ids in one top five should have said so before the number was used.
+
+**There is no score floor, and the reason is measured.** A floor was the point of this
+module: a way to say *nothing here answers your question* rather than cite the closest
+miss — 為什麼不願意跟我說原因 returns 金融消費者保護法 第19條, the confidentiality of a
+dispute proceeding the customer is not in, and it reads to him as the law excusing the
+desk from explaining. Three questions suggested that a misfit scores negative across the
+board. Twenty-four did not: the top score of a question the corpus *does* answer runs
+from -5.4 to 5.5, and of five real questions it does not, from -10.9 to 1.1. The two
+ranges overlap almost entirely. Silencing that §19 citation needs a floor above -2.8,
+which costs five of the seventeen questions currently answered. bge-reranker's output is
+a ranking logit and not a calibrated relevance scale, and treating it as one was an
+inference from three data points.
+
+That case is handled in `soothe`'s injection instead, by asking the model whether a
+retrieved provision is about the situation the customer described.
 """
 
 import os
@@ -45,11 +58,6 @@ DEPTH = 12
 420 ms — spent once per turn, against two model calls that cost seconds. 8, 10, 12, 15
 and 17 score within one question of each other on a forty-question gold set, so this is
 the cheapest depth in a band whose members cannot be told apart, not the best of them."""
-
-STATUTE_FLOOR: float | None = None
-"""Score below which a provision is not cited at all. None until measured — the number
-is being calibrated against questions the corpus answers and questions it does not, and
-a guessed floor either silences the law or lets the same misfit citation through."""
 
 CHARS = 900
 """Of the document. Past this the pair stops fitting the window, and truncation inside
@@ -150,10 +158,9 @@ def sift[R](
     *,
     passage: Callable[[R], str],
     limit: int,
-    floor: float | None = None,
 ) -> list[R]:
     """
-    Reorder rows by the cross-encoder, and drop the ones it says do not belong.
+    Reorder rows by the cross-encoder and cut to what the caller asked for.
 
     Args:
         encoder: The cross-encoder, or None to leave the rows exactly as they came.
@@ -161,16 +168,14 @@ def sift[R](
         rows: Whatever the caller fetched, in the fused ranking's order.
         passage: Reads the text to score out of one row.
         limit: Most rows to return.
-        floor: Score below which a row is dropped. None keeps every row and only
-            reorders them.
 
     Returns:
-        The rows the encoder ranked highest, cut to `limit`. Empty when the floor
-        rejected all of them, which is a caller's signal to say the corpus does not
-        answer this rather than to show its closest miss.
+        The rows the encoder ranked highest, cut to `limit`. Every row survives the
+        pass — nothing is withheld on a score, for the reason the module docstring
+        measures.
 
     """
     if encoder is None or not rows:
         return list(rows)[:limit]
     ordered = encoder.order(query, [(position, passage(row)) for position, row in enumerate(rows)])
-    return [rows[position] for position, score in ordered if floor is None or score >= floor][:limit]
+    return [rows[position] for position, _ in ordered][:limit]

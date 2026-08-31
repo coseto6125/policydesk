@@ -87,6 +87,18 @@ class Scenario(Struct, frozen=True):
     """
 
 
+UNSAID = "保戶沒有說到這一項時填空字串，不要拿例子、常見情況或推測補上。"
+"""Said on every parameter, because `required` makes the model produce *something*.
+
+保戶 asked 我想問住院理賠 — five characters, no duration — and the router filled
+`event` with 住院四天, which is the parameter's own example. Nothing downstream could
+catch it: the value is well formed, the scenario is right, and `faults` stays empty.
+The pressure comes from the schema, so the release belongs there too. `budget` never
+invented a figure in the same replay because 只填阿拉伯數字 makes a made-up value
+obviously wrong; this line does that job for the parameters whose value is prose.
+"""
+
+
 def tool_schema(scenario: Scenario) -> dict:
     """
     Turn a scenario into a tool the router can call.
@@ -100,7 +112,12 @@ def tool_schema(scenario: Scenario) -> dict:
 
     """
     properties = {
-        p.name: {"type": "string", "description": f"{p.description}{f'，例如 {p.example}' if p.example else ''}"}
+        p.name: {
+            "type": "string",
+            "description": (
+                f"{p.description}{f'，例如 {p.example}' if p.example else ''}。{UNSAID}"
+            ),
+        }
         for p in scenario.params
     }
     return {
@@ -111,7 +128,9 @@ def tool_schema(scenario: Scenario) -> dict:
             "type": "object",
             "properties": properties,
             # Both lists, always. A property that is not required is a question the
-            # model is free to skip.
+            # model is free to skip — and `_gather` reads a missing key and an empty one
+            # the same way, so requiring it costs nothing and keeps the router honest
+            # about what it did and did not hear.
             "required": [p.name for p in scenario.params],
             "additionalProperties": False,
         },

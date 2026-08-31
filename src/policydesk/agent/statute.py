@@ -664,19 +664,12 @@ async def _ranked_by(
     )
     rank = {key: position for position, key in enumerate(keys)}
     rows.sort(key=lambda r: rank.get((r["statute_id"], r["doc_id"]), len(rank)))
-    # The floor applies on this corpus and not on the clause half. Both channels return
-    # their best guess whether or not a best guess exists, and on the law that produces a
-    # citation: 為什麼不願意跟我說原因 came back with 金融消費者保護法 第19條, the
-    # confidentiality of a dispute proceeding the customer is not in, and it reads to him
-    # as the law excusing the desk from explaining. An empty return sends the caller to
-    # the rule it already has for an empty result — say the three acts do not cover this
-    # and give the complaint channel — which is the honest answer to that question.
-    kept = rerank.sift(
-        encoder, topic, rows, passage=_provision_text, limit=limit, floor=rerank.STATUTE_FLOOR
-    )
-    if encoder is not None and not kept and rows:
-        logger.info("statute_all_below_floor", topic=topic[:40], candidates=len(rows))
-    return kept
+    # Reranked here and not in `find_clause`, and both halves were measured. On these
+    # provisions a cross-encoder takes recall@5 from 0.67 to 0.83 across 24 questions;
+    # on the clause half, scoped the way that tool runs, it takes 167 of 180 down to 161.
+    # Nothing is withheld on a score — `rerank/__doc__` has the calibration that rules a
+    # floor out.
+    return rerank.sift(encoder, topic, rows, passage=_provision_text, limit=limit)
 
 
 def _provision_text(row: dict[str, Any]) -> str:

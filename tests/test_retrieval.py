@@ -215,10 +215,19 @@ def test_the_keys_are_bound_as_parallel_arrays():
 
 
 def test_the_index_is_opened_once_per_process():
-    """A directory walk and an analyzer registration per turn is a turn's worth of it."""
+    """
+    A directory walk and an analyzer registration per turn is a turn's worth of it.
+
+    Asserted on where the retriever is built, not on the arguments it is built with. The
+    first version pinned `HybridRetriever(channels) if channels else None` verbatim and
+    broke on the day a third channel was passed to it — which is the constructor's
+    business, and says nothing about how often the constructor runs.
+    """
     server = Path("src/policydesk/web/server.py").read_text()
-    assert "open_index(application.ctx.db), open_vectors(application.ctx.db)" in server
-    assert "HybridRetriever(channels) if channels else None" in server
+    startup = server[server.index("@app.before_server_start") : server.index("@app.after_server_stop")]
+    assert "open_index(application.ctx.db), open_vectors(application.ctx.db)" in startup
+    assert "HybridRetriever(" in startup
+    assert "HybridRetriever(" not in server[server.index("async def customer_socket") :]
     assert "open_index" not in server[server.index("async def customer_socket"):]
 
 
