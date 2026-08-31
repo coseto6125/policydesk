@@ -195,3 +195,42 @@ def test_a_summary_is_one_short_line():
     # failure it guards is someone pasting the routing description in.
     too_long = [(s.name, len(s.summary)) for s in CATALOGUE if len(s.summary) > 40]
     assert not too_long, f"summary is a table cell, not a paragraph: {too_long}"
+
+
+def test_every_parameter_says_what_to_do_when_the_customer_has_not_said_it():
+    """
+    `required` makes the model produce something; this is what it produces instead.
+
+    保戶 asked 我想問住院理賠 — no duration in it anywhere — and the router filled
+    `event` with 住院四天, which is that parameter's own example. Nothing downstream can
+    catch that: the value is well formed, the scenario is right, `faults` comes back
+    empty, and the reply then answers a question about a four-day stay nobody mentioned.
+
+    Asserted on the schema the router actually receives rather than on `Param`, because
+    the fix belongs where the pressure is — one line in `tool_schema` covers the fifteen
+    parameters spread across ten modules, and the sixteenth gets it for free.
+    """
+    from policydesk.agent.scenario_base import tool_schema
+
+    without = [
+        f"{s.name}.{name}"
+        for s in CATALOGUE
+        if s.params
+        for name, spec in tool_schema(s)["parameters"]["properties"].items()
+        if "填空字串" not in spec["description"]
+    ]
+    assert not without, f"these parameters invite the example when the customer said nothing: {without}"
+
+
+def test_a_parameter_is_still_required():
+    """
+    The empty string is the answer, not a missing key.
+
+    Making the property optional would let the router drop a parameter it did hear, and
+    `_gather` cannot tell that from one the customer never gave.
+    """
+    from policydesk.agent.scenario_base import tool_schema
+
+    for scenario in (s for s in CATALOGUE if s.params):
+        schema = tool_schema(scenario)
+        assert set(schema["parameters"]["required"]) == {p.name for p in scenario.params}, scenario.name

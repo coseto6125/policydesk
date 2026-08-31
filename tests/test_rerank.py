@@ -8,8 +8,6 @@ assertions depend on what it happens to think of four sentences.
 
 from typing import Any
 
-import pytest
-
 from policydesk.retrieval import rerank
 
 
@@ -48,61 +46,43 @@ def test_the_encoder_decides_the_order():
     assert [r["t"] for r in kept] == ["b", "c", "d"]
 
 
-def test_a_floor_drops_what_does_not_belong():
-    """
-    The score says more than the order here.
-
-    為什麼不願意跟我說原因 returns 金融消費者保護法 第19條 — a real article about a
-    dispute proceeding the customer is not in. Reordering cannot express *none of these*,
-    and the next-best candidate is 保險法 第57條, which is worse: it is the provision an
-    insurer uses against a customer who failed to notify.
-    """
-    scorer = Scorer({"a": -1.0, "b": 5.0, "c": 2.0, "d": 0.0})
-    kept = rerank.sift(scorer, "q", ROWS, passage=_passage, limit=4, floor=1.0)
-    assert [r["t"] for r in kept] == ["b", "c"]
-
-
-def test_everything_below_the_floor_returns_nothing():
-    # The caller's signal to say the corpus does not answer this, rather than to show
-    # its closest miss. Every scenario already has a rule for an empty tool result.
-    scorer = Scorer({"a": -4.0, "b": -2.5, "c": -3.0, "d": -5.2})
-    assert rerank.sift(scorer, "q", ROWS, passage=_passage, limit=4, floor=0.0) == []
-
-
-def test_no_floor_keeps_every_row():
-    # What the clause half does. These are the customer's own contracts, already narrowed
-    # to the products they hold, so a clause that only sort of matches is still theirs.
-    scorer = Scorer({"a": -4.0, "b": -2.5, "c": -3.0, "d": -5.2})
-    assert len(rerank.sift(scorer, "q", ROWS, passage=_passage, limit=4)) == 4
-
-
 def test_an_empty_candidate_list_is_not_an_error():
     assert rerank.sift(Scorer({}), "q", [], passage=_passage, limit=3) == []
 
 
-@pytest.mark.parametrize("source", ["src/policydesk/agent/tools.py", "src/policydesk/agent/statute.py"])
-def test_a_call_site_asks_for_more_candidates_than_it_returns(source: str):
+def test_the_statute_half_reranks_and_the_clause_half_does_not():
     """
-    Reranking a list already cut to its final length changes nothing but the order of it.
+    Both halves were measured, and they went opposite ways.
 
-    Both call sites over-fetch to `rerank.DEPTH` when an encoder is open, and to their
-    own limit when none is — so a desk without the model does not pay for candidates
-    nobody will read.
+    On 24 statute questions a cross-encoder takes recall@5 from 0.67 to 0.83. On the
+    clause half, measured the way `find_clause` runs — scoped to the three to five
+    contracts a member holds, cut to the six clauses it returns — the fused order is
+    right 167 times in 180 and the reranked order 161.
+
+    Pinned because the losing configuration is the one that looks obviously right: the
+    same code, the same model, one more call site.
     """
     from pathlib import Path
 
-    body = Path(source).read_text(encoding="utf-8")
-    assert "rerank.DEPTH" in body, f"{source} reranks whatever the caller's limit happened to be"
-    assert "rerank.sift(" in body
-
-
-def test_only_the_statute_half_carries_a_floor():
-    # Named here because it is a decision, not an omission: dropping every clause leaves
-    # a customer asking about their own policy with nothing, and dropping every provision
-    # leaves them with the truth that the law does not cover it.
-    from pathlib import Path
-
-    clauses = Path("src/policydesk/agent/tools.py").read_text(encoding="utf-8")
     statutes = Path("src/policydesk/agent/statute.py").read_text(encoding="utf-8")
-    assert "floor=" not in clauses.split("rerank.sift(")[1].split(")")[0]
-    assert "floor=rerank.STATUTE_FLOOR" in statutes
+    clauses = Path("src/policydesk/agent/tools.py").read_text(encoding="utf-8")
+    assert "rerank.sift(" in statutes
+    assert "rerank.DEPTH" in statutes
+    # The word survives in a comment saying why there is no call, which is the note a
+    # later reader needs most; the call is what must stay gone.
+    assert "rerank.sift(" not in clauses, "reranking the clause half was measured and it loses"
+    assert "import rerank" not in clauses
+
+
+def test_nothing_is_withheld_on_a_score():
+    """
+    The floor this module was built for did not survive its own calibration.
+
+    The top score of a statute question the corpus answers runs from -5.4 to 5.5, and of
+    a real question it does not answer, from -10.9 to 1.1. Dropping the one misfit
+    citation the floor existed to stop costs five of the seventeen questions answered.
+    """
+    from pathlib import Path
+
+    body = Path("src/policydesk/retrieval/rerank.py").read_text(encoding="utf-8")
+    assert "floor" not in body.split('"""', 2)[2], "a floor is back without the calibration to support it"

@@ -18,7 +18,6 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from policydesk.bootloader import logger
-from policydesk.retrieval import rerank
 from policydesk.retrieval.base import CLAUSE, Retriever
 from policydesk.synthetic.person import insurance_age
 
@@ -208,11 +207,6 @@ async def list_policies(db: Database, member_id: int, *, today: date) -> list[di
     return rows
 
 
-def _passage(row: dict[str, Any]) -> str:
-    """Build the text a cross-encoder reads for one clause: its heading, then its body."""
-    return f"{row.get('heading') or ''}\n{row.get('verbatim') or ''}"
-
-
 async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict[str, Any]]:
     """
     Read the clauses the index named, in the order it ranked them.
@@ -352,17 +346,17 @@ async def find_clause(
     """
     if not product_ids:
         return []
-    # More candidates than the caller asked for when a cross-encoder is open, because
-    # reranking has nothing to do with a list already cut to its final length.
-    encoder = getattr(index, "reranker", None)
-    wanted = max(limit, rerank.DEPTH) if encoder is not None else limit
-    if index is not None and (hits := index.search(topic, corpus=CLAUSE, scope=product_ids, limit=wanted)):
+    # No cross-encoder on this half, and the reason is measured. `statutory_floor`
+    # reranks and gains four of twenty-four; here it loses six of a hundred and eighty.
+    #
+    # The first measurement said the opposite, because it searched the whole clause
+    # corpus. This tool never does: `scope=product_ids` is the three to five contracts
+    # one member holds, and against 660 products the same `art.2` filled all five top
+    # slots — a distribution production cannot produce. Reranking that pile is a real
+    # improvement to a ranking nobody sees. Scoped, at the six clauses this tool returns,
+    # the fused order is already right 167 times in 180 and reranking it is right 161.
+    if index is not None and (hits := index.search(topic, corpus=CLAUSE, scope=product_ids, limit=limit)):
         found = await _clauses_by_id(db, [(h.scope_id, h.doc_id) for h in hits])
-        # No floor on this corpus. These are the customer's own contracts, already
-        # narrowed to the products they hold, and a clause that only sort of matches is
-        # still their policy — dropping it leaves them with nothing where the statute
-        # half would rightly say the law does not cover this.
-        found = rerank.sift(encoder, topic, found, passage=_passage, limit=limit)
         # Appended after the ranked hits, not mixed into them: a clause is here because
         # another one pointed at it, not because it matched the question.
         if cross := _referenced(found):
