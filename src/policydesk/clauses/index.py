@@ -62,8 +62,38 @@ _FURNITURE = re.compile(
 # Justified CJK lines come out of extraction with a space between every glyph:
 # "國 泰 人 壽新憶樂活認 知 功 能 障 礙終身健 康 保 險". Token matching then fails on every
 # term, which is how 80 real contracts ended up classified as "other". Latin runs keep
-# their spaces, so "真大心 PLUS 住院醫療" survives intact.
-_CJK_GAP = re.compile(r"(?<=[㐀-鿿])[ \t　]+(?=[㐀-鿿])")
+# their spaces, so "真大心 PLUS 住院醫療" and "第 31 日" survive intact.
+#
+# The class covers CJK punctuation and fullwidth forms as well as the ideographs, because
+# the gap lands on either side of a comma just as readily: 醫療診斷書須列明手術名稱 、 部位
+# 及方式 reached a customer verbatim, and a class of ideographs alone leaves every 、。（）
+# stranded between spaces.
+_CJK_GAP = re.compile(r"(?<=[　-〿㐀-鿿＀-￯])[ \t　]+(?=[　-〿㐀-鿿＀-￯])")
+
+
+def _tidy(text: str) -> str:
+    r"""
+    Close the gaps a PDF text layer leaves inside a line, and trim what it leaves at the end.
+
+    Args:
+        text: Extracted text, one clause body or one line.
+
+    Returns:
+        The same text with intra-CJK spacing closed and trailing spaces removed.
+
+    Applied to what gets stored, never to the page the offsets are measured in. Two
+    things break when a page is normalised before it is scanned: `page_ends` then
+    addresses text that no longer exists at those offsets, and `_ARTICLE` loses the
+    `條\\s+` that tells a heading line from a sentence citing 第十條 in passing —
+    measured, that second one took a real contract from 24 articles to none.
+
+    The cost is the one row of a benefit table that still had its columns: 項目 給付條件
+    給付金額 becomes 項目給付條件給付金額. That table is already unreadable in the text
+    layer — its body cells each sit on their own line — and the table this desk quotes
+    from is the pdfplumber extraction in `benefit`, not this text. Measured on the live
+    corpus: 10,726 of 11,741 clauses change, 612,593 characters of stray spacing removed.
+    """
+    return "\n".join(_CJK_GAP.sub("", line).rstrip() for line in text.splitlines())
 
 _HEADING_KIND = (
     ("名詞定義", ClauseKind.DEFINITION),
@@ -115,7 +145,7 @@ def _title_of(first_page: str) -> str:
 
     """
     for raw in first_page.splitlines():
-        if len(line := _CJK_GAP.sub("", raw.strip())) < 8 or _FURNITURE.search(line):
+        if len(line := _tidy(raw)) < 8 or _FURNITURE.search(line):
             continue
         return line
     return ""
@@ -219,8 +249,8 @@ def build_index(pdf_path: Path) -> ClauseIndex:
         clauses[clause_id] = Clause(
             clause_id=clause_id,
             kind=kind,
-            heading=heading,
-            verbatim=body,
+            heading=_tidy(heading),
+            verbatim=_tidy(body),
             page=_page_of(start, page_ends),
         )
 
@@ -232,7 +262,7 @@ def build_index(pdf_path: Path) -> ClauseIndex:
                 clause_id=carve_id,
                 kind=ClauseKind.CARVE_BACK,
                 heading=f"{heading}／回復承保",
-                verbatim=carve.group(0),
+                verbatim=_tidy(carve.group(0)),
                 page=_page_of(body_at + carve.start(), page_ends),
                 overrides=(clause_id,),
             )
@@ -247,7 +277,7 @@ def build_index(pdf_path: Path) -> ClauseIndex:
             clause_id="waiting",
             kind=ClauseKind.WAITING,
             heading=f"等待期 {days} 日（載於「疾病」定義，非獨立條文）",
-            verbatim=verbatim.strip(),
+            verbatim=_tidy(verbatim).strip(),
             page=_page_of(wait.start(), page_ends),
         )
 
