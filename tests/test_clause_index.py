@@ -177,3 +177,45 @@ def test_an_approval_line_is_not_a_product_name(line: str):
 
     assert _FURNITURE.search(line) or len(line) < 8
     assert _title_of(f"{line}\n國泰人壽新實全心意PLUS住院醫療健康保險附約") != line
+
+
+@pytest.mark.parametrize(
+    ("line", "readable"),
+    [
+        ("國泰人壽新實全心意PLUS住院醫療健康保險附約（外溢型）", True),
+        ("真月月康利變額壽險", True),
+        ("保障內容(請詳閱條款)", True),
+        # A real product whose own prospectus prints this much Latin and this many
+        # digits. The first version of the rule asked for half the characters to be CJK
+        # and rejected it — a ratio punishes the honest name for the company it keeps.
+        ("澳幣計價股票指數連結結構型商品(無擔保) 【鏈結指數為韓國KOSPI 200指數(KOSPI 200 Index)】", True),
+        ("ॆᔊఊฌᜊᕘຬঐྪᎈ", False),
+        ("Cathay Life Insurance Co Ltd", False),
+    ],
+)
+def test_a_title_is_text_a_person_could_read(line: str, readable: bool):
+    r"""
+    A subset-embedded CID font decodes to characters that are `\\w`.
+
+    `_FURNITURE`'s `[\\W\\d_]+` arm rejects a line of punctuation and digits and admits
+    ॆᔊఊฌᜊᕘຬঐྪᎈ, which became a product name the moment 保障您所愛 above it fell
+    below the length floor — a floor the `.strip()` fix lowered it past. Measured across
+    660 contracts, six titles move under that fix: five better, this one worse.
+
+    The bar is a count and not a ratio: the mojibake holds zero ideographs (those are
+    Devanagari, Telugu, Thai and Tibetan codepoints), while a structured product's real
+    name carries as much Latin as it needs to.
+    """
+    from policydesk.clauses.index import _reads_as_chinese
+
+    assert _reads_as_chinese(line) is readable
+
+
+@needs_pdf
+def test_no_contract_is_named_after_a_broken_font():
+    # The whole corpus, because the mechanism is a short Chinese line above a mojibake
+    # one and nothing says which document has that shape.
+    from policydesk.clauses.index import _reads_as_chinese
+
+    index = build_index(FIXTURE)
+    assert _reads_as_chinese(index.title), f"the fixture is named {index.title!r}"

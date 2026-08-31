@@ -365,7 +365,13 @@ async def _gather(
     if "find_multiplier" in allowed:
         pending["find_multiplier"] = tools.find_multiplier(db, product_ids, params.get("event", turn.procedure_hint))
     if "catalogue_sample" in allowed:
-        pending["catalogue_sample"] = tools.catalogue_sample(db, params.get("line", "health"))
+        # `""`, not `"health"`. The same fallback was removed from `quote.gather` and
+        # this copy survived: `_route` sets `args = {}` on a DecodeError and on a call
+        # carrying no arguments, so the default is reachable, and `health` answers about
+        # medical cover to a customer who named no line. `catalogue_sample` reads an
+        # empty line as no sample, which is the state `browse_products`' injection now
+        # distinguishes from a line that genuinely has nothing on sale.
+        pending["catalogue_sample"] = tools.catalogue_sample(db, params.get("line", ""))
     if "benefit_headings" in allowed:
         pending["benefit_headings"] = tools.benefit_headings(db, product_ids)
     if "required_documents" in allowed:

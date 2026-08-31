@@ -134,6 +134,42 @@ def cn_to_int(text: str) -> int:
     return (_CN_DIGITS.get(head, 1) if head else 1) * 10 + (_CN_DIGITS.get(tail, 0) if tail else 0)
 
 
+_CJK_CHAR = re.compile(r"[\u4e00-\u9fff]")
+
+_TITLE_CJK = 3
+"""Ideographs a line needs before it can be a product name. Three rejects 36 of the 660
+current titles, every one of them furniture — an approval number, a 碳標字 reference, a
+商品代號, the sha a document with no readable title falls back to. The shortest real name
+in the corpus carries far more."""
+
+
+def _reads_as_chinese(line: str) -> bool:
+    r"""
+    Say whether a line is text a person could read, or a CID font's leftovers.
+
+    Args:
+        line: One candidate title, already tidied and stripped.
+
+    Returns:
+        True when it holds at least `_TITLE_CJK` ideographs.
+
+    `_FURNITURE`'s `[\W\d_]+` arm catches a line of pure punctuation and digits, and a
+    subset-embedded CID font decodes to characters that are `\w` — ॆᔊఊฌᜊᕘຬঐྪᎈ passed
+    every filter and became a product name the moment the line above it, 保障您所愛,
+    dropped below the length floor. Measured across 660 contracts: six titles move when
+    the floor is applied to a stripped line, five of them for the better and this one
+    document for the worse.
+
+    **A count, not a ratio.** The first version asked for half the characters to be CJK
+    and rejected 澳幣計價股票指數連結結構型商品(無擔保)【鏈結指數為韓國KOSPI 200指數
+    (KOSPI 200 Index)】 — a real product whose name carries the Latin and the digits its
+    own prospectus prints. The mojibake is Devanagari, Telugu, Thai and Tibetan
+    codepoints and holds **zero** ideographs, so a count separates the two cleanly where
+    a ratio punishes the honest name for the company it keeps.
+    """
+    return len(_CJK_CHAR.findall(line)) >= _TITLE_CJK
+
+
 def _title_of(first_page: str) -> str:
     """
     Read the product name off page one.
@@ -157,7 +193,7 @@ def _title_of(first_page: str) -> str:
         # like furniture and becomes the product's name — measured, `_title_of` returned
         # 「 第   1   頁」 as a title. That is the bug this filter was widened to fix, back
         # through a different door.
-        if len(line := _tidy(raw).strip()) < 8 or _FURNITURE.search(line):
+        if len(line := _tidy(raw).strip()) < 8 or _FURNITURE.search(line) or not _reads_as_chinese(line):
             continue
         return line
     return ""

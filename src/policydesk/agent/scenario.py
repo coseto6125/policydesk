@@ -339,13 +339,19 @@ CATALOGUE: tuple[Scenario, ...] = (
 BY_NAME: dict[str, Scenario] = {s.name: s for s in CATALOGUE}
 
 ANSWERABLE = "、".join(s.display_name for s in CATALOGUE if s.tools)
-"""What this desk can look up, read off the scenarios that can look something up.
+"""What this desk can look up **or explain**, read off the scenarios that do either.
 
 Written by hand first, and the hand-written list named seven of the eighteen. The
 sentence around it says 就這些, so a customer whose wording missed `disclosure` or
 `occupation` — both real scenarios with real tools — would be told this counter cannot
 answer and sent to a salesperson. That is the failure the sentence was added to stop,
-back through the scenarios it forgot to mention."""
+back through the scenarios it forgot to mention.
+
+The carrier sentence says 查詢或說明, not 查得到, and the line after it says 說明不等於
+代辦. Four of these are named for an action the desk does not perform: 受益人變更 and
+職業變更通知 explain a rule and a set of documents, and a sentence that offers to look
+them up reads as an offer to do them — 本櫃台可以協助您辦理受益人變更 is a promise this
+counter cannot keep, and the next turn can only take it back."""
 
 
 ROUTER_INSTRUCTIONS = f"""\
@@ -392,7 +398,9 @@ ROUTER_INSTRUCTIONS = f"""\
 這種直接回答不可以出現任何天數、金額、比例或條號——那些只能來自情境工具查回來的資料。
 問到這些就改呼叫對應的情境工具，工具查不到就說這部分需要查證，不要憑印象給一個數字。
 
-本櫃台查得到的東西就這些：{ANSWERABLE}，以及保險法、保險法施行細則、金融消費者保護法。
+本櫃台能為保戶查詢或說明的就這些：{ANSWERABLE}，以及保險法、保險法施行細則、金融消費者保護法。
+說明不等於代辦。受益人變更、職業變更通知、契約撤銷、復效這幾項，本櫃台講得出規則、期限與應備文件，
+但實際辦理要由業務員送件、由核保理賠人員決定，不可以說「本櫃台可以為您辦理」或「我幫您改」。
 問到這個範圍以外的事（營業時間、據點地址、客服電話、業務員的聯絡方式、其他公司的商品），
 照實說這一項本櫃台查不到，請他洽客服或原業務員，然後把上面查得到的那幾項講給他聽。
 **不要寫「請告訴我您想前往的服務據點，我再協助您確認」這種句子。**
