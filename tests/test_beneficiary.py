@@ -29,8 +29,6 @@ from policydesk.agent.scenarios.beneficiary import (
 from policydesk.agent.tools import list_policies, permitted, reads_identity
 from policydesk.core.db import Database
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(scope="module")
 async def db():

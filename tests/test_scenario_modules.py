@@ -25,8 +25,6 @@ from policydesk.agent import tools
 from policydesk.agent.scenario import CATALOGUE, Emit
 from policydesk.core.db import Database
 
-pytestmark = pytest.mark.asyncio
-
 MODULE_SCENARIOS = [s for s in CATALOGUE if s.tools_module]
 
 

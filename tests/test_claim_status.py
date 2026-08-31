@@ -24,8 +24,6 @@ from policydesk.agent.scenarios.claim_status import (
 from policydesk.agent.scenarios.soothe import complaint_channel
 from policydesk.core.db import Database
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(scope="module")
 async def db():

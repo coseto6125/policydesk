@@ -25,8 +25,6 @@ from policydesk.agent.scenarios.reinstate import (
 )
 from policydesk.core.db import Database
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(scope="module")
 async def db():

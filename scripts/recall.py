@@ -24,10 +24,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from policydesk.core.db import Database  # noqa: E402
-from policydesk.retrieval.base import CLAUSE, STATUTE, HybridRetriever  # noqa: E402
-from policydesk.retrieval.index import open_index  # noqa: E402
-from policydesk.retrieval.vectors import open_vectors  # noqa: E402
+from policydesk.core.db import Database
+from policydesk.retrieval.base import CLAUSE, STATUTE, HybridRetriever
+from policydesk.retrieval.index import open_index
+from policydesk.retrieval.vectors import open_vectors
 
 # (question a customer asks, the statute it's in, the article(s) the scenario says answer it)
 STATUTE_GOLD: list[tuple[str, str, tuple[str, ...]]] = [

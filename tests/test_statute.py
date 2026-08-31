@@ -18,8 +18,6 @@ from policydesk.agent import statute
 from policydesk.agent.statute import Article, _cn_to_int, _doc_id, parse
 from policydesk.core.db import Database
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(scope="module")
 async def db():

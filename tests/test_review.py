@@ -28,8 +28,6 @@ from policydesk.agent.scenarios.review import (
 )
 from policydesk.core.db import Database
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(scope="module")
 async def db():
