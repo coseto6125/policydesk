@@ -56,8 +56,15 @@ _WAITING = re.compile(r"(?:生效日|復效日)起持續有效([一二三四五�
 # spacing varies per document because it comes from the PDF's glyph positions, not
 # from the text, so every gap here tolerates whitespace.
 _FURNITURE = re.compile(
-    r"^(?:第\s*\d+\s*頁|共\s*\d+\s*頁|Since\s*\d{4}|[\W\d_]+)$|頁\s*，\s*(?:共|第)|核准文號|免費申訴"
+    r"^(?:第\s*\d+\s*頁|共\s*\d+\s*頁|Since\s*\d{4}|[\W\d_]+)$|頁\s*，\s*(?:共|第)"
+    r"|核准文號|認證編號|認証番号|免費申訴"
 )
+"""...
+
+認證編號 and its Japanese spelling were missing, so 22 of 660 contracts took an approval
+line as their product name: 認證編號：0610132-31 is what a customer would have been
+offered in a recommendation. 核准文號 was already here — the same furniture, printed under
+a different label by a different insurer's template."""
 
 # Justified CJK lines come out of extraction with a space between every glyph:
 # "國 泰 人 壽新憶樂活認 知 功 能 障 礙終身健 康 保 險". Token matching then fails on every

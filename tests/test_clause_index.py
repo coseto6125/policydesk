@@ -157,3 +157,23 @@ def test_a_number_keeps_the_spaces_around_it():
     assert re.search(r"[0-9A-Za-z] [一-鿿]|[一-鿿] [0-9A-Za-z]", body), (
         "every space beside a number or a Latin run was removed, which is not the rule"
     )
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["認證編號：0610132-31", "認証番号：  8811432-1 （計4ページ中1ページ目、 2025年9月版）",
+     "核准文號：金管保壽字第10902號", "第 1 頁， 共 17 頁"],
+)
+def test_an_approval_line_is_not_a_product_name(line: str):
+    """
+    22 of 660 contracts were named after their approval number.
+
+    `_title_of` takes the first line of page one that is long enough and is not
+    furniture, and the filter knew 核准文號 but not 認證編號 — the same line, printed
+    under a different label by a different insurer's template. 認證編號：0610132-31 is
+    what a recommendation would have offered a customer as a product.
+    """
+    from policydesk.clauses.index import _FURNITURE, _title_of
+
+    assert _FURNITURE.search(line) or len(line) < 8
+    assert _title_of(f"{line}\n國泰人壽新實全心意PLUS住院醫療健康保險附約") != line

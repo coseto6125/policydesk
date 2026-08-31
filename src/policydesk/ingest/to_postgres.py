@@ -112,7 +112,10 @@ async def copy_corpus(sqlite_path: Path, db: Database) -> tuple[int, int]:
     await db.execute_many(
         """INSERT INTO product (product_id, doc_sha, insurer, name, line, attachment, approval, pages, source_url)
            VALUES ($1::text,$2::text,$3::text,$4::text,$5::text,$6::text,$7::text,$8::int,$9::text)
-           ON CONFLICT (product_id) DO NOTHING""",
+           ON CONFLICT (product_id) DO UPDATE SET
+             doc_sha = excluded.doc_sha, insurer = excluded.insurer, name = excluded.name,
+             line = excluded.line, attachment = excluded.attachment, approval = excluded.approval,
+             pages = excluded.pages, source_url = excluded.source_url""",
         products,
     )
 
@@ -135,7 +138,9 @@ async def copy_corpus(sqlite_path: Path, db: Database) -> tuple[int, int]:
     await db.execute_many(
         """INSERT INTO clause (product_id, clause_id, kind, heading, verbatim, page, overrides)
            VALUES ($1::text,$2::text,$3::text,$4::text,$5::text,$6::int,$7::text[])
-           ON CONFLICT (product_id, clause_id) DO NOTHING""",
+           ON CONFLICT (product_id, clause_id) DO UPDATE SET
+             kind = excluded.kind, heading = excluded.heading, verbatim = excluded.verbatim,
+             page = excluded.page, overrides = excluded.overrides""",
         clauses,
     )
 
@@ -183,6 +188,13 @@ async def build_catalog(db: Database) -> int:
             )
         )
 
+    # `DO NOTHING` here, and `DO UPDATE` on product and clause above. The difference is
+    # what each row is: product and clause are parsed out of the PDF, so a better parser
+    # is a correction and must reach the table — the whitespace fix wrote clean text into
+    # SQLite and every one of the 11,741 rows in Postgres kept the old spacing, because
+    # this loader could not correct a row it had already written. A catalog_entry is
+    # fabricated (`_stable_premium`), and a member's policy bills against `unit_premium`;
+    # overwriting it would move somebody's premium on a rebuild that touched no contract.
     await db.execute_many(
         """INSERT INTO catalog_entry
              (product_id, issue_age_min, issue_age_max, max_occupation, unit_premium, unit_label, requires_main, on_sale)
