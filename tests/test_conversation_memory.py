@@ -53,6 +53,24 @@ def test_an_unreadable_budget_makes_no_recommendation(raw: str):
     assert _as_budget(raw) is None
 
 
+@pytest.mark.parametrize(("raw", "warns"), [("", False), ("  ", False), ("兩萬", True), ("20000元", True)])
+def test_only_a_budget_that_was_given_can_be_unreadable(raw: str, warns: bool, monkeypatch):
+    """
+    An absent budget is not a parse failure, and the log should not say it is.
+
+    想買壽險 carries no figure, so the router hands back an empty string on the first
+    turn of every recommendation. Warning on it filed `budget_unreadable` for a customer
+    who simply had not been asked yet — three of them in one replay of the real
+    transcript — and an operator reading that log sees a broken extractor.
+    """
+    from policydesk.agent import executor
+
+    called: list[str] = []
+    monkeypatch.setattr(executor.logger, "warning", lambda event, **kw: called.append(event))
+    assert _as_budget(raw) is None
+    assert bool(called) is warns, f"{raw!r}: warned={called}"
+
+
 def test_the_router_returns_what_it_collected():
     """The arguments were being discarded, so gather ran on hardcoded defaults."""
     from pathlib import Path

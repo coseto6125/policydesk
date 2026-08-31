@@ -833,17 +833,38 @@ async def billing_summary(db: Database, member_id: int, *, today: date) -> dict[
         today: The date to judge currency against.
 
     Returns:
-        Active policy count and total annual premium.
+        Active policy count, what a year of premiums comes to, and how many policies
+        that figure had to fall back to the rate card for.
 
+    **What a year costs, not what the rate card says it costs.** The two differ, and a
+    customer asking 我一年繳多少 is asking the first. This summed `unit_premium ×
+    sum_insured / 1000` per policy and reached 74,100 元 for a member whose five policies
+    actually bill 768×12 + 770×4 + 49,740 + 5,320 + 6,750 = 74,106 元 — the gap is one
+    rounding per instalment, and it is the customer's own bill that carries it. Replayed
+    side by side: `billing` said 74,100 and `payment` listed the instalments that add to
+    74,106, in the same session, to the same person.
+
+    A policy with no `premium_payment` row has no instalment to read, so it falls back to
+    the rate card and is counted in `no_schedule` — the reply says which policies the
+    figure is an estimate for rather than presenting a mixed total as one certain number.
     """
     row = await db.fetch_one(
-        """SELECT count(*) AS active, coalesce(sum(ce.unit_premium * po.sum_insured / 1000.0), 0) AS premium
-           FROM policy po JOIN catalog_entry ce USING (product_id)
+        """SELECT count(*) AS active,
+                  coalesce(sum(CASE WHEN due.amount IS NOT NULL THEN due.amount * f.per_year
+                                    ELSE ce.unit_premium * po.sum_insured / 1000.0 END), 0) AS premium,
+                  count(*) FILTER (WHERE due.amount IS NULL) AS no_schedule
+           FROM policy po
+           JOIN catalog_entry ce USING (product_id)
+           CROSS JOIN LATERAL (SELECT CASE po.premium_mode
+                                        WHEN 'annual' THEN 1 WHEN 'semiannual' THEN 2
+                                        WHEN 'quarterly' THEN 4 ELSE 12 END AS per_year) f
+           LEFT JOIN LATERAL (SELECT amount FROM premium_payment
+                              WHERE policy_id = po.policy_id ORDER BY due_at DESC LIMIT 1) due ON true
            WHERE po.member_id = $1::bigint
              AND (po.lapsed_at IS NULL OR po.lapsed_at > $2::date)""",
         [member_id, today],
     )
-    return row or {"active": 0, "premium": 0}
+    return row or {"active": 0, "premium": 0, "no_schedule": 0}
 
 
 @requires_identity

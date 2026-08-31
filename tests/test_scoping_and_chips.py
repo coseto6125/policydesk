@@ -392,3 +392,48 @@ def test_the_beneficiary_answer_keeps_the_estate_rule_to_death_benefits():
     injection = BY_NAME["beneficiary"].injection
     assert "身故保險金" in injection
     assert "生前" in injection
+
+
+async def test_a_year_of_premiums_is_what_the_instalments_add_to(db):
+    """
+    74,100 and 74,106 reached the same customer in the same replay.
+
+    `billing` summed the rate card; `payment` listed the instalments. A member holding a
+    monthly policy pays the rounded instalment twelve times, so the rate-card figure is
+    not their bill — and the template calls the number 一年繳費合計, which is a claim
+    about the bill.
+
+    Checked across every member rather than one: the gap is a rounding per instalment, so
+    a member whose instalments happen to divide evenly agrees under either definition and
+    proves nothing. Member 70's five policies were the pair that diverged; picking one
+    member by any rule risks picking one of the many that do not.
+    """
+    from datetime import UTC, datetime
+
+    from policydesk.agent import tools
+    from policydesk.agent.scenarios.payment import payment_state
+    from policydesk.synthetic.service import MODES
+
+    today = datetime.now(UTC).date()
+    members = [
+        int(r["member_id"])
+        for r in await db.fetch(
+            "SELECT DISTINCT po.member_id FROM policy po JOIN premium_payment USING (policy_id) "
+            "WHERE po.lapsed_at IS NULL ORDER BY 1 LIMIT 40"
+        )
+    ]
+    if not members:
+        pytest.skip("no member holds a policy with a payment schedule")
+
+    apart: list[str] = []
+    for member_id in members:
+        summary = await tools.billing_summary(db, member_id, today=today)
+        if summary.get("no_schedule"):
+            continue
+        rows = await payment_state(db, member_id, today=today)
+        a_year = sum(
+            float(r["instalment"]) * (12 // MODES[r["premium_mode"]]) for r in rows if not r["is_lapsed"]
+        )
+        if round(float(summary["premium"])) != round(a_year):
+            apart.append(f"member {member_id}: billing {summary['premium']} vs instalments {a_year}")
+    assert not apart, f"{len(apart)} of {len(members)} members are told two different totals: {apart[:3]}"

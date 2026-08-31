@@ -168,7 +168,12 @@ RECOMMEND = Scenario(
         "工具回傳 alternatives 時，表示以保戶目前條件查無商品。"
         "此時先照 binding 逐條說出是哪個條件卡住、保戶的數值與目錄上限各是多少，"
         "再照 openings 說明改動哪一個條件就會有商品，並列出那些商品。"
-        "openings 為空就直說目前沒有可行的調整方向，不要自己想辦法。"
+        "openings 為空就直說目前沒有可行的調整方向，不要自己想辦法。\n"
+        "**_still_needed 有東西時，代表保戶還沒說那幾項，適合度篩選根本沒有跑。** "
+        "這時候就把那幾項問出來，一句話問完。"
+        "不可以說查不到商品、沒有商品目錄資料、或本公司目前沒有商品——"
+        "目錄上有六百多張，沒跑篩選跟沒有資料是兩件事。"
+        "也不要在這時候把保戶推給業務員，他問的東西再一個條件就答得出來。"
         "結尾必須載明：本推介由登錄業務員具名負責。"
         + IDENTITY_PENDING
     ),
@@ -255,13 +260,21 @@ CLAIM_CHECKLIST = Scenario(
 BILLING = Scenario(
     name="billing",
     display_name="繳費查詢",
-    summary="查商品費率算出的年繳保費與繳費紀錄",
-    description="保戶詢問保費、繳費紀錄、下期應繳時使用。",
+    summary="把各張保單的分期金額加總成一年",
+    # 繳費紀錄 and 下期應繳 stood here and belong to `payment`, which reads the instalment
+    # rows. This template holds one total and cannot answer either, so claiming them put
+    # a customer asking 有月繳或季繳，差別在哪 in front of an annual sum three times in
+    # the stored transcript.
+    description=(
+        "保戶問一年總共要繳多少、名下保單保費合計多少時使用。"
+        "問某一張繳多少、繳到哪一期、下次什麼時候繳、繳別是月繳還是季繳，"
+        "那些是 payment 情境，不要選這個。"
+    ),
     emit=Emit.TEMPLATE,
     # 各張保單明細請見左側後台的保單清單 stood here, which points a customer on a phone at
     # the caseworker's console. They are looking at a chat window; the pane is not theirs
     # and they cannot open it. What they can do is ask, so the line offers that instead.
-    template="您名下有效保單共 {active} 張，年繳保費合計 {premium} 元。\n想知道每一張分別繳多少，跟我說一聲就可以。",
+    template="您名下有效保單共 {active} 張，一年繳費合計 {premium} 元{caveat}。\n想知道每一張分別繳多少，跟我說一聲就可以。",
     quick_replies=("我想了解可以改成月繳嗎？", "沒繳到會怎麼樣？", "想確認下一期的繳費日"),
     tools=("billing_summary",),
     transitions=(),

@@ -5,6 +5,7 @@ Both were found in a real contract, so both are asserted against that contract r
 than against a hand-written sample that would only prove the regex matches itself.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,8 @@ from policydesk.clauses.index import build_index, cn_to_int
 from policydesk.core.models import Citation, ClauseKind, Money, Stage, may_advance
 
 FIXTURE = Path(__file__).parent.parent / "data" / "clauses" / "cathay-inpatient-daily.pdf"
+_GAP = re.compile(r"(?<=[\u3000-\u303f\u3400-\u9fff\uff00-\uffef])[ \t\u3000]+(?=[\u3000-\u303f\u3400-\u9fff\uff00-\uffef])")
+
 needs_pdf = pytest.mark.skipif(not FIXTURE.exists(), reason="run scripts/fetch_fixtures.sh first")
 
 
@@ -114,3 +117,43 @@ def test_may_advance_decision_requires_review():
 def test_may_advance_from_decided_case_is_refused():
     assert not may_advance(Stage.REJECTED, Stage.INQUIRY)
     assert not may_advance(Stage.APPROVED, Stage.REVIEW)
+
+
+@needs_pdf
+def test_a_stored_clause_carries_no_pdf_spacing():
+    """
+    The text layer's spacing reached a customer verbatim.
+
+    「三、 醫療診斷書及X光片 。 申請意外脫臼手術保險金者 ， 醫療診斷書須列明手術名稱 、
+    部位及方式」 is what a replay of the real transcript put in front of someone asking
+    what to bring to a claim. The gap comes from glyph positions in a justified line, and
+    it sat in 10,726 of the corpus's 11,741 clauses.
+
+    Asserted on the fixture contract rather than on a crafted string: a hand-written
+    sample would only prove the regex matches itself, and the class this widened —
+    CJK punctuation and fullwidth forms — is exactly what a crafted sample would omit.
+    """
+    index = build_index(FIXTURE)
+    stray = [
+        (cid, line)
+        for cid, clause in index.clauses.items()
+        for line in clause.verbatim.splitlines()
+        if _GAP.search(line) or line != line.rstrip()
+    ]
+    assert not stray, f"{len(stray)} lines still carry the text layer's spacing: {stray[:3]}"
+
+
+@needs_pdf
+def test_a_number_keeps_the_spaces_around_it():
+    """
+    第 31 日 and PLUS 住院醫療 are printed with those spaces, not spaced by justification.
+
+    The rule closes a gap only when both sides are CJK, so a Latin or digit neighbour
+    holds its space. Without this the same pass would run 「持續有效第31日」 together and
+    change how the waiting period reads.
+    """
+    index = build_index(FIXTURE)
+    body = "\n".join(c.verbatim for c in index.clauses.values())
+    assert re.search(r"[0-9A-Za-z] [一-鿿]|[一-鿿] [0-9A-Za-z]", body), (
+        "every space beside a number or a Latin run was removed, which is not the rule"
+    )

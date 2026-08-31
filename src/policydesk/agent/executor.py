@@ -253,11 +253,18 @@ def _as_budget(raw: str) -> int | None:
         means no recommendation is made: a budget filter that silently falls back to a
         default is how a customer is shown a product they said they cannot afford.
 
+    An absent budget is not an unreadable one. 想買壽險 carries no figure, so the router
+    returns an empty string, and warning on it filed a parse failure for every customer
+    who had not yet said what they could spend — the operator reading that log sees a
+    broken extractor where there was nothing to extract.
+
     """
+    if not (text := str(raw).strip().replace(",", "")):
+        return None
     try:
-        return int(raw.strip().replace(",", ""))
-    except (AttributeError, ValueError):
-        logger.warning("budget_unreadable", raw=str(raw)[:60])
+        return int(text)
+    except ValueError:
+        logger.warning("budget_unreadable", raw=text[:60])
         return None
 
 
@@ -382,6 +389,18 @@ async def _gather(
         # `clause_ids_for` in the `else:` above.
         member = await tools.member_underwriting(db, turn.member_id, today=today)
         budget = _as_budget(params.get("budget", ""))
+        # What the desk has not been told, named. Without this the filter simply does not
+        # run, no key is set, and the model reads the absence as the catalogue being
+        # unavailable: 目前沒有可供核對的商品目錄資料，因此我不能自行替您推薦商品 reached
+        # two customers in a replay of the real transcript, in front of a catalogue
+        # holding 660 products. An unasked question and a missing corpus look identical
+        # from inside the reply, so the difference has to be stated.
+        if missing := [
+            what
+            for what, given in (("商品線", bool(params.get("line"))), ("年繳預算", budget is not None))
+            if not given
+        ]:
+            facts["_still_needed"] = missing
         if member and budget is not None:
             age = member["insurance_age"]
             facts["suitable_products"] = await tools.suitable_products(
@@ -434,8 +453,13 @@ def _render(scenario: Scenario, facts: dict[str, Any]) -> str:
             return scenario.template.format(count=waiting.get("count", 0), names=waiting.get("names", ""))
         case "billing":
             summary = facts.get("billing_summary") or {}
+            # A total mixing instalment rows with rate-card estimates says so. Without
+            # this the estimate disappears into a figure the customer reads as their bill.
+            unscheduled = int(summary.get("no_schedule") or 0)
             return scenario.template.format(
-                active=summary.get("active", 0), premium=f"{float(summary.get('premium') or 0):,.0f}"
+                active=summary.get("active", 0),
+                premium=f"{float(summary.get('premium') or 0):,.0f}",
+                caveat=f"（其中 {unscheduled} 張查無繳費紀錄，以商品費率估算）" if unscheduled else "",
             )
         case "coverage":
             rows = facts.get("coverage_summary") or []
