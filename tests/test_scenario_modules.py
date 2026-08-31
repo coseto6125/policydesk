@@ -234,3 +234,29 @@ def test_a_parameter_is_still_required():
     for scenario in (s for s in CATALOGUE if s.params):
         schema = tool_schema(scenario)
         assert set(schema["parameters"]["required"]) == {p.name for p in scenario.params}, scenario.name
+
+
+def test_a_parameter_falls_back_to_no_filter_and_never_to_one_option():
+    """
+    Two rules on `line`, pointing opposite ways: 保戶沒指明就填 health against
+    `tool_schema`'s 沒說到就填空字串.
+
+    你們有賣什麼 and 我想問保險 both arrived naming no line and both were shown 醫療,
+    which is one of five and the answer to neither. `browse_products`'s injection already
+    handles an empty sample by naming the five lines and asking, so the default reached
+    past a better answer to a worse one.
+
+    The four fallbacks that stay are a different thing. 全部 and 一般說明 are sentinels
+    the tool reads as *do not filter* — 一般說明 is what 我最近換工作，想問下跟以前的
+    保險會有關係嗎 routes with, and it produced §59 and every policy's occupation ceiling.
+    A fallback naming one of five real values is a guess about what the customer asked;
+    a fallback meaning "all of it" is not.
+    """
+    lines = {"health", "life", "accident", "annuity", "investment"}
+    guessing = [
+        f"{s.name}.{p.name}"
+        for s in CATALOGUE
+        for p in s.params
+        if any(re.search(rf"沒[^。]{{0,10}}填\s*{value}\b", p.description) for value in lines)
+    ]
+    assert not guessing, f"these parameters answer a question the customer did not ask: {guessing}"

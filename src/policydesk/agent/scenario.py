@@ -146,8 +146,7 @@ BROWSE_PRODUCTS = Scenario(
             name="line",
             description=(
                 "保戶想看的商品線，只填下列其中一個英文字："
-                "health 醫療、life 壽險、accident 意外、annuity 年金、investment 投資型。"
-                "保戶沒指明就填 health"
+                "health 醫療、life 壽險、accident 意外、annuity 年金、investment 投資型"
             ),
             example="life",
         ),
