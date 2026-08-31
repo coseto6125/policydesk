@@ -378,9 +378,10 @@ BENEFICIARY = Scenario(
             name="concern",
             description=(
                 "保戶想變更受益人的理由或情境，用他自己的話摘要成一句話，"
-                "例如「離婚要換人」「原本受益人過世了」。他只是問一般規則、沒有提到具體理由時填「一般說明」"
+                "例如「離婚要換人」「原本受益人過世了」"
             ),
             example="我離婚了，想把受益人換掉",
+            when_unsaid="他只是問一般規則、沒有提到具體理由時填「一般說明」，不要填空字串。",
         ),
     ),
     # Two of the three asked what the reply had just said: the injection lists the current

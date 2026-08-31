@@ -856,19 +856,34 @@ async def billing_summary(db: Database, member_id: int, *, today: date) -> dict[
     A policy with no `premium_payment` row has no instalment to read, so it falls back to
     the rate card and is counted in `no_schedule` — the reply says which policies the
     figure is an estimate for rather than presenting a mixed total as one certain number.
+
+    **`LEFT JOIN catalog_entry`, not an inner one.** A catalogue entry is written only
+    for a product carrying ten articles or more, and nothing in the schema requires a
+    policy's product to have one. On an inner join a member holding one such policy is
+    told `active=0` and `premium=0` — every policy they hold disappears, not merely the
+    one, and the customer reads that as owning nothing.
+
+    **`due_at <= today`.** Without it `ORDER BY due_at DESC` reaches for the newest row
+    in the table rather than the newest one that has fallen due, so a schedule written
+    ahead of time would have this quoting next year's instalment as what a year costs
+    now. No such row exists in the current data, which is exactly why the guard belongs
+    in the query rather than in a note about the data.
     """
     row = await db.fetch_one(
         """SELECT count(*) AS active,
                   coalesce(sum(CASE WHEN due.amount IS NOT NULL THEN due.amount * f.per_year
-                                    ELSE ce.unit_premium * po.sum_insured / 1000.0 END), 0) AS premium,
+                                    WHEN ce.unit_premium IS NOT NULL
+                                      THEN ce.unit_premium * po.sum_insured / 1000.0
+                                    ELSE 0 END), 0) AS premium,
                   count(*) FILTER (WHERE due.amount IS NULL) AS no_schedule
            FROM policy po
-           JOIN catalog_entry ce USING (product_id)
+           LEFT JOIN catalog_entry ce USING (product_id)
            CROSS JOIN LATERAL (SELECT CASE po.premium_mode
                                         WHEN 'annual' THEN 1 WHEN 'semiannual' THEN 2
                                         WHEN 'quarterly' THEN 4 ELSE 12 END AS per_year) f
            LEFT JOIN LATERAL (SELECT amount FROM premium_payment
-                              WHERE policy_id = po.policy_id ORDER BY due_at DESC LIMIT 1) due ON true
+                              WHERE policy_id = po.policy_id AND due_at <= $2::date
+                              ORDER BY due_at DESC LIMIT 1) due ON true
            WHERE po.member_id = $1::bigint
              AND (po.lapsed_at IS NULL OR po.lapsed_at > $2::date)""",
         [member_id, today],

@@ -35,6 +35,18 @@ services:
       # an answer about someone's policy.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       POLICYDESK_MODEL: ${POLICYDESK_MODEL:-gpt-5.6-luna}
+      # Two ONNX exports, neither in the image — they are 570 MB and 544 MB, and a
+      # contract corpus is not the place to ship model weights. Unset, each channel
+      # logs that it is skipped and the desk answers with the one that is left: BM25
+      # alone, with no reranking. That is a working demo and a measurably worse one,
+      # so point these at the exports and mount them below.
+      POLICYDESK_EMBED_MODEL: ${POLICYDESK_EMBED_MODEL:-/models/bge-m3-int8-pkg}
+      POLICYDESK_RERANK_MODEL: ${POLICYDESK_RERANK_MODEL:-/models/bge-reranker-v2-m3-onnx}
+    volumes:
+      # Read-only: the desk loads these and never writes them. Set MODELS_DIR to the
+      # directory holding both exports; the default leaves the mount empty and the
+      # desk starts anyway.
+      - ${MODELS_DIR:-./data/models}:/models:ro
     ports:
       - "8100:8100"
 
@@ -56,13 +68,14 @@ services:
       DATABASE_URL: postgres://policydesk:policydesk@postgres:5432/policydesk
     volumes:
       - ./data:/app/data
+    # Fetch, then parse and load. The second half used to be missing: this imported
+    # `copy_corpus` and `build_catalog` and ran neither, so the documented rebuild
+    # downloaded 1.19 GB of contracts and stopped — every parser correction reached
+    # SQLite and no further, and Postgres kept whatever it already held.
     command: >
-      python -c "
-      import asyncio; from pathlib import Path;
-      from policydesk.core.db import Database;
-      from policydesk.ingest.cathay import fetch_all;
-      from policydesk.ingest.to_postgres import copy_corpus, build_catalog;
-      asyncio.run(fetch_all(Path('/app/data/cathay')))
+      sh -c "
+      python -c \"import asyncio; from pathlib import Path; from policydesk.ingest.cathay import fetch_all; asyncio.run(fetch_all(Path('/app/data/cathay')))\" &&
+      policydesk-ingest /app/data/cathay
       "
 
 volumes:

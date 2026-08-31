@@ -236,9 +236,10 @@ DISCLOSURE = Scenario(
             name="concern",
             description=(
                 "保戶描述的健康狀況或情境，用他自己的話摘要成具體病名或事件，例如「高血壓」"
-                "「開過闌尾炎手術」。保戶只是籠統問據實說明義務、沒有提到具體狀況時填「一般說明」"
+                "「開過闌尾炎手術」"
             ),
             example="有高血壓，不確定要不要寫進健康告知",
+            when_unsaid="保戶只是籠統問據實說明義務、沒有提到具體狀況時填「一般說明」，不要填空字串。",
         ),
     ),
     # 我想知道紀錄上現在寫了什麼？ was here, and the reply states the recorded declaration

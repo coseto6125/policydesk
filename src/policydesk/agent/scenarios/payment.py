@@ -234,7 +234,13 @@ PAYMENT = Scenario(
     description=(
         "保戶問繳費相關的事情時使用："
         "我這期繳了嗎、下次什麼時候繳、一期要繳多少、我忘記繳了會怎樣、寬限期還有多久、"
-        "沒繳保單會不會失效。"
+        "沒繳保單會不會失效、"
+        # billing pushes these here by name and this list did not take them, so the
+        # sentence 有月繳或季繳，差別在哪 was refused by one scenario and unrecognised by
+        # the other. `payment_state` reads `premium_mode` and MODE_LABEL renders it —
+        # the answer was ready and the route was not. billing's own quick reply
+        # 我想了解可以改成月繳嗎 lands here too.
+        "我是月繳還是年繳、有沒有月繳季繳、兩種繳別差在哪、我想改繳別。"
         "問的是總共一年繳多少或想比較商品費率時不要選這個情境。"
     ),
     injection=(

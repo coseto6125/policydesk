@@ -46,6 +46,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.7"]
 [project.scripts]
 policydesk = "policydesk.web.server:main"
 policydesk-index = "policydesk.retrieval.__main__:main"
+policydesk-ingest = "policydesk.ingest.__main__:main"
 policydesk-price = "policydesk.llm.__main__:main"
 
 [build-system]

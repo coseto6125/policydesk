@@ -41,6 +41,16 @@ class Param(Struct, frozen=True):
     name: str
     description: str
     example: str = ""
+    when_unsaid: str = ""
+    """What to fill when the customer has not said this, where a scenario has an answer
+    of its own. Empty takes `UNSAID`.
+
+    A sentinel and a guess are different things, and only the parameter knows which it
+    has. 全部 tells `find_clause` not to filter and 一般說明 tells a scenario to answer
+    the general case; `health` would be one of five real lines and an answer to a
+    question nobody asked. This field exists so the schema states one rule per parameter
+    — with both sentences appended, the model read the global one last and filled an
+    empty string where 全部 was meant, and `find_clause` then ran `ILIKE '%%'`."""
 
 
 class Scenario(Struct, frozen=True):
@@ -115,7 +125,8 @@ def tool_schema(scenario: Scenario) -> dict:
         p.name: {
             "type": "string",
             "description": (
-                f"{p.description}{f'，例如 {p.example}' if p.example else ''}。{UNSAID}"
+                f"{p.description}{f'，例如 {p.example}' if p.example else ''}。"
+                f"{p.when_unsaid or UNSAID}"
             ),
         }
         for p in scenario.params

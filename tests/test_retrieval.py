@@ -225,8 +225,11 @@ def test_the_index_is_opened_once_per_process():
     """
     server = Path("src/policydesk/web/server.py").read_text()
     startup = server[server.index("@app.before_server_start") : server.index("@app.after_server_stop")]
-    assert "open_index(application.ctx.db), open_vectors(application.ctx.db)" in startup
-    assert "HybridRetriever(" in startup
+    # Each name on its own. Matching the two-argument gather verbatim broke the day a
+    # third channel joined it — how the three are arranged is the caller's business, and
+    # says nothing about how often they are opened.
+    for opened in ("open_index(", "open_vectors(", "HybridRetriever("):
+        assert opened in startup, f"{opened} is not opened in the startup hook"
     assert "HybridRetriever(" not in server[server.index("async def customer_socket") :]
     assert "open_index" not in server[server.index("async def customer_socket"):]
 

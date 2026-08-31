@@ -188,20 +188,28 @@ async def build_catalog(db: Database) -> int:
             )
         )
 
-    # Rewritten only where the product line moved. Every field above except the id and
-    # `requires_main` is a function of `line`, so a reclassified product whose entry
-    # stands still is an entry describing the line it used to be in — three contracts
-    # renamed out of 認證編號：0610132-31 landed in `life` carrying `other`'s 每單位 and
-    # its 1,100 元, sorted to the head of 最便宜的壽險, and were read as the cheapest
-    # policies on sale beside real ones priced per 100 萬元保額.
+    # Rewritten only where a derived value actually moved. Every column here except the
+    # id comes from `product.line` or `product.attachment`, so an entry that stands still
+    # while its product is reclassified describes the line the product used to be in —
+    # three contracts renamed out of 認證編號：0610132-31 landed in `life` carrying
+    # `other`'s 每單位 and its 1,100 元, sorted to the head of 最便宜的壽險, and were read
+    # as the cheapest policies on sale beside real ones priced per 100 萬元保額.
     #
-    # `_stable_premium` hashes the id and the line together, so an unchanged line
-    # produces the identical figure and the WHERE writes nothing: a rebuild that
-    # reclassifies no contract moves nobody's premium, which is the property that made
-    # this `DO NOTHING` in the first place. Product and clause above take the update
-    # unconditionally, because those are parsed out of the PDF and a better parser is a
-    # correction — the whitespace fix wrote 11,741 clean clauses into SQLite and every
-    # row in Postgres kept the old spacing until that changed.
+    # **The WHERE compares every column the SET writes, and that is the point.** An
+    # earlier version compared `(unit_premium, unit_label)` alone on the reasoning that
+    # `_stable_premium` hashes the id together with the line. It does not: it hashes the
+    # id only, and takes the line's range from `_UNITS` — so `requires_main`, which comes
+    # from `attachment` and not from the line at all, could change with the whole UPDATE
+    # skipped, and a rider would go on being offered as a policy somebody can buy alone.
+    # Comparing the written tuple needs no reasoning about which input feeds which
+    # column, and stays correct when `_BANDS` is next edited.
+    #
+    # `on_sale` stays out of the SET on purpose: it is the one column a person sets by
+    # hand, and a rebuild that reset it to true would put a withdrawn product back on the
+    # shelf. Product and clause above take their update unconditionally, because those
+    # are parsed out of the PDF and a better parser is a correction — the whitespace fix
+    # wrote 11,741 clean clauses into SQLite and every row in Postgres kept the old
+    # spacing until that changed.
     await db.execute_many(
         """INSERT INTO catalog_entry
              (product_id, issue_age_min, issue_age_max, max_occupation, unit_premium, unit_label, requires_main, on_sale)
@@ -210,8 +218,13 @@ async def build_catalog(db: Database) -> int:
              issue_age_min = excluded.issue_age_min, issue_age_max = excluded.issue_age_max,
              max_occupation = excluded.max_occupation, unit_premium = excluded.unit_premium,
              unit_label = excluded.unit_label, requires_main = excluded.requires_main
-           WHERE (catalog_entry.unit_premium, catalog_entry.unit_label)
-                 IS DISTINCT FROM (excluded.unit_premium, excluded.unit_label)""",
+           WHERE (catalog_entry.issue_age_min, catalog_entry.issue_age_max,
+                  catalog_entry.max_occupation, catalog_entry.unit_premium,
+                  catalog_entry.unit_label, catalog_entry.requires_main)
+                 IS DISTINCT FROM
+                 (excluded.issue_age_min, excluded.issue_age_max,
+                  excluded.max_occupation, excluded.unit_premium,
+                  excluded.unit_label, excluded.requires_main)""",
         entries,
     )
     logger.info("catalog_built", entries=len(entries))

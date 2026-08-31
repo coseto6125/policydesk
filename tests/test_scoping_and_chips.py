@@ -459,3 +459,19 @@ def test_the_router_is_told_what_it_cannot_look_up():
     assert "請告訴我您想前往的服務據點" in ROUTER, "the rule names a shape, not the sentence"
     for holds in ("營業時間", "據點地址", "客服電話"):
         assert holds in ROUTER, f"{holds} is not named as outside what this desk can read"
+
+
+def test_the_router_names_every_scenario_it_can_answer_from():
+    """
+    The sentence says 就這些, so the list has to be all of them.
+
+    Written by hand it named seven of eighteen — 據實說明, 職業變更, 契約撤銷,
+    理賠進度 and 保單健診 were missing. A customer whose wording missed one of those
+    scenarios lands on this branch and is told the desk cannot answer, which is the
+    failure the sentence exists to prevent, reached through the scenarios it forgot.
+    """
+    from policydesk.agent.scenario import CATALOGUE
+    from policydesk.agent.scenario import ROUTER_INSTRUCTIONS as ROUTER
+
+    absent = [s.display_name for s in CATALOGUE if s.tools and s.display_name not in ROUTER]
+    assert not absent, f"the desk can answer these and the router's list does not say so: {absent}"

@@ -207,8 +207,8 @@ def test_every_parameter_says_what_to_do_when_the_customer_has_not_said_it():
     empty, and the reply then answers a question about a four-day stay nobody mentioned.
 
     Asserted on the schema the router actually receives rather than on `Param`, because
-    the fix belongs where the pressure is — one line in `tool_schema` covers the fifteen
-    parameters spread across ten modules, and the sixteenth gets it for free.
+    the fix belongs where the pressure is — one rule per parameter in `tool_schema`
+    covers the fifteen spread across ten modules, and the sixteenth gets it for free.
     """
     from policydesk.agent.scenario_base import tool_schema
 
@@ -220,6 +220,56 @@ def test_every_parameter_says_what_to_do_when_the_customer_has_not_said_it():
         if "填空字串" not in spec["description"]
     ]
     assert not without, f"these parameters invite the example when the customer said nothing: {without}"
+
+
+def test_a_parameter_states_one_rule_for_an_unsaid_value_and_not_two():
+    """
+    Two rules on one parameter, and the model reads the last one.
+
+    `UNSAID` used to be appended to every description, including the four that already
+    said what to fill. An `explain_cover` call with no topic then filled `""` where 全部
+    was meant, and `find_clause`'s SQL fallback ran `ILIKE '%%'` — which is not the whole
+    contract the description promises, it is whatever the kind ordering and the limit
+    happen to leave.
+
+    A parameter carrying its own answer states that one; the rest take the global rule.
+    Never both.
+    """
+    from policydesk.agent.scenario_base import UNSAID, tool_schema
+
+    for scenario in (s for s in CATALOGUE if s.params):
+        schema = tool_schema(scenario)
+        for param in scenario.params:
+            text = schema["parameters"]["properties"][param.name]["description"]
+            if param.when_unsaid:
+                where = f"{scenario.name}.{param.name}"
+                assert param.when_unsaid in text, f"{where}'s own rule never reaches the schema"
+                assert UNSAID not in text, f"{where} carries its own rule and the global one"
+            else:
+                assert UNSAID in text, f"{scenario.name}.{param.name} states no rule at all"
+
+
+def test_a_sentinel_means_do_not_filter_and_never_names_one_option():
+    """
+    A fallback that means "all of it" is not a guess; one that names a real value is.
+
+    `browse_products.line` and `quote.line` both said 保戶沒指明就填 health. 你們有賣什麼
+    and 我想問保險 arrived naming no line and were both shown 醫療 — one of five, and the
+    answer to neither. 全部 and 一般說明 stay: 一般說明 is what 我最近換工作，想問下跟以前
+    的保險會有關係嗎 routes with, and it produced §59's four paragraphs and every policy's
+    occupation ceiling.
+    """
+    lines = {"health", "life", "accident", "annuity", "investment"}
+    guessing = [
+        f"{s.name}.{p.name}"
+        for s in CATALOGUE
+        for p in s.params
+        if any(
+            re.search(rf"沒[^。]{{0,10}}填\s*{value}\b", f"{p.description}{p.when_unsaid}")
+            for value in lines
+        )
+    ]
+    assert not guessing, f"these parameters answer a question the customer did not ask: {guessing}"
 
 
 def test_a_parameter_is_still_required():
@@ -234,29 +284,3 @@ def test_a_parameter_is_still_required():
     for scenario in (s for s in CATALOGUE if s.params):
         schema = tool_schema(scenario)
         assert set(schema["parameters"]["required"]) == {p.name for p in scenario.params}, scenario.name
-
-
-def test_a_parameter_falls_back_to_no_filter_and_never_to_one_option():
-    """
-    Two rules on `line`, pointing opposite ways: 保戶沒指明就填 health against
-    `tool_schema`'s 沒說到就填空字串.
-
-    你們有賣什麼 and 我想問保險 both arrived naming no line and both were shown 醫療,
-    which is one of five and the answer to neither. `browse_products`'s injection already
-    handles an empty sample by naming the five lines and asking, so the default reached
-    past a better answer to a worse one.
-
-    The four fallbacks that stay are a different thing. 全部 and 一般說明 are sentinels
-    the tool reads as *do not filter* — 一般說明 is what 我最近換工作，想問下跟以前的
-    保險會有關係嗎 routes with, and it produced §59 and every policy's occupation ceiling.
-    A fallback naming one of five real values is a guess about what the customer asked;
-    a fallback meaning "all of it" is not.
-    """
-    lines = {"health", "life", "accident", "annuity", "investment"}
-    guessing = [
-        f"{s.name}.{p.name}"
-        for s in CATALOGUE
-        for p in s.params
-        if any(re.search(rf"沒[^。]{{0,10}}填\s*{value}\b", p.description) for value in lines)
-    ]
-    assert not guessing, f"these parameters answer a question the customer did not ask: {guessing}"

@@ -62,16 +62,24 @@ def test_the_statute_half_reranks_and_the_clause_half_does_not():
     Pinned because the losing configuration is the one that looks obviously right: the
     same code, the same model, one more call site.
     """
-    from pathlib import Path
+    import inspect
 
-    statutes = Path("src/policydesk/agent/statute.py").read_text(encoding="utf-8")
-    clauses = Path("src/policydesk/agent/tools.py").read_text(encoding="utf-8")
-    assert "rerank.sift(" in statutes
-    assert "rerank.DEPTH" in statutes
-    # The word survives in a comment saying why there is no call, which is the note a
-    # later reader needs most; the call is what must stay gone.
-    assert "rerank.sift(" not in clauses, "reranking the clause half was measured and it loses"
-    assert "import rerank" not in clauses
+    from policydesk.agent import statute, tools
+
+    # Read the two functions, not the two files. The first version matched the literal
+    # `rerank.sift(` and broke the day the call became an argument to `asyncio.to_thread`
+    # — a change to how it is scheduled, which says nothing about which half reranks. It
+    # also passed while naming no function at all: written against the file, it could not
+    # tell `_ranked_by` from `reinstate.statutory_floor`, and the first function-scoped
+    # version reached for the wrong one of the two.
+    reranks = inspect.getsource(statute._ranked_by)
+    assert "rerank.sift" in reranks, "the statute half stopped reranking"
+    assert "rerank.DEPTH" in reranks, "it reranks whatever the caller's limit happened to be"
+    # The word survives in `find_clause`'s comment saying why there is no call, which is
+    # the note a later reader needs most; the call is what must stay gone.
+    assert "rerank.sift" not in inspect.getsource(tools.find_clause), (
+        "reranking the clause half was measured and it loses"
+    )
 
 
 def test_nothing_is_withheld_on_a_score():
