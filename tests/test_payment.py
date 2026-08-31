@@ -15,8 +15,6 @@ from policydesk.agent.scenarios import payment
 from policydesk.agent.scenarios.payment import GRACE_ARTICLE, MODE_LABEL, PAYMENT, grace_rule, payment_state
 from policydesk.core.db import Database
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(scope="module")
 async def db():

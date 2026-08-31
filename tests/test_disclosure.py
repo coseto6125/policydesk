@@ -29,8 +29,6 @@ from policydesk.agent.scenarios.disclosure import (
 from policydesk.agent.tools import permitted, reads_identity
 from policydesk.core.db import Database
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(scope="module")
 async def db():

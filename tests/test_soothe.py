@@ -35,8 +35,6 @@ from policydesk.agent.scenarios.soothe import (
 )
 from policydesk.core.db import Database
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(scope="module")
 async def db():
