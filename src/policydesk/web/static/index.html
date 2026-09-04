@@ -14,44 +14,54 @@
 
     Tokens are declared on bare :root and redefined for dark. Nothing below sets a
     colour literal, so both themes resolve as a set.
+
+    Motion is state, not decoration. Every animation on this page answers one of four
+    questions: where did this come from, did my click land, what just changed, or is
+    the system still working. Everything moves on transform and opacity only, with the
+    four timing tokens below; under prefers-reduced-motion the travel is dropped and
+    the opacity change kept, so the feedback survives.
   */
   :root {
     color-scheme: light;
-    --ground: #eceff0;
-    --paper: #ffffff;
-    --paper-2: #f6f8f7;
-    --rule: #dbe2df;
-    --rule-soft: #eceeed;
+    /* Pale blue rather than white: an underwriter reads this for hours, and a pure white
+       paper against a pure white card is glare with no edges. */
+    --ground: #e3ebf4;
+    --paper: #f5f8fc;
+    --paper-2: #eaf0f7;
+    --rule: #cfdae7;
+    --rule-soft: #dfe7f0;
 
-    --ink: #0f1a16;
-    --ink-2: #46554f;
-    --ink-3: #5d6e68;
+    --ink: #111827;
+    --ink-2: #3f4b5b;
+    --ink-3: #5c6879;
 
-    --accent: #0b6b46;
+    /* Blue is the hand: selection, focus, the one primary action. Green is kept for
+       what went right, so a selected row and a passed check no longer share a colour. */
+    --accent: #1e5fd0;
     --accent-ink: #ffffff;
-    --accent-wash: #e6f1ec;
+    --accent-wash: #e7eefc;
+    --accent-line: #b9cdf5;
 
-    --flag: #8a5300;
-    --flag-wash: #fbf1e0;
-    --bad: #a4231d;
-    --bad-wash: #fbecea;
-    --good: #0b6b46;
-    --good-wash: #e6f1ec;
+    --flag: #955300;
+    --flag-wash: #fdf1dc;
+    --bad: #b3261e;
+    --bad-wash: #fbe9e7;
+    --good: #0e7a4c;
+    --good-wash: #e2f4ea;
 
-    --room: #7f9bb8;
-    --room-bar: #2b3742;
+    --room: #8ea6be;
+    --room-bar: #22303d;
     --room-ink: #ffffff;
-    --bubble-them: #ffffff;
-    --bubble-me: #a9e263;
-    --bubble-sys: rgba(15, 26, 22, .34);
+    --bubble-them: #f7f9fc;
+    --bubble-me: #a8e36b;
+    --bubble-me-ink: #14300b;
+    --bubble-sys: rgba(17, 24, 39, .38);
 
     /*
       One hue per turn phase, for the trace ticks and the pipeline nodes. Mixed from the
       tokens above rather than written as literals, so each one re-resolves when the
-      theme swaps its inputs — a single declaration that is correct in both, instead of
-      seven more lines in each dark block that a later edit would have to keep in step.
-      Four base hues have to separate seven phases, which is why three of these are
-      mixes rather than a fifth and sixth literal nobody could name.
+      theme swaps its inputs. Four base hues have to separate seven phases, which is why
+      three of these are mixes rather than a fifth and sixth literal nobody could name.
     */
     --ph-route: var(--ink-3);
     --ph-scenario_tools: color-mix(in oklab, var(--accent) 50%, var(--flag));
@@ -62,79 +72,93 @@
     --ph-facts: color-mix(in oklab, var(--flag) 50%, var(--bad));
     --ph-response: var(--good);
 
-    --shadow-1: 0 1px 2px rgba(15, 26, 22, .05);
-    --shadow-2: 0 8px 28px rgba(15, 26, 22, .14);
+    --shadow-1: 0 1px 2px rgba(17, 24, 39, .06);
+    --shadow-2: 0 12px 32px rgba(17, 24, 39, .16);
+    --shadow-3: 0 24px 64px rgba(17, 24, 39, .28);
 
     --sans: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", -apple-system, system-ui, sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
 
     /* Dense scale. This is a console, not a page. */
     --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
-    --rail: 236px;
+    --rail: 240px;
     --chat: 400px;
-    --radius: 8px;
+    --radius: 10px;
+    --radius-s: 6px;
+
+    /* The four motion tokens. 120 answers a press, 220 a state, 360 a layout. */
+    --ease-out: cubic-bezier(.25, 1, .5, 1);
+    --ease-in: cubic-bezier(.5, 0, .75, 0);
+    --ease-io: cubic-bezier(.65, 0, .35, 1);
+    --t-fast: 120ms; --t-base: 220ms; --t-slow: 360ms;
   }
   :root:not([data-theme="light"]) { }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       color-scheme: dark;
-      --ground: #0e1513;
-      --paper: #151d1a;
-      --paper-2: #1b2421;
-      --rule: #2a3531;
-      --rule-soft: #212b28;
+      --ground: #0f141a;
+      --paper: #161c24;
+      --paper-2: #1c242e;
+      --rule: #2a3441;
+      --rule-soft: #222b36;
 
-      --ink: #e8efeb;
-      --ink-2: #a6b5af;
-      --ink-3: #7d8d87;
+      --ink: #e7ecf3;
+      --ink-2: #aab6c5;
+      --ink-3: #7f8b9a;
 
-      --accent: #3fbd85;
-      --accent-ink: #06231a;
-      --accent-wash: #17322a;
+      --accent: #7aa7ff;
+      --accent-ink: #081a3d;
+      --accent-wash: #1b2942;
+      --accent-line: #33507f;
 
-      --flag: #d5a45a;
-      --flag-wash: #33291a;
-      --bad: #e88a83;
-      --bad-wash: #331e1d;
-      --good: #3fbd85;
-      --good-wash: #17322a;
+      --flag: #e0a651;
+      --flag-wash: #332a17;
+      --bad: #f08c84;
+      --bad-wash: #3a1f1d;
+      --good: #4cc38a;
+      --good-wash: #12302a;
 
-      --room: #46596b;
-      --room-bar: #101a20;
-      --bubble-them: #232e2b;
-      --bubble-me: #2f5a2a;
+      --room: #3d4e61;
+      --room-bar: #111922;
+      --bubble-them: #222c37;
+      --bubble-me: #2f5c2b;
+      --bubble-me-ink: #e6f7dc;
       --bubble-sys: rgba(0, 0, 0, .45);
 
       --shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
-      --shadow-2: 0 8px 28px rgba(0, 0, 0, .55);
+      --shadow-2: 0 12px 32px rgba(0, 0, 0, .55);
+      --shadow-3: 0 24px 64px rgba(0, 0, 0, .7);
     }
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --ground: #0e1513;
-    --paper: #151d1a;
-    --paper-2: #1b2421;
-    --rule: #2a3531;
-    --rule-soft: #212b28;
-    --ink: #e8efeb;
-    --ink-2: #a6b5af;
-    --ink-3: #7d8d87;
-    --accent: #3fbd85;
-    --accent-ink: #06231a;
-    --accent-wash: #17322a;
-    --flag: #d5a45a;
-    --flag-wash: #33291a;
-    --bad: #e88a83;
-    --bad-wash: #331e1d;
-    --good: #3fbd85;
-    --good-wash: #17322a;
-    --room: #46596b;
-    --room-bar: #101a20;
-    --bubble-them: #232e2b;
-    --bubble-me: #2f5a2a;
+    --ground: #0f141a;
+    --paper: #161c24;
+    --paper-2: #1c242e;
+    --rule: #2a3441;
+    --rule-soft: #222b36;
+    --ink: #e7ecf3;
+    --ink-2: #aab6c5;
+    --ink-3: #7f8b9a;
+    --accent: #7aa7ff;
+    --accent-ink: #081a3d;
+    --accent-wash: #1b2942;
+    --accent-line: #33507f;
+    --flag: #e0a651;
+    --flag-wash: #332a17;
+    --bad: #f08c84;
+    --bad-wash: #3a1f1d;
+    --good: #4cc38a;
+    --good-wash: #12302a;
+    --room: #3d4e61;
+    --room-bar: #111922;
+    --bubble-them: #222c37;
+    --bubble-me: #2f5c2b;
+    --bubble-me-ink: #e6f7dc;
     --bubble-sys: rgba(0, 0, 0, .45);
     --shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
-    --shadow-2: 0 8px 28px rgba(0, 0, 0, .55);
+    --shadow-2: 0 12px 32px rgba(0, 0, 0, .55);
+    --shadow-3: 0 24px 64px rgba(0, 0, 0, .7);
   }
 
   * { box-sizing: border-box; }
@@ -146,50 +170,111 @@
   body {
     font-family: var(--sans);
     background: var(--ground); color: var(--ink);
-    font-size: 13px; line-height: 1.55;
+    font-size: 13.5px; line-height: 1.55;
     display: grid; grid-template-columns: 1fr var(--chat); height: 100vh; overflow: hidden;
     -webkit-font-smoothing: antialiased;
+    caret-color: var(--accent);
+    transition: background var(--t-slow) var(--ease-out), color var(--t-slow) var(--ease-out);
   }
-  :where(button, input, a):focus-visible {
+  :where(button, input, a, [tabindex]):focus-visible {
     outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px;
   }
+  ::selection { background: var(--accent-line); color: var(--ink); }
+  * { scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--rule); border: 3px solid transparent; border-radius: 999px; background-clip: padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background-color: var(--ink-3); }
+
+  /* ═══════════════ motion vocabulary ═══════════════ */
+
+  /* Something arrived: a row, a card, a pane. Travel is short so it reads as a fade. */
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+  /* A bubble grows out of the edge it is anchored to. */
+  @keyframes bubble-in { from { opacity: 0; transform: translateY(10px) scale(.96); } }
+  /* A bead or a pill that just changed state. Scales up and settles, no overshoot. */
+  @keyframes pop { from { transform: scale(.55); opacity: .4; } }
+  /* A value that changed while the reader was looking at it. */
+  @keyframes flash { from { background-color: var(--accent-wash); } }
+  /* One ring off the live dot when the socket comes up. */
+  @keyframes ring { from { box-shadow: 0 0 0 0 color-mix(in oklab, var(--good) 55%, transparent); }
+                    to   { box-shadow: 0 0 0 12px transparent; } }
+  /* The loading surfaces. These two are the only animations allowed to repeat. */
+  @keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+  @keyframes blip { 0%, 60%, 100% { transform: translateY(0); opacity: .35; } 30% { transform: translateY(-3px); opacity: 1; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  /* Bars fill toward their value, a line draws itself. */
+  @keyframes grow-x { from { transform: scaleX(0); } }
+  @keyframes grow-y { from { transform: scaleY(0); } }
+  @keyframes draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+  @keyframes fade { from { opacity: 0; } }
+  @keyframes shake { 20%, 60% { transform: translateX(-4px); } 40%, 80% { transform: translateX(4px); } }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(-10px) scale(.98); } }
+
+  /* Children stagger in by index. Capped: item 15 and item 50 land together. */
+  .rise > * { animation: rise var(--t-slow) var(--ease-out) backwards; animation-delay: min(calc(var(--i, 0) * 28ms), 400ms); }
+  .flash { animation: flash 900ms var(--ease-out); }
+
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    /* The two working indicators keep their rhythm: a frozen spinner reads as hung. */
+    .msg.pending i, .spinner { animation-duration: 1.2s !important; }
   }
 
   /* ═══════════════ back office ═══════════════ */
 
-  .desk { display: grid; grid-template-rows: auto 1fr; min-width: 0; overflow: hidden; }
+  .desk { display: grid; grid-template-rows: auto 1fr; min-width: 0; overflow: hidden; position: relative; }
 
   .topbar {
     display: flex; align-items: center; gap: var(--s3);
-    padding: 0 var(--s4); height: 46px;
+    padding: 0 var(--s4); height: 48px;
     background: var(--paper); border-bottom: 1px solid var(--rule);
   }
   .topbar .mark {
-    font-size: 12px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+    font-size: 12.5px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
     color: var(--ink); white-space: nowrap;
   }
   .topbar .mark span { color: var(--accent); }
-  .topbar .crumb { font-size: 12px; color: var(--ink-3); }
+  .topbar .crumb { font-size: 12.5px; color: var(--ink-3); }
   .topbar .spacer { flex: 1; }
   .link-status {
-    display: inline-flex; align-items: center; gap: 6px;
-    font-size: 11.5px; color: var(--ink-2); font-family: var(--mono);
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--ink-2);
+    transition: color var(--t-base) var(--ease-out);
   }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); flex: none; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; transition: background var(--t-base) var(--ease-out); }
   .dot.live { background: var(--good); box-shadow: 0 0 0 3px var(--good-wash); }
+  .dot.live.pulse { animation: ring 900ms var(--ease-out) 2; }
   .dot.down { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-wash); }
+  button.icon { padding: 6px; width: 32px; height: 32px; justify-content: center; border-radius: 8px; }
+  button.icon svg { width: 16px; height: 16px; }
+
+  /* Notices land here, not in the status text where nobody sees them change. */
+  .toasts {
+    position: absolute; top: 56px; right: var(--s4); z-index: 30;
+    display: grid; gap: var(--s2); width: min(360px, calc(100% - 2 * var(--s4)));
+    pointer-events: none;
+  }
+  .toast {
+    display: flex; gap: var(--s2); align-items: flex-start;
+    background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius);
+    box-shadow: var(--shadow-2); padding: 10px 12px; font-size: 13px; line-height: 1.5;
+    pointer-events: auto;
+    animation: toast-in var(--t-base) var(--ease-out);
+    transition: opacity var(--t-base) var(--ease-in), transform var(--t-base) var(--ease-in);
+  }
+  .toast.out { opacity: 0; transform: translateY(-6px); }
+  .toast svg { width: 16px; height: 16px; flex: none; margin-top: 1px; }
+  .toast.ok svg { color: var(--good); }
+  .toast.warn svg { color: var(--flag); }
+  .toast.bad svg { color: var(--bad); }
+  .toast.info svg { color: var(--accent); }
 
   .desk-body {
     display: grid; grid-template-columns: var(--rail) 1fr;
     min-height: 0; overflow: hidden;
   }
 
-  /* ── queue rail: this is navigation, so it lives where navigation lives ── */
-  /* Three rows now: the seven tabs, then the case queue's head and list. The queue only
-     drives the 總覽 pane, so it is hidden on the other six rather than sitting there as
-     navigation that goes nowhere. */
+  /* ── the rail: two groups of tabs, then the queue the first group reads ── */
   .rail {
     background: var(--paper); border-right: 1px solid var(--rule);
     display: grid; grid-template-rows: auto auto 1fr; min-height: 0;
@@ -202,28 +287,41 @@
   .rail-list { overflow-y: auto; padding: var(--s2) 0 var(--s5); }
   .qrow {
     display: grid; grid-template-columns: 1fr auto; gap: 2px var(--s2);
-    padding: 8px var(--s3); cursor: pointer; border-left: 3px solid transparent;
-    transition: background 180ms ease, border-color 180ms ease;
+    padding: 9px var(--s3); cursor: pointer; border-left: 3px solid transparent;
+    transition: background var(--t-base) var(--ease-out), border-color var(--t-base) var(--ease-out), transform var(--t-fast) var(--ease-out);
   }
   .qrow:hover { background: var(--paper-2); }
+  .qrow:active { transform: scale(.985); }
   .qrow[aria-current="true"] { background: var(--accent-wash); border-left-color: var(--accent); }
-  .qrow .who { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qrow .who { font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .qrow .id { font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
   .qrow .meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; }
 
-  .tabs { display: grid; padding: var(--s2) 0; border-bottom: 1px solid var(--rule); }
+  .tabs { position: relative; display: grid; padding: var(--s2) 0 var(--s3); border-bottom: 1px solid var(--rule); }
+  .tab-group {
+    padding: 10px var(--s3) 4px; font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 700;
+  }
   .tab {
-    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
-    padding: 7px var(--s3); font-size: 12.5px; color: var(--ink-2);
-    border: 0; border-left: 3px solid transparent; border-radius: 0; background: transparent;
+    position: relative; display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+    padding: 8px var(--s3); font-size: 13px; color: var(--ink-2);
+    border: 0; border-radius: 0; background: transparent;
+    transition: background var(--t-base) var(--ease-out), color var(--t-base) var(--ease-out), font-weight var(--t-base);
   }
-  .tab:hover { background: var(--paper-2); border-color: transparent; border-left-color: transparent; }
-  .tab[aria-current="true"] {
-    background: var(--accent-wash); border-left-color: var(--accent);
-    color: var(--ink); font-weight: 600;
-  }
-  .tab svg { width: 14px; height: 14px; flex: none; color: var(--ink-3); }
+  .tab:hover { background: var(--paper-2); color: var(--ink); }
+  .tab[aria-current="true"] { background: var(--accent-wash); color: var(--ink); font-weight: 600; }
+  .tab svg { width: 15px; height: 15px; flex: none; color: var(--ink-3); transition: color var(--t-base) var(--ease-out), transform var(--t-base) var(--ease-out); }
+  .tab:hover svg { transform: translateX(1px); }
   .tab[aria-current="true"] svg { color: var(--accent); }
+  /* One indicator, moved between tabs rather than redrawn on each: the bar slides, so
+     the eye follows where the selection went. */
+  .tab-ink {
+    position: absolute; left: 0; top: 0; width: 3px; height: 0;
+    background: var(--accent); border-radius: 0 3px 3px 0; pointer-events: none;
+    transition: transform var(--t-slow) var(--ease-io), height var(--t-slow) var(--ease-io), width var(--t-slow) var(--ease-io), opacity var(--t-base);
+    opacity: 0;
+  }
+  .tab-ink.on { opacity: 1; }
 
   /* ── case area ── */
   .case { overflow-y: auto; min-width: 0; padding-bottom: var(--s6); scroll-behavior: smooth; }
@@ -242,9 +340,12 @@
        reported nothing to scroll. */
     grid-auto-rows: max-content;
   }
+  /* A pane that was just opened. Re-applied on every switch, so the class is toggled off
+     and on by openTab to restart the animation. */
+  .in { animation: rise var(--t-base) var(--ease-out); }
   .pane-head { display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap; }
-  .pane-head h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
-  .pane-head p { margin: 0; font-size: 12px; color: var(--ink-3); }
+  .pane-head h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
+  .pane-head p { margin: 0; font-size: 12.5px; color: var(--ink-3); }
   .pane-head .spacer { flex: 1; }
 
   /* The KPI strip is positioned by the case pane's own padding; inside a .pane the pane
@@ -262,7 +363,11 @@
     display: grid; grid-template-columns: minmax(250px, 330px) minmax(0, 1fr);
     gap: var(--s3); align-items: start;
   }
-  @media (max-width: 1240px) { .split { grid-template-columns: minmax(0, 1fr); } }
+  /* Named, not inline: an inline column rule outranks the media query below, and a
+     phone then gets two columns of one character each. */
+  .split.narrow-left { grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); }
+  .split.halves { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  @media (max-width: 1240px) { .split, .split.narrow-left, .split.halves { grid-template-columns: minmax(0, 1fr); } }
 
   /* Sticky so a decision never requires a scroll back up. */
   .case-head {
@@ -272,43 +377,62 @@
   }
   .case-head::before {
     content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: transparent;
+    transition: background var(--t-base) var(--ease-out);
   }
   .case-head[data-alert="review"]::before { background: var(--flag); }
   .case-head[data-alert="rejected"]::before { background: var(--bad); }
   .case-head[data-alert="approved"]::before { background: var(--good); }
+  .case-head.flash { animation: flash 900ms var(--ease-out); }
 
   .case-title { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
-  .case-title h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+  .case-title h2 { margin: 0; font-size: 21px; font-weight: 600; letter-spacing: -.01em; }
   .case-title .num {
     font-family: var(--mono); font-size: 12px; color: var(--ink-3);
     font-variant-numeric: tabular-nums;
   }
+  .case-head.advance #caseBadge .pill { animation: pop var(--t-base) var(--ease-out); }
 
-  /* The stepper encodes a real sequence, so it is drawn as one: a connected rail. */
-  .steps { display: flex; align-items: center; margin: var(--s3) 0 var(--s1); flex-wrap: wrap; gap: 2px 0; }
-  .step { display: flex; align-items: center; gap: 6px; padding-right: 6px; }
-  .step .bead {
-    width: 16px; height: 16px; border-radius: 50%; flex: none;
-    display: grid; place-items: center;
-    border: 1.5px solid var(--rule); background: var(--paper);
-    font-size: 9px; font-family: var(--mono); color: var(--ink-3);
+  /* The case as a board of facts. Four things a caseworker checks before deciding, each
+     in its own state: none of them waits for another, so nothing here is numbered and
+     nothing is joined by a line. A tile whose state just changed pops. */
+  .board { display: flex; flex-wrap: wrap; gap: 6px; margin: var(--s3) 0 var(--s1); }
+  .tile {
+    display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px 5px 7px;
+    border: 1px solid var(--rule); border-radius: 999px; background: var(--paper-2); font-size: 12px;
+    transition: background var(--t-base) var(--ease-out), border-color var(--t-base) var(--ease-out);
   }
-  .step .name { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
-  .step .bar { width: 14px; height: 1.5px; background: var(--rule); margin: 0 2px; }
-  .step.done .bead { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-  .step.done .name { color: var(--ink-2); }
-  .step.done .bar { background: var(--accent); }
-  .step.now .bead { border-color: var(--accent); border-width: 2px; color: var(--accent); font-weight: 700; }
-  .step.now .name { color: var(--ink); font-weight: 600; }
-  .step.bad .bead { background: var(--bad); border-color: var(--bad); color: var(--paper); }
-  .step.bad .name { color: var(--bad); font-weight: 600; }
+  .tile .tdot {
+    width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; flex: none;
+    border: 1.5px solid var(--rule); background: var(--paper); color: var(--ink-3);
+  }
+  .tile .tdot svg { width: 10px; height: 10px; }
+  .tile .tk { color: var(--ink-3); }
+  .tile .tv { font-weight: 600; color: var(--ink-2); }
+  .tile.done { background: var(--good-wash); border-color: transparent; }
+  .tile.done .tdot { background: var(--good); border-color: var(--good); color: #fff; }
+  .tile.done .tv { color: var(--good); }
+  .tile.wait .tdot { border-color: var(--accent); color: var(--accent); }
+  .tile.wait .tv { color: var(--accent); }
+  .tile.flag { background: var(--flag-wash); border-color: transparent; }
+  .tile.flag .tdot { background: var(--flag); border-color: var(--flag); color: #fff; }
+  .tile.flag .tv { color: var(--flag); }
+  .tile.bad { background: var(--bad-wash); border-color: transparent; }
+  .tile.bad .tdot { background: var(--bad); border-color: var(--bad); color: #fff; }
+  .tile.bad .tv { color: var(--bad); }
+  .tile.just { animation: pop var(--t-slow) var(--ease-out); }
 
   .decide {
-    display: flex; gap: var(--s2); align-items: center;
+    display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap;
     margin-top: var(--s3); padding-top: var(--s3); border-top: 1px dashed var(--rule);
   }
   .decide label { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--flag); font-weight: 700; white-space: nowrap; }
-  .decide input { flex: 1; min-width: 0; }
+  .decide input { flex: 1; min-width: 180px; }
+  .decide input.invalid { border-color: var(--bad); box-shadow: 0 0 0 3px var(--bad-wash); animation: shake var(--t-slow) var(--ease-out); }
+  .decide .hint { flex-basis: 100%; font-size: 12px; color: var(--bad); animation: rise var(--t-base) var(--ease-out); }
+  /* The confirm state: the same button, asking once more. Width is held so the row does
+     not jump when the label changes. */
+  .decide button.confirm { background: var(--flag); border-color: var(--flag); color: #fff; }
+  .decide button.busy { pointer-events: none; }
 
   /* ── the strip a real service console leads with: whose book, and how big ── */
   .kpis {
@@ -316,11 +440,12 @@
     gap: 1px; margin: var(--s3) var(--s4) 0;
     background: var(--rule); border: 1px solid var(--rule); border-radius: var(--radius); overflow: hidden;
   }
-  .kpi { background: var(--paper); padding: 10px var(--s3); display: grid; gap: 2px; }
+  .kpi { background: var(--paper); padding: 11px var(--s3); display: grid; gap: 2px; transition: background var(--t-base) var(--ease-out); }
   .kpi .k { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); font-weight: 700; }
-  .kpi .v { font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; line-height: 1.2; }
+  .kpi .v { font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; line-height: 1.2; }
   .kpi .v small { font-size: 11px; font-weight: 400; color: var(--ink-3); margin-left: 3px; }
   .kpi.alert .v { color: var(--flag); }
+  .kpi.flash { animation: flash 900ms var(--ease-out); }
 
   .pnum { font-family: var(--mono); font-size: 11.5px; letter-spacing: .01em; white-space: nowrap; }
   .lapsed { color: var(--ink-3); }
@@ -328,7 +453,7 @@
   /* The contract behind the policy, one click away. A figure quoted in the chat is
      checkable against the page it came from, which is what separates a citation from
      a claim. */
-  a.pname { color: inherit; text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 3px; }
+  a.pname { color: inherit; text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 3px; transition: color var(--t-base) var(--ease-out), text-decoration-color var(--t-base) var(--ease-out); }
   a.pname:hover { color: var(--accent); text-decoration-color: var(--accent); }
   .lapsed a.pname { color: var(--ink-3); }
   .rider { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; color: var(--ink-3); }
@@ -347,10 +472,14 @@
   .card {
     background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius);
     box-shadow: var(--shadow-1); overflow: hidden;
+    /* A fold or a row flash reflows this card and nothing outside it. */
+    contain: content;
+    transition: box-shadow var(--t-base) var(--ease-out), border-color var(--t-base) var(--ease-out);
   }
   .card > header {
     display: flex; align-items: center; gap: var(--s2);
     padding: 9px var(--s3); border-bottom: 1px solid var(--rule-soft); background: var(--paper-2);
+    transition: border-color var(--t-slow) var(--ease-out);
   }
   .card > header h3 {
     margin: 0; font-size: 11px; letter-spacing: .13em; text-transform: uppercase;
@@ -362,8 +491,21 @@
      line otherwise, and 理 由 stacked vertically is not a table header. */
   thead th { white-space: nowrap; }
   .card > header .spacer { flex: 1; }
-  .card > .body { padding: var(--s3); }
-  .card > .body.flush { padding: 0; }
+  /* A card folds. The header is the handle; the chevron turns, the body collapses on
+     its grid row, and the content under it never reflows mid-motion. The state class is
+     `shut`, because `.folded` is the enrolment card's summary line and hides itself. */
+  .card > header.handle { cursor: pointer; user-select: none; }
+  .card > header .chev { width: 22px; height: 22px; padding: 0; border: 0; background: transparent; color: var(--ink-3); border-radius: 6px; flex: none; }
+  .card > header .chev svg { width: 14px; height: 14px; transition: transform var(--t-slow) var(--ease-io); }
+  .card > header .chev:hover { background: var(--rule-soft); }
+  .card.shut > header { border-bottom-color: transparent; }
+  .card.shut > header .chev svg { transform: rotate(-90deg); }
+  .card > .body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--t-slow) var(--ease-io); }
+  .card.shut > .body { grid-template-rows: 0fr; }
+  .card > .body > .fold { min-height: 0; overflow: hidden; padding: var(--s3); }
+  .card > .body.flush > .fold { padding: 0; }
+  /* While folded the inner padding would still hold the row open by 24px. */
+  .card.shut > .body > .fold { padding-top: 0; padding-bottom: 0; transition: padding var(--t-slow) var(--ease-io); }
   .scroller { max-height: 320px; overflow-y: auto; }
 
   .label {
@@ -373,23 +515,25 @@
   .none { color: var(--ink-3); }
   .count { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; letter-spacing: 0; }
 
-  .kv { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 7px var(--s3); margin: 0; font-size: 13px; }
+  .kv { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 7px var(--s3); margin: 0; font-size: 13.5px; }
   .kv dt { color: var(--ink-3); }
   .kv dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
   .kv dd.mono { font-family: var(--mono); font-size: 12px; letter-spacing: .01em; }
   .kv dd.none { color: var(--ink-3); }
 
-  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
   thead th {
     position: sticky; top: 0; background: var(--paper); z-index: 1;
     text-align: left; font-weight: 700; font-size: 10px; letter-spacing: .12em;
     text-transform: uppercase; color: var(--ink-3);
     padding: 8px var(--s3) 6px; border-bottom: 1px solid var(--rule);
   }
-  tbody td { padding: 7px var(--s3); border-bottom: 1px solid var(--rule-soft); vertical-align: middle; }
+  tbody td { padding: 8px var(--s3); border-bottom: 1px solid var(--rule-soft); vertical-align: middle; }
+  tbody tr { transition: background var(--t-fast) var(--ease-out); }
+  tbody tr:hover td { background: color-mix(in oklab, var(--paper-2) 60%, transparent); }
   tbody tr:last-child td { border-bottom: 0; }
   td.mono { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; color: var(--ink-2); font-variant-numeric: tabular-nums; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
   /* Status carries a glyph as well as a colour, so it survives a colour-blind reader
      and a black-and-white print of the audit screen. */
@@ -406,14 +550,14 @@
   .notice {
     display: flex; gap: var(--s2); align-items: flex-start;
     background: var(--flag-wash); border-left: 3px solid var(--flag);
-    padding: 9px var(--s3); font-size: 12.5px; color: var(--ink);
+    padding: 9px var(--s3); font-size: 13px; color: var(--ink);
     border-radius: 0 4px 4px 0; margin-top: var(--s3);
   }
   .notice svg { width: 14px; height: 14px; flex: none; margin-top: 2px; color: var(--flag); }
   .notice b { display: block; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--flag); margin-bottom: 2px; }
 
   /* Audit trail: a spine with beads, because it is a sequence of events in time. */
-  .trail { margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
+  .trail { margin: 0; padding: 0; list-style: none; font-size: 13px; }
   .trail li { position: relative; padding: 6px 0 6px var(--s4); }
   .trail li::before {
     content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 1.5px; background: var(--rule);
@@ -423,38 +567,61 @@
   .trail li::after {
     content: ""; position: absolute; left: 0; top: 10px; width: 9px; height: 9px;
     border-radius: 50%; background: var(--paper); border: 2px solid var(--rule);
+    transition: background var(--t-base) var(--ease-out), border-color var(--t-base) var(--ease-out);
   }
-  .trail li.latest::after { background: var(--accent); border-color: var(--accent); }
+  .trail li.latest::after { background: var(--accent); border-color: var(--accent); animation: pop var(--t-slow) var(--ease-out); }
   .trail .what { font-weight: 500; }
   .trail .who { font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 
   input, button { font-family: inherit; }
   input[type="text"], input:not([type]) {
-    padding: 7px 10px; border: 1px solid var(--rule); border-radius: 5px;
-    font-size: 12.5px; background: var(--paper); color: var(--ink);
-    transition: border-color 180ms ease, box-shadow 180ms ease;
+    padding: 8px 11px; border: 1px solid var(--rule); border-radius: var(--radius-s);
+    font-size: 13px; background: var(--paper); color: var(--ink);
+    transition: border-color var(--t-base) var(--ease-out), box-shadow var(--t-base) var(--ease-out);
   }
   input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
   input::placeholder { color: var(--ink-3); }
 
+  /* Every button answers a press with a small scale-down, and lets go with a spring
+     back. It is the cheapest signal that the surface is built and not assembled. */
   button {
     display: inline-flex; align-items: center; gap: 5px;
-    font-size: 12.5px; font-weight: 500; padding: 7px 13px; border-radius: 5px;
+    font-size: 13px; font-weight: 500; padding: 7px 13px; border-radius: var(--radius-s);
     border: 1px solid var(--rule); background: var(--paper); color: var(--ink); cursor: pointer;
-    transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
+    transition: background var(--t-base) var(--ease-out), border-color var(--t-base) var(--ease-out),
+                color var(--t-base) var(--ease-out), transform var(--t-fast) var(--ease-out), box-shadow var(--t-base) var(--ease-out);
   }
   button svg { width: 13px; height: 13px; }
   button:hover { background: var(--paper-2); border-color: var(--ink-3); }
+  button:active { transform: scale(.96); }
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-  button.primary:hover { filter: brightness(1.1); }
+  button.primary:hover { filter: brightness(1.08); box-shadow: 0 4px 12px color-mix(in oklab, var(--accent) 30%, transparent); }
   button.danger { color: var(--bad); border-color: var(--bad); background: var(--paper); }
   button.danger:hover { background: var(--bad-wash); }
-  button:disabled { opacity: .4; cursor: not-allowed; }
+  button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow: none; }
   button.ghost { border-color: transparent; background: transparent; color: var(--ink-2); padding: 5px 8px; }
   button.ghost:hover { background: var(--paper-2); }
+  /* A reload button that is reloading says so by turning. */
+  button.ghost.busy svg { animation: spin 800ms linear infinite; }
+  .spinner { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 700ms linear infinite; flex: none; }
 
-  .empty { color: var(--ink-3); font-size: 12.5px; padding: var(--s3); text-align: center; }
-  td .empty, .body > .empty { padding: var(--s4) var(--s3); }
+  .empty { color: var(--ink-3); font-size: 13px; padding: var(--s3); text-align: center; animation: fade var(--t-base) var(--ease-out); }
+  td .empty, .body > .fold > .empty { padding: var(--s4) var(--s3); }
+
+  /* Loading is shown as the shape of what is coming, not as a word. */
+  .skeleton { display: grid; gap: 9px; padding: var(--s3); }
+  .skeleton i, .skeleton-row i {
+    display: block; height: 12px; border-radius: 6px; position: relative; overflow: hidden;
+    background: var(--rule-soft);
+  }
+  .skeleton i::after, .skeleton-row i::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--paper) 70%, transparent), transparent);
+    animation: shimmer 1.4s var(--ease-io) infinite;
+  }
+  .skeleton i:nth-child(1) { width: 62%; }
+  .skeleton i:nth-child(2) { width: 88%; }
+  .skeleton i:nth-child(3) { width: 45%; }
 
   /* ── 聊天紀錄: an inbox on the left, the transcript it opens on the right ── */
 
@@ -463,37 +630,103 @@
     display: grid; grid-template-columns: 1fr auto; gap: 2px var(--s2);
     padding: 9px var(--s3); cursor: pointer;
     border-left: 3px solid transparent; border-bottom: 1px solid var(--rule-soft);
-    transition: background 180ms ease, border-color 180ms ease;
+    transition: background var(--t-base) var(--ease-out), border-color var(--t-base) var(--ease-out), transform var(--t-fast) var(--ease-out);
   }
   .inbox-row:hover { background: var(--paper-2); }
+  .inbox-row:active { transform: scale(.99); }
   .inbox-row[aria-current="true"] { background: var(--accent-wash); border-left-color: var(--accent); }
   /* The person the right-hand pane is talking to. Pinned to the top of the list and
      marked, because a caseworker scanning the inbox has to find the live one first. */
   .inbox-row.pinned { background: var(--good-wash); border-left-color: var(--good); }
   .inbox-row.pinned[aria-current="true"] { box-shadow: inset 0 0 0 1px var(--good); }
-  .inbox-row .who { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .inbox-row .who { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .inbox-row .when { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); white-space: nowrap; }
   .inbox-row .prev {
-    grid-column: 1 / -1; font-size: 12px; color: var(--ink-3);
+    grid-column: 1 / -1; font-size: 12.5px; color: var(--ink-3);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .inbox-row .meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; }
   .unread { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
 
+  /* The caseworker's view of the exchange: the customer on the left, the desk's replies
+     on the right, and under each reply the panel that says how it was made. */
   .tx { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s3); max-height: calc(100vh - 240px); overflow-y: auto; }
   .tx .row { display: flex; flex-direction: column; gap: 2px; max-width: 78%; }
-  .tx .row.agent { align-self: flex-start; }
-  .tx .row.customer { align-self: flex-end; align-items: flex-end; }
+  .tx .row.customer { align-self: flex-start; }
+  .tx .row.agent { align-self: flex-end; align-items: flex-end; max-width: 88%; }
   .tx .row.system { align-self: center; align-items: center; max-width: 92%; }
-  .tx .bub { padding: 8px 12px; border-radius: 12px; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .tx .row.agent .bub { background: var(--paper-2); border: 1px solid var(--rule-soft); border-top-left-radius: 4px; }
-  .tx .row.customer .bub { background: var(--accent-wash); border: 1px solid var(--accent); border-top-right-radius: 4px; }
+  .tx .bub { padding: 8px 12px; border-radius: 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tx .row.customer .bub { background: var(--paper-2); border: 1px solid var(--rule-soft); border-top-left-radius: 4px; }
+  .tx .row.agent .bub { background: var(--good-wash); border: 1px solid color-mix(in oklab, var(--good) 35%, transparent); border-top-right-radius: 4px; }
   .tx .row.system .bub { background: transparent; color: var(--ink-3); font-size: 11.5px; padding: 2px 8px; }
   .tx .at { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+  .tx .by { font-size: 10.5px; color: var(--ink-3); }
+
+  /* 看看 AI 怎麼幫你回覆: the reply's own account of itself, folded under the bubble.
+     Three plain-language steps, the total time, what it stood on, and the codes for
+     whoever needs them. */
+  .trace { width: 100%; text-align: left; }
+  .trace > summary {
+    list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+    padding: 5px 8px; border-radius: 6px; font-size: 11.5px; font-weight: 500; color: var(--ink-3);
+    transition: background var(--t-base) var(--ease-out), color var(--t-base) var(--ease-out);
+  }
+  .trace > summary::-webkit-details-marker { display: none; }
+  .trace > summary:hover { background: var(--paper-2); color: var(--ink); }
+  .trace > summary svg { width: 13px; height: 13px; flex: none; }
+  .trace > summary svg:first-child { color: var(--accent); }
+  .trace > summary .chev { transition: transform var(--t-base) var(--ease-io); }
+  .trace[open] > summary .chev { transform: rotate(180deg); }
+  .trace-body {
+    margin-top: 6px; padding: var(--s3); border: 1px solid var(--rule); border-radius: var(--radius);
+    background: var(--paper); animation: rise var(--t-base) var(--ease-out);
+  }
+  .trace-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s3); }
+  .ts { display: grid; grid-template-columns: auto 1fr; gap: 3px 8px; align-items: center; position: relative; }
+  .ts .tdot {
+    width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; grid-row: 1 / 3;
+    align-self: start; border: 1.5px solid var(--rule); color: var(--ink-3); font-size: 10px; font-family: var(--mono);
+  }
+  .ts .tdot svg { width: 11px; height: 11px; }
+  .ts.done .tdot { background: var(--good); border-color: var(--good); color: #fff; }
+  .ts b { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+  .ts:not(.done) b { color: var(--ink-3); font-weight: 500; }
+  .ts small { font-size: 11.5px; color: var(--ink-2); grid-column: 2; }
+  /* The connector between step dots. Drawn from each dot to the next column's edge. */
+  .ts:not(:last-child)::after { content: ""; position: absolute; left: 26px; top: 10px; right: -6px; height: 1px; background: var(--rule); }
+  .trace-time { margin-top: 8px; font-size: 11.5px; color: var(--ink-3); }
+  .trace-refs { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--rule-soft); display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: 11.5px; }
+  .trace-refs .label { color: var(--ink-3); margin-right: 2px; }
+  .trace-refs .none { color: var(--ink-3); }
+  .trace-tech { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--rule-soft); }
+  .trace-tech > summary { cursor: pointer; font-size: 11.5px; color: var(--ink-3); list-style: none; display: inline-flex; gap: 4px; align-items: center; }
+  .trace-tech > summary::-webkit-details-marker { display: none; }
+  .trace-tech > summary::before { content: "›"; display: inline-block; transition: transform var(--t-base) var(--ease-io); }
+  .trace-tech[open] > summary::before { transform: rotate(90deg); }
+  .trace-tech .kv { margin-top: 6px; font-size: 12px; grid-template-columns: 76px minmax(0, 1fr); gap: 4px var(--s3); }
+  @media (max-width: 640px) { .trace-steps { grid-template-columns: 1fr; } .ts:not(:last-child)::after { display: none; } }
+
+  /* 繳費紀錄: one line per policy, its instalments folded under it. */
+  .paygroups { display: grid; }
+  .paygroup { border-bottom: 1px solid var(--rule-soft); }
+  .paygroup:last-child { border-bottom: 0; }
+  .paygroup > summary {
+    list-style: none; cursor: pointer; display: grid; grid-template-columns: auto auto 1fr auto;
+    gap: var(--s2); align-items: center; padding: 9px var(--s3); font-size: 12.5px;
+    transition: background var(--t-fast) var(--ease-out);
+  }
+  .paygroup > summary::-webkit-details-marker { display: none; }
+  .paygroup > summary:hover { background: var(--paper-2); }
+  .paygroup > summary .chev { width: 14px; height: 14px; color: var(--ink-3); transition: transform var(--t-base) var(--ease-io); }
+  .paygroup[open] > summary .chev { transform: rotate(180deg); }
+  .paygroup[open] > summary { background: var(--paper-2); }
+  .paygroup .scroller { max-height: 240px; animation: rise var(--t-base) var(--ease-out); border-top: 1px solid var(--rule-soft); }
+  .paygroup tr.owed td { background: color-mix(in oklab, var(--flag) 10%, transparent); }
+  @media (max-width: 640px) { .paygroup > summary { grid-template-columns: auto auto auto; } .paygroup > summary .count { grid-column: 1 / -1; } }
 
   /* ── 客戶資料 ── */
   .facts { display: grid; gap: 6px; }
-  .fact { display: grid; grid-template-columns: auto 1fr auto; gap: var(--s2); align-items: baseline; font-size: 12.5px; }
+  .fact { display: grid; grid-template-columns: auto 1fr auto; gap: var(--s2); align-items: baseline; font-size: 13px; }
   .fact .cat {
     font-size: 10px; letter-spacing: .1em; font-weight: 700; text-transform: uppercase;
     padding: 1px 6px; border-radius: 4px; background: var(--paper-2); color: var(--ink-3);
@@ -502,16 +735,17 @@
   .fact .k { font-weight: 600; }
   .fact .v { color: var(--ink-2); overflow-wrap: anywhere; }
   .fact .at { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); white-space: nowrap; }
-  .summary { font-size: 12.5px; line-height: 1.7; color: var(--ink-2); white-space: pre-wrap; }
+  .summary { font-size: 13px; line-height: 1.7; color: var(--ink-2); white-space: pre-wrap; }
 
   /* ── LLM 追蹤 ── */
-  .tiers { display: flex; gap: 6px; }
+  .tiers { display: flex; gap: 4px; padding: 3px; background: var(--paper-2); border-radius: 8px; border: 1px solid var(--rule-soft); }
+  .tiers button { border-color: transparent; background: transparent; padding: 5px 12px; border-radius: 6px; }
   .tiers button[aria-pressed="true"] {
-    background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600;
+    background: var(--paper); color: var(--accent); font-weight: 600; box-shadow: var(--shadow-1);
   }
   tbody tr.pick { cursor: pointer; }
-  tbody tr.pick:hover { background: var(--paper-2); }
-  tbody tr.pick[aria-current="true"] { background: var(--accent-wash); }
+  tbody tr.pick:hover td { background: var(--paper-2); }
+  tbody tr.pick[aria-current="true"] td { background: var(--accent-wash); }
   td.tight { white-space: nowrap; }
 
   /* Taller than the shared .scroller, and wider than the pane: the trace list is the one
@@ -524,7 +758,7 @@
      and the tooltip carries its name, so the chain is readable without the legend. */
   .ticks { display: inline-flex; gap: 3px; align-items: center; }
   .tick { width: 9px; height: 9px; border-radius: 2px; background: var(--ink-3); }
-  .legend { display: flex; flex-wrap: wrap; gap: var(--s3); font-size: 11px; color: var(--ink-3); }
+  .legend { display: flex; flex-wrap: wrap; gap: var(--s3); font-size: 11.5px; color: var(--ink-3); }
   .legend span { display: inline-flex; align-items: center; gap: 5px; }
   .legend i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
 
@@ -536,19 +770,10 @@
   }
 
   /* ── 即時流程圖 ── */
-  /* A vertical stack of stages, one section each, after enoract's diagnostics rail: a
-     faint label and a count on one line, the rows under it, and a rule between sections
-     instead of a box drawn around every one.
-
-     It replaces a six-column board. With the chat open the pane is 770px, so a column
-     got 108px and every field on a card — name, turn id, scenario, tokens — was cut by
-     an ellipsis, with no two figures sharing a left edge. Down the page each row has
-     the pane's full width, so the numbers right-align into a column that reads. */
+  /* A vertical stack of stages, one section each: a faint label and a count on one
+     line, the rows under it, and a rule between sections instead of a box around every
+     one. The spine runs from each dot to the next, so the six stages read as one chain. */
   .stages { display: flex; flex-direction: column; }
-  /* The spine. These sections are a pipeline and their order carries meaning, which a
-     plain stack of cards does not say. The rule runs from each dot to the next one, so
-     the six stages read as one chain — the only thing added beyond the panel this
-     layout is taken from, and it is here because that panel's sections are unordered. */
   .stage { position: relative; border-bottom: 1px solid var(--rule-soft); }
   .stage::before {
     content: ""; position: absolute; left: calc(var(--s3) + 4px); top: 22px; bottom: 0;
@@ -556,25 +781,27 @@
   }
   .stage:last-child { border-bottom: 0; }
   .stage:last-child::before { display: none; }
-  .stage-head { display: flex; align-items: center; gap: var(--s2); padding: 9px var(--s3); }
+  .stage-head { display: flex; align-items: center; gap: var(--s2); padding: 9px var(--s3); transition: background var(--t-base) var(--ease-out); }
   .stage-head .dot { width: 9px; height: 9px; border-radius: 999px; flex: none; position: relative; z-index: 1; }
   .stage-head .count { margin-left: auto; }
   .stage.hot .stage-head { background: var(--accent-wash); }
+  .stage.hot .stage-head .dot { animation: ring 1.2s var(--ease-out) infinite; }
   /* Indented to clear the spine, so a row starts where the dot's label starts. */
   .stage-body { padding: 2px var(--s3) var(--s3) calc(var(--s3) + 17px); display: grid; gap: var(--s3); }
 
   .turnrow { display: grid; gap: 4px; }
   .turnrow .top { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s2); }
-  .turnrow .who { font-size: 13px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .turnrow .who { font-size: 13.5px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .turnrow .num { flex: none; font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
   .turnrow .sub { display: flex; gap: var(--s2); min-width: 0; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
   .turnrow .sub span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .turnrow .sub .id { flex: 1 1 auto; }
   /* Fills as the turn's silence approaches the threshold past which it is counted as
-     answered, so a nearly-full bar is a turn about to leave the board. A settled row's
-     bar is full by definition, and goes grey rather than reading as a finished race. */
+     answered, so a nearly-full bar is a turn about to leave the board. The poll rebuilds
+     the row every two seconds, so this bar neither transitions nor enters: it is drawn
+     at its value and left alone. */
   .wait-bar { height: 3px; border-radius: 999px; background: var(--rule-soft); overflow: hidden; }
-  .wait-bar i { display: block; height: 100%; border-radius: 999px; }
+  .wait-bar i { display: block; height: 100%; width: 100%; border-radius: 999px; transform: scaleX(var(--p, 0)); transform-origin: left; }
   .turnrow.settled .who { font-weight: 500; color: var(--ink-2); }
   .turnrow.settled .wait-bar i { background: var(--rule); }
 
@@ -584,25 +811,37 @@
      row carries, and the summary sits under both. */
   .scen { display: grid; gap: 2px; }
   .scen .nm { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
-  .scen b { font-size: 13px; font-weight: 600; }
+  .scen b { font-size: 13.5px; font-weight: 600; }
   .scen code { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
-  .scen .what { font-size: 11.5px; color: var(--ink-2); line-height: 1.5; }
+  .scen .what { font-size: 12px; color: var(--ink-2); line-height: 1.5; }
   .bar-cell { display: grid; grid-template-columns: 1fr; gap: 3px; min-width: 90px; }
+  /* Every bar on the page is a scaleX of its share, and grows in from zero on arrival. */
   .track { height: 7px; border-radius: 999px; background: var(--rule-soft); overflow: hidden; }
-  .track i { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+  .track i, .meter i {
+    display: block; height: 100%; width: 100%; border-radius: 999px; background: var(--accent);
+    transform: scaleX(var(--p, 0)); transform-origin: left;
+    animation: grow-x var(--t-slow) var(--ease-out) backwards; animation-delay: min(calc(var(--i, 0) * 40ms), 400ms);
+    transition: transform var(--t-slow) var(--ease-out);
+  }
   .mix { display: grid; gap: 9px; }
-  .mix .m { display: grid; grid-template-columns: minmax(84px, auto) minmax(0, 1fr) auto; gap: var(--s2); align-items: center; font-size: 12px; }
+  .mix .m { display: grid; grid-template-columns: minmax(84px, auto) minmax(0, 1fr) auto; gap: var(--s2); align-items: center; font-size: 12.5px; }
   .mix .m .n { font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .meter { height: 10px; border-radius: 999px; background: var(--rule-soft); overflow: hidden; }
-  .meter i { display: block; height: 100%; background: var(--accent); }
 
   /* Hand-rolled, like everything else on this page: a fixed viewBox scaled to the card,
-     so the fortnight reads the same at any pane width and no library ships for one chart. */
+     so the fortnight reads the same at any pane width and no library ships for one chart.
+     Bars grow up from the baseline in order, then the call line draws over them. */
   .chart { display: block; width: 100%; height: 230px; }
   .chart .rule-line { stroke: var(--rule-soft); stroke-width: 1; }
-  .chart .bar { fill: var(--accent); opacity: .8; }
-  .chart .line { fill: none; stroke: var(--flag); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
-  .chart .dot { fill: var(--flag); }
+  .chart .bar {
+    fill: var(--accent); opacity: .8; transform-box: fill-box; transform-origin: bottom;
+    animation: grow-y var(--t-slow) var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 30ms);
+  }
+  .chart .line {
+    fill: none; stroke: var(--flag); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round;
+    stroke-dasharray: 1; stroke-dashoffset: 0; animation: draw 900ms var(--ease-io) 300ms backwards;
+  }
+  .chart .dot { fill: var(--flag); animation: fade var(--t-base) var(--ease-out) 900ms backwards; }
   .chart text { fill: var(--ink-3); font-size: 9px; font-family: var(--mono); }
 
   /* ═══════════════ customer room ═══════════════ */
@@ -611,42 +850,47 @@
      off the screen. A flex item's default min-height is auto, which refuses to shrink
      below the content — so `overflow-y: auto` on the log never gets a bounded height to
      scroll inside. */
-  .chat { display: flex; flex-direction: column; background: var(--room); min-width: 0; min-height: 0; }
+  .chat { display: flex; flex-direction: column; background: var(--room); min-width: 0; min-height: 0; transition: background var(--t-slow) var(--ease-out); }
   .chat-top {
     background: var(--room-bar); color: var(--room-ink); padding: 0 var(--s3);
-    height: 46px; display: flex; justify-content: space-between; align-items: center; gap: var(--s2);
+    height: 48px; display: flex; justify-content: space-between; align-items: center; gap: var(--s2);
   }
-  .chat-top .who { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-top .who { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chat-top .who small { display: block; font-weight: 400; font-size: 11px; opacity: .65; font-family: var(--mono); }
-  .chat-top button { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.22); color: var(--room-ink); font-size: 11.5px; padding: 5px 10px; }
+  .chat-top button { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.22); color: var(--room-ink); font-size: 12px; padding: 5px 10px; }
   .chat-top button:hover { background: rgba(255,255,255,.2); border-color: rgba(255,255,255,.4); }
   .chat-log { flex: 1; min-height: 0; overflow-y: auto; padding: var(--s4) var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
+  /* A bubble grows out of the corner it hangs from, so the eye lands where the text is. */
   .msg {
-    max-width: 80%; padding: 9px 12px; border-radius: 16px; font-size: 13.5px;
+    max-width: 82%; padding: 9px 13px; border-radius: 16px; font-size: 14px;
     line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; box-shadow: var(--shadow-1);
+    animation: bubble-in var(--t-base) var(--ease-out);
   }
-  .msg.them { background: var(--bubble-them); color: var(--ink); border-top-left-radius: 4px; align-self: flex-start; }
-  .msg.me { background: var(--bubble-me); color: #16300c; border-top-right-radius: 4px; align-self: flex-end; }
+  .msg.them { background: var(--bubble-them); color: var(--ink); border-top-left-radius: 4px; align-self: flex-start; transform-origin: top left; }
+  .msg.me { background: var(--bubble-me); color: var(--bubble-me-ink); border-top-right-radius: 4px; align-self: flex-end; transform-origin: top right; }
   .msg.sys {
     align-self: center; background: var(--bubble-sys); color: #fff; font-size: 11.5px;
     border-radius: 10px; padding: 4px 12px; box-shadow: none; max-width: 92%; text-align: center;
+    animation: fade var(--t-base) var(--ease-out);
   }
-  .msg.pending { display: flex; gap: 4px; align-items: center; padding: 12px 14px; }
-  .msg.pending i { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); animation: blip 1.2s infinite ease-in-out; }
-  .msg.pending i:nth-child(2) { animation-delay: .18s; }
-  .msg.pending i:nth-child(3) { animation-delay: .36s; }
-  @keyframes blip { 0%, 60%, 100% { opacity: .25; } 30% { opacity: 1; } }
-  .chat-in { display: flex; gap: 6px; padding: var(--s2); background: var(--paper); border-top: 1px solid var(--rule); }
-  .chat-in input { flex: 1; min-width: 0; border-radius: 18px; padding: 9px 14px; font-size: 13.5px; }
+  .msg.pending { display: flex; gap: 5px; align-items: center; padding: 13px 15px; }
+  .msg.pending i { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); animation: blip 1.2s infinite var(--ease-io); }
+  .msg.pending i:nth-child(2) { animation-delay: .16s; }
+  .msg.pending i:nth-child(3) { animation-delay: .32s; }
+  .chat-in { display: flex; gap: 6px; padding: var(--s2); background: var(--paper); border-top: 1px solid var(--rule); align-items: center; }
+  .chat-in input { flex: 1; min-width: 0; border-radius: 20px; padding: 10px 15px; font-size: 14px; }
+  .chat-in input:disabled { background: var(--paper-2); color: var(--ink-3); }
+  .chat-in button.primary { border-radius: 20px; padding: 9px 14px; }
+  .chat-in button.primary svg { width: 15px; height: 15px; }
 
   /* ── the enrolment card, and the chips under a reply ── */
   .setup {
     align-self: stretch; background: var(--paper); color: var(--ink);
     border-radius: 14px; padding: var(--s3) var(--s4) var(--s4); box-shadow: var(--shadow-1);
-    display: grid; gap: var(--s3);
+    display: grid; gap: var(--s3); max-width: none; white-space: normal;
   }
-  .setup h4 { margin: 0; font-size: 13.5px; font-weight: 600; }
-  .setup p { margin: 0; font-size: 12px; color: var(--ink-2); line-height: 1.7; }
+  .setup h4 { margin: 0; font-size: 14px; font-weight: 600; }
+  .setup p { margin: 0; font-size: 12.5px; color: var(--ink-2); line-height: 1.7; }
   .field { display: grid; gap: 5px; }
   .field > .label { font-size: 10.5px; }
 
@@ -660,8 +904,8 @@
     text-align: left; display: block; padding: 8px 11px;
     background: var(--paper-2); border-color: var(--rule);
   }
-  .presets button b { display: block; font-size: 12.5px; font-weight: 600; }
-  .presets button small { display: block; font-size: 11px; color: var(--ink-3); line-height: 1.5; margin-top: 1px; }
+  .presets button b { display: block; font-size: 13px; font-weight: 600; }
+  .presets button small { display: block; font-size: 11.5px; color: var(--ink-3); line-height: 1.5; margin-top: 1px; }
   .presets button[aria-pressed="true"] {
     background: var(--accent-wash); border-color: var(--accent);
   }
@@ -679,83 +923,106 @@
   .combo-list {
     position: absolute; inset: calc(100% + 4px) 0 auto 0; z-index: 20;
     max-height: 216px; overflow-y: auto;
-    background: var(--paper); border: 1px solid var(--rule); border-radius: 6px;
-    box-shadow: var(--shadow-2);
+    background: var(--paper); border: 1px solid var(--rule); border-radius: 8px;
+    box-shadow: var(--shadow-2); animation: rise var(--t-fast) var(--ease-out);
   }
   .combo-group {
     padding: 6px var(--s3) 3px; font-size: 10px; letter-spacing: .1em;
     color: var(--ink-3); font-weight: 700; background: var(--paper-2);
     position: sticky; top: 0;
   }
-  .combo-item { padding: 7px var(--s3); font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; gap: var(--s2); }
+  .combo-item { padding: 7px var(--s3); font-size: 13.5px; cursor: pointer; display: flex; justify-content: space-between; gap: var(--s2); transition: background var(--t-fast) var(--ease-out); }
   .combo-item:hover, .combo-item[aria-selected="true"] { background: var(--accent-wash); }
   .combo-item .cls { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
   .combo-item.none { color: var(--ink-3); cursor: default; }
 
   /* A finished form is a record, not a form. It folds to one line so the conversation
      below it stays the thing on screen. */
-  .setup.done { padding: 9px var(--s3); gap: 0; }
+  .setup.done { padding: 9px var(--s3); gap: 0; animation: rise var(--t-base) var(--ease-out); }
   .setup.done > :not(.folded) { display: none; }
-  .folded { display: none; align-items: center; gap: var(--s2); font-size: 12.5px; }
+  .folded { display: none; align-items: center; gap: var(--s2); font-size: 13px; }
   .setup.done .folded { display: flex; }
-  .folded svg { width: 13px; height: 13px; color: var(--good); flex: none; }
-  .folded b { font-weight: 600; }
+  .folded svg { width: 14px; height: 14px; color: var(--good); flex: none; }
+  .folded b { font-weight: 600; white-space: nowrap; }
   .folded span { color: var(--ink-3); }
 
   /* Citations sit under the reply they came from, as links rather than as text — the
      clause id is where the reader goes to check the claim. */
-  .cites {
-    align-self: flex-start; max-width: 92%; display: flex; flex-wrap: wrap;
-    gap: 5px; align-items: center;
+  .cites { align-self: flex-start; max-width: 92%; display: grid; gap: 5px; }
+  /* Folded by default: the customer asked a question, not for a reading list. One tap
+     opens the clauses the answer stood on. */
+  .cites-toggle {
+    justify-self: start; background: var(--bubble-sys); color: #fff; border: 0;
+    border-radius: 999px; padding: 4px 10px 4px 8px; font-size: 11.5px; font-weight: 500; box-shadow: none;
   }
-  .cites .label {
-    font-size: 10px; letter-spacing: .12em; color: var(--room-ink); opacity: .7;
-    font-weight: 700; margin-right: 2px;
-  }
+  .cites-toggle:hover { background: var(--room-bar); border-color: transparent; }
+  .cites-toggle svg { width: 12px; height: 12px; }
+  .cites-toggle .chev { transition: transform var(--t-base) var(--ease-io); }
+  .cites-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
+  .cites-list { display: flex; flex-wrap: wrap; gap: 5px; }
   a.cite {
     display: inline-flex; align-items: baseline; gap: 5px; text-decoration: none;
     background: var(--flag-wash); color: var(--flag); border: 1px solid transparent;
-    border-radius: 6px; padding: 4px 9px; font-size: 11.5px; max-width: 100%;
-    transition: border-color 180ms ease, background 180ms ease;
+    border-radius: 8px; padding: 4px 9px; font-size: 12px; max-width: 100%;
+    transition: border-color var(--t-base) var(--ease-out), background var(--t-base) var(--ease-out), transform var(--t-fast) var(--ease-out);
+    animation: rise var(--t-base) var(--ease-out) backwards; animation-delay: min(calc(var(--i, 0) * 50ms), 400ms);
   }
-  a.cite:hover { border-color: var(--flag); background: var(--paper); }
+  a.cite:hover { border-color: var(--flag); background: var(--paper); transform: translateY(-1px); }
   a.cite code { font-family: var(--mono); font-size: 11px; font-weight: 600; flex: none; }
   a.cite span { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .chips { display: flex; flex-wrap: wrap; gap: 6px; align-self: flex-start; max-width: 92%; }
   .chip {
-    background: var(--paper); color: var(--accent); border: 1px solid var(--accent);
-    border-radius: 999px; padding: 6px 13px; font-size: 12.5px; cursor: pointer;
+    background: var(--paper); color: var(--accent); border: 1px solid var(--accent-line);
+    border-radius: 999px; padding: 7px 14px; font-size: 13px; cursor: pointer;
     box-shadow: var(--shadow-1);
+    animation: bubble-in var(--t-base) var(--ease-out) backwards; animation-delay: min(calc(var(--i, 0) * 60ms), 400ms);
   }
-  .chip:hover { background: var(--accent-wash); }
+  .chip:hover { background: var(--accent-wash); border-color: var(--accent); }
 
   /* ═══════════════ gate + modal ═══════════════ */
 
-  .gate { position: fixed; inset: 0; background: rgba(9, 16, 13, .82); display: grid; place-items: center; z-index: 40; padding: var(--s4); }
-  .gate .card { width: min(430px, 100%); box-shadow: var(--shadow-2); }
-  .gate .body { padding: var(--s5); }
-  .gate h3 { margin: 0 0 var(--s2); font-size: 18px; font-weight: 600; }
-  .gate p { margin: 0 0 var(--s4); font-size: 12.5px; color: var(--ink-2); line-height: 1.75; }
+  .gate {
+    position: fixed; inset: 0; background: rgba(9, 14, 22, .7); backdrop-filter: blur(6px);
+    display: grid; place-items: center; z-index: 40; padding: var(--s4);
+    animation: fade var(--t-slow) var(--ease-out);
+    transition: opacity var(--t-slow) var(--ease-in);
+  }
+  .gate.out { opacity: 0; pointer-events: none; }
+  .gate .card { width: min(440px, 100%); box-shadow: var(--shadow-3); animation: bubble-in var(--t-slow) var(--ease-out); }
+  .gate .body { padding: var(--s5); display: block; }
+  .gate h3 { margin: 0 0 var(--s2); font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
+  .gate p { margin: 0 0 var(--s4); font-size: 13px; color: var(--ink-2); line-height: 1.75; }
   .gate label { display: block; margin-bottom: 5px; }
   .gate input { width: 100%; font-size: 14px; padding: 9px 12px; }
   .gate button { width: 100%; margin-top: var(--s3); padding: 10px; justify-content: center; }
+  /* The three things a visitor does, in order, as a list they can read in two seconds. */
+  .gate ol { margin: 0 0 var(--s4); padding: 0; list-style: none; display: grid; gap: 7px; }
+  .gate ol li { display: flex; gap: 10px; align-items: baseline; font-size: 13px; color: var(--ink-2); }
+  .gate ol li b { color: var(--ink); font-weight: 600; }
+  .gate ol li i {
+    flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+    font-style: normal; font-size: 11px; font-weight: 700; font-family: var(--mono);
+    background: var(--accent-wash); color: var(--accent); transform: translateY(3px);
+  }
   /* The alias row pairs a readonly input with a reroll button beside it, not stacked
      full-width like every other gate control — so it opts out of `.gate input`/`.gate button`. */
   .gate-row { display: flex; gap: 6px; }
-  .gate-row input { flex: 1; min-width: 0; width: auto; font-size: 16px; letter-spacing: .08em; }
+  .gate-row input { flex: 1; min-width: 0; width: auto; font-size: 17px; letter-spacing: .08em; }
   .gate-row button { width: auto; margin-top: 0; padding: 9px 12px; }
+  .gate-row button.busy svg { animation: spin 600ms linear infinite; }
 
   dialog {
     border: 1px solid var(--rule); border-radius: var(--radius); padding: 0;
-    width: min(540px, 92vw); box-shadow: var(--shadow-2);
+    width: min(540px, 92vw); box-shadow: var(--shadow-3);
     background: var(--paper); color: var(--ink);
   }
-  dialog::backdrop { background: rgba(9, 16, 13, .55); }
-  .modal-head { padding: var(--s3) var(--s4); border-bottom: 1px solid var(--rule); font-weight: 600; font-size: 14px; }
+  dialog[open] { animation: bubble-in var(--t-base) var(--ease-out); }
+  dialog::backdrop { background: rgba(9, 14, 22, .55); animation: fade var(--t-base) var(--ease-out); }
+  .modal-head { padding: var(--s3) var(--s4); border-bottom: 1px solid var(--rule); font-weight: 600; font-size: 14.5px; }
   .modal-body { padding: 0 var(--s4); max-height: 60vh; overflow-y: auto; }
   .modal-foot { padding: var(--s3) var(--s4); border-top: 1px solid var(--rule); display: flex; justify-content: flex-end; gap: var(--s2); }
-  .doc-row { display: flex; align-items: center; gap: var(--s2); padding: 10px 0; border-bottom: 1px solid var(--rule-soft); font-size: 13px; }
+  .doc-row { display: flex; align-items: center; gap: var(--s2); padding: 10px 0; border-bottom: 1px solid var(--rule-soft); font-size: 13.5px; }
   .doc-row:last-child { border-bottom: 0; }
   .doc-row .name { flex: 1; min-width: 0; }
 
@@ -772,20 +1039,23 @@
     .desk-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
     .rail { border-right: 0; border-bottom: 1px solid var(--rule); grid-template-rows: auto auto auto; }
     /* The tabs become a strip too, for the same reason the queue does: vertical room is
-       the scarce thing once the desk sits above the chat. */
-    .tabs { display: flex; gap: var(--s2); overflow-x: auto; padding: var(--s2) var(--s3); }
-    .tab { width: auto; flex: 0 0 auto; border-left: 0; border-bottom: 3px solid transparent; border-radius: 6px; background: var(--paper-2); white-space: nowrap; }
-    .tab[aria-current="true"] { border-left-color: transparent; border-bottom-color: var(--accent); }
+       the scarce thing once the desk sits above the chat. The group labels go; the strip
+       is one row and the order still says which four are the monitoring ones. */
+    .tabs { display: flex; gap: var(--s2); overflow-x: auto; padding: var(--s2) var(--s3); align-items: center; }
+    .tab-group { display: none; }
+    .tab { width: auto; flex: 0 0 auto; border-radius: 8px; background: var(--paper-2); white-space: nowrap; }
+    .tab-ink { top: auto; bottom: 4px; height: 3px !important; width: 0; border-radius: 3px 3px 0 0; }
     .rail-list { display: flex; gap: var(--s2); overflow-x: auto; overflow-y: hidden; padding: var(--s2) var(--s3) var(--s3); }
     .split { grid-template-columns: minmax(0, 1fr); }
     .inbox, .tx { max-height: 46vh; }
     .qrow {
       flex: 0 0 auto; width: 196px; border-left: 0; border-bottom: 3px solid transparent;
-      border-radius: 6px; background: var(--paper-2); align-content: start;
+      border-radius: 8px; background: var(--paper-2); align-content: start;
     }
     .qrow[aria-current="true"] { border-bottom-color: var(--accent); }
     .case-head { position: static; }
     .kpis { grid-template-columns: repeat(2, 1fr); }
+    .toasts { top: 52px; }
   }
   @media (max-width: 640px) {
     :root { --s4: 12px; --s5: 16px; }
@@ -793,6 +1063,7 @@
     .grid { padding: var(--s3) var(--s3) 0; }
     .kv { grid-template-columns: 82px minmax(0, 1fr); }
     .decide { flex-wrap: wrap; }
+    .topbar .crumb { display: none; }
   }
 </style>
 </head>
@@ -817,6 +1088,14 @@
     <g id="i-workflow"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="M6.5 10v3.5a2 2 0 0 0 2 2H14"/></g>
     <g id="i-coins"><circle cx="9" cy="9" r="6"/><path d="M18.1 11.4A6 6 0 1 1 11.4 18.1"/><path d="M7.5 7.5h2v3.5M15.8 14.6l.9.9-2.4 2.4"/></g>
     <g id="i-gauge"><path d="m12 14 4-4"/><path d="M3.3 19a10 10 0 1 1 17.4 0"/></g>
+    <g id="i-chevron"><path d="m6 9 6 6 6-6"/></g>
+    <g id="i-sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></g>
+    <g id="i-moon"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></g>
+    <g id="i-send"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></g>
+    <g id="i-refresh"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></g>
+    <g id="i-info"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></g>
+    <g id="i-sparkles"><path d="m12 3 1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3Z"/></g>
+    <g id="i-dice"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 8h.01M16 8h.01M12 12h.01M8 16h.01M16 16h.01"/></g>
   </defs>
 </svg>
 
@@ -826,7 +1105,9 @@
     <span class="crumb">核保理賠作業台</span>
     <span class="spacer"></span>
     <span class="link-status"><i class="dot" id="linkDot"></i><span id="deskStatus">尚未連線</span></span>
+    <button class="ghost icon" id="themeBtn" title="切換深淺色" aria-label="切換深淺色"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-sun"/></svg></button>
   </div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
 
   <div class="desk-body">
     <nav class="rail" aria-label="後台導覽">
@@ -835,7 +1116,7 @@
         <span class="label">案件佇列</span>
         <span class="count" id="queueCount"></span>
       </div>
-      <div class="rail-list" id="queueList"><div class="empty">載入中</div></div>
+      <div class="rail-list" id="queueList"><div class="skeleton" aria-hidden="true"><i></i><i></i><i></i></div></div>
     </nav>
 
     <div class="case" data-pane="overview">
@@ -846,12 +1127,13 @@
           <span class="spacer" style="flex:1"></span>
           <span id="caseBadge"></span>
         </div>
-        <div class="steps" id="steps"></div>
+        <div class="board" id="board" aria-label="案件狀態"></div>
         <div class="decide" id="decideBox" hidden>
           <label for="decideReason">人工決定</label>
           <input id="decideReason" placeholder="退件理由（退件時必填，保戶會看到原文）">
           <button class="primary" id="approveBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>核准</button>
           <button class="danger" id="rejectBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg>退件</button>
+          <span class="hint" id="decideHint" hidden></span>
         </div>
       </header>
 
@@ -873,7 +1155,7 @@
               <table>
                 <thead><tr>
                   <th style="width:126px">保單號碼</th><th>商品</th>
-                  <th style="width:96px" class="num">保險金額</th><th style="width:96px" class="num">年繳保費</th>
+                  <th style="width:112px" class="num">保險金額</th><th style="width:96px" class="num">年繳保費</th>
                   <th style="width:98px">生效日</th><th style="width:86px">狀態</th>
                 </tr></thead>
                 <tbody id="policyTable"><tr><td colspan="6" class="empty">尚無保單</td></tr></tbody>
@@ -884,7 +1166,7 @@
 
         <div class="card">
           <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-user"/></svg>要保人 · 被保險人</h3></header>
-          <div class="body"><dl class="kv" id="memberKv"><dd class="empty" style="grid-column:1/-1">尚無資料</dd></dl></div>
+          <div class="body"><dl class="kv" id="memberKv"><div class="empty" style="grid-column:1/-1">尚無資料</div></dl></div>
         </div>
 
         <div class="card">
@@ -904,7 +1186,7 @@
 
         <div class="card">
           <header><h3>案件資料</h3><span class="spacer"></span><span class="count" id="caseStage"></span></header>
-          <div class="body"><dl class="kv" id="caseKv"><dd class="empty" style="grid-column:1/-1">尚無案件</dd></dl></div>
+          <div class="body"><dl class="kv" id="caseKv"><div class="empty" style="grid-column:1/-1">尚無案件</div></dl></div>
         </div>
 
         <div class="card">
@@ -934,12 +1216,12 @@
         <h2>聊天紀錄</h2>
         <p id="inboxNote"></p>
         <span class="spacer"></span>
-        <button class="ghost" data-reload="inbox">重新整理</button>
+        <button class="ghost" data-reload="inbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>重新整理</button>
       </div>
       <div class="split">
         <div class="card">
           <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-inbox"/></svg>對話</h3><span class="spacer"></span><span class="count" id="inboxCount"></span></header>
-          <div class="body flush"><div class="inbox" id="inboxList"><div class="empty">載入中</div></div></div>
+          <div class="body flush"><div class="inbox" id="inboxList"><div class="skeleton" aria-hidden="true"><i></i><i></i><i></i></div></div></div>
         </div>
         <div class="card">
           <header><h3 id="txWho">對話內容</h3><span class="spacer"></span><span class="count" id="txCount"></span></header>
@@ -954,12 +1236,12 @@
         <h2>客戶資料</h2>
         <p id="profileNote"></p>
         <span class="spacer"></span>
-        <button class="ghost" data-reload="profile">重新整理</button>
+        <button class="ghost" data-reload="profile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>重新整理</button>
       </div>
-      <div class="split" style="grid-template-columns:minmax(0,4fr) minmax(0,8fr)">
+      <div class="split narrow-left">
         <div class="card">
           <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-user"/></svg>保戶檔案</h3></header>
-          <div class="body"><dl class="kv" id="profileKv"><dd class="empty" style="grid-column:1/-1">尚無資料</dd></dl></div>
+          <div class="body"><dl class="kv" id="profileKv"><div class="empty" style="grid-column:1/-1">尚無資料</div></dl></div>
         </div>
         <div style="display:grid;gap:var(--s3);align-content:start">
           <div class="card">
@@ -968,21 +1250,21 @@
                  lives in the narrower half of a split, and the shared floor pushed the
                  生效日 column out of the box on every load. -->
             <div class="body flush scroll-x"><table style="min-width:470px">
-              <thead><tr><th style="width:106px">保單號碼</th><th>商品</th><th style="width:76px" class="num">保險金額</th><th style="width:76px" class="num">年繳保費</th><th style="width:82px">生效日</th></tr></thead>
+              <thead><tr><th style="width:106px">保單號碼</th><th>商品</th><th style="width:112px" class="num">保險金額</th><th style="width:88px" class="num">年繳保費</th><th style="width:82px">生效日</th></tr></thead>
               <tbody id="profilePolicies"><tr><td colspan="5" class="empty">尚無保單</td></tr></tbody>
             </table></div>
           </div>
           <div class="card">
             <header><h3>繳費紀錄 premium_payment</h3><span class="spacer"></span><span class="count" id="payCount"></span></header>
-            <div class="body flush scroll-x"><table style="min-width:430px">
-              <thead><tr><th style="width:96px">應繳日</th><th style="width:96px">實繳日</th><th style="width:84px" class="num">金額</th><th>保單號碼</th></tr></thead>
-              <tbody id="profilePayments"><tr><td colspan="4" class="empty">尚無繳費紀錄</td></tr></tbody>
-            </table></div>
+            <!-- One line per policy, the instalments under it on request. A monthly policy
+                 is 146 identical rows, and a caseworker is looking for the one that is
+                 not paid, which the line says. -->
+            <div class="body flush"><div class="paygroups" id="profilePayments"><div class="empty">尚無繳費紀錄</div></div></div>
           </div>
           <div class="card">
             <header><h3>受益人 policy_beneficiary</h3><span class="spacer"></span><span class="count" id="benCount"></span></header>
             <div class="body flush scroll-x"><table style="min-width:380px">
-              <thead><tr><th>保單號碼</th><th style="width:88px">稱謂</th><th style="width:62px" class="num">比例</th><th style="width:92px">指定日</th></tr></thead>
+              <thead><tr><th>保單號碼</th><th style="width:104px">稱謂</th><th style="width:62px" class="num">比例</th><th style="width:92px">指定日</th></tr></thead>
               <tbody id="profileBeneficiaries"><tr><td colspan="4" class="empty">名下保單均未指定受益人</td></tr></tbody>
             </table></div>
           </div>
@@ -1022,7 +1304,7 @@
         <header><h3 id="traceTitle">回合</h3><span class="spacer"></span><span class="count" id="traceCount"></span><button class="ghost" id="traceClear" hidden>清除篩選</button></header>
         <div class="body flush"><div class="trace-scroll"><table>
           <thead id="traceHead"></thead>
-          <tbody id="traceBody"><tr><td class="empty">載入中</td></tr></tbody>
+          <tbody id="traceBody"><tr><td colspan="10"><div class="skeleton" aria-hidden="true"><i></i><i></i><i></i></div></td></tr></tbody>
         </table></div></div>
       </div>
       <div class="card" id="callCard" hidden>
@@ -1045,7 +1327,7 @@
       </div>
       <div class="card">
         <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-workflow"/></svg>回合流程</h3><span class="spacer"></span><span class="count" id="flowCount"></span></header>
-        <div class="body flush"><div class="stages" id="flowCanvas"><div class="empty">載入中</div></div></div>
+        <div class="body flush"><div class="stages" id="flowCanvas"><div class="skeleton" aria-hidden="true"><i></i><i></i><i></i></div></div></div>
       </div>
     </div>
 
@@ -1055,7 +1337,7 @@
         <h2>各情境 token 消耗</h2>
         <p>依 llm_usage.scenario 分組，未歸屬情境的呼叫獨立成一列。</p>
         <span class="spacer"></span>
-        <button class="ghost" data-reload="tokens">重新整理</button>
+        <button class="ghost" data-reload="tokens"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>重新整理</button>
       </div>
       <div class="kpis" id="tokenKpis">
         <div class="kpi"><span class="k">呼叫次數</span><span class="v" id="tkCalls">—</span></div>
@@ -1073,7 +1355,7 @@
             <th style="width:78px" class="num">cached</th><th style="width:112px" class="num">總 token</th>
             <th style="width:104px" class="num">延遲 ms p50/p95</th><th style="width:64px" class="num">成本</th>
           </tr></thead>
-          <tbody id="tokenBody"><tr><td colspan="8" class="empty">載入中</td></tr></tbody>
+          <tbody id="tokenBody"><tr><td colspan="8"><div class="skeleton" aria-hidden="true"><i></i><i></i><i></i></div></td></tr></tbody>
         </table></div>
       </div>
     </div>
@@ -1084,7 +1366,7 @@
         <h2>LLM Dashboard</h2>
         <p id="dashNote"></p>
         <span class="spacer"></span>
-        <button class="ghost" data-reload="dash">重新整理</button>
+        <button class="ghost" data-reload="dash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>重新整理</button>
       </div>
       <div class="kpis" id="dashKpis">
         <div class="kpi"><span class="k">今日呼叫</span><span class="v" id="dbToday">—</span></div>
@@ -1097,20 +1379,20 @@
         <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-gauge"/></svg>近 14 日呼叫與 token</h3><span class="spacer"></span><span class="count">長條＝token · 折線＝呼叫</span></header>
         <div class="body"><div class="scroll-x"><svg class="chart" id="dashChart" viewBox="0 0 720 230" preserveAspectRatio="xMidYMid meet" role="img" aria-label="近 14 日 token 與呼叫次數"></svg></div></div>
       </div>
-      <div class="split" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)">
+      <div class="split halves">
         <div class="card">
           <header><h3>模型組成</h3><span class="spacer"></span><span class="count" id="modelCount"></span></header>
-          <div class="body"><div class="mix" id="dashModels"><div class="empty">載入中</div></div></div>
+          <div class="body"><div class="mix" id="dashModels"><div class="skeleton" aria-hidden="true"><i></i><i></i><i></i></div></div></div>
         </div>
         <div class="card">
           <header><h3>階段組成</h3><span class="spacer"></span><span class="count" id="phaseCount"></span></header>
-          <div class="body"><div class="mix" id="dashPhases"><div class="empty">載入中</div></div></div>
+          <div class="body"><div class="mix" id="dashPhases"><div class="skeleton" aria-hidden="true"><i></i><i></i><i></i></div></div></div>
         </div>
       </div>
       <div class="card">
         <header><h3>快取命中率 cached / prompt</h3><span class="spacer"></span><span class="count" id="cacheRate"></span></header>
         <div class="body" style="display:grid;gap:var(--s2)">
-          <div class="meter"><i id="cacheBar" style="width:0%"></i></div>
+          <div class="meter"><i id="cacheBar" style="--p:0"></i></div>
           <p style="margin:0;font-size:12px;color:var(--ink-3)" id="cacheNote"></p>
         </div>
       </div>
@@ -1127,21 +1409,25 @@
   <div class="chat-log" id="chatLog"></div>
   <div class="chat-in">
     <label for="chatInput" class="sr" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">訊息</label>
-    <input id="chatInput" placeholder="請輸入訊息" autocomplete="off" disabled>
-    <button class="primary" id="sendBtn" disabled>送出</button>
+    <input id="chatInput" placeholder="請先完成建檔" autocomplete="off" disabled>
+    <button class="primary" id="sendBtn" disabled title="送出（Enter）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-send"/></svg>送出</button>
   </div>
 </section>
 
 <div class="gate" id="gate">
   <div class="card">
     <div class="body">
-      <h3>已為您產生匿名代號</h3>
-      <p>代號即帳號，由系統產生，不會與其他人重複。進入後由您自己選擇性別、年齡與職業，
-         這三項決定您能投保哪些商品，所以不由系統代填。</p>
+      <h3>歡迎來到保險櫃台</h3>
+      <p>這是展示環境，資料全為合成。三步就能開始：</p>
+      <ol>
+        <li><i>1</i><span><b>取一個代號</b>：系統已產生，也可以自己輸入。</span></li>
+        <li><i>2</i><span><b>填三項資料</b>：性別、年齡、職業，決定您能投保哪些商品。</span></li>
+        <li><i>3</i><span><b>直接發問</b>：保單內容、保費、理賠文件，都可以問。</span></li>
+      </ol>
       <label for="nameInput" class="label">代號</label>
       <div class="gate-row">
         <input id="nameInput" autocomplete="off" readonly>
-        <button id="rerollBtn" title="換一個代號">換一個</button>
+        <button id="rerollBtn" title="換一個代號"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-dice"/></svg>換一個</button>
       </div>
       <button class="primary" id="enterBtn">進入</button>
       <button class="ghost" id="ownNameBtn" style="width:100%;justify-content:center;margin-top:2px;font-size:12px">我要自己輸入代號</button>
@@ -1163,6 +1449,7 @@ const STAGES = [
 const STAGE_NAMES = Object.fromEntries(STAGES.concat([["approved","已核准"],["rejected","已退件"]]));
 const DESK_TOKEN = "__DESK_TOKEN__";
 let caseId = null, customerWs = null, deskWs = null, pending = null, memberId = null, setupCard = null;
+let lastStage = null, lastSnapshot = "";
 
 /** Openers for a visitor who does not yet know what to ask. Questions, like every chip. */
 const OPENERS = ["我想了解目前的保單保什麼", "想確認一年繳多少保費", "理賠要準備哪些文件？", "我想了解有沒有適合的方案"];
@@ -1172,6 +1459,131 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&l
 const shortTime = (iso) => iso ? String(iso).slice(0,19).replace("T"," ") : "";
 const icon = (name, w = 2) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"><use href="#i-${name}"/></svg>`;
+
+/* ═══════════════ motion helpers ═══════════════ */
+
+/**
+ * Number the children so the stylesheet staggers them in, then drop the class once the
+ * last one has landed: a container that keeps it re-animates on every later render, and
+ * a case push or a two-second poll is not an arrival.
+ */
+function reveal(el) {
+  let i = 0;
+  for (const child of el.children) child.style.setProperty("--i", i++);
+  el.classList.add("rise");
+  setTimeout(() => el.classList.remove("rise"), 800);
+}
+
+/** Restart an entrance on an element that is already on screen. */
+function enter(el) {
+  el.classList.remove("in");
+  void el.offsetWidth;
+  el.classList.add("in");
+}
+
+/** A value that changed while the reader was looking at it. */
+function flash(el) {
+  el.classList.remove("flash");
+  void el.offsetWidth;
+  el.classList.add("flash");
+}
+
+/** Loading drawn as the shape of what is coming, the first time only; a reload keeps
+    its rows on screen until the new ones arrive. */
+const SKELETON = `<div class="skeleton" aria-hidden="true"><i></i><i></i><i></i></div>`;
+function loading(el) {
+  if (el.dataset.loaded) return;
+  // A table body and a definition list each need the skeleton inside a cell that spans
+  // them, or it lands in the first column of a 92px grid track.
+  el.innerHTML = el.tagName === "TBODY" ? `<tr><td colspan="99">${SKELETON}</td></tr>`
+    : el.tagName === "DL" ? `<div style="grid-column:1/-1">${SKELETON}</div>`
+    : SKELETON;
+}
+function loaded(el) { el.dataset.loaded = "1"; }
+
+/**
+ * Tween a figure from what is on screen to its new value. A number that jumps reads as a
+ * new number; one that runs there reads as the same number changing, which is what it is.
+ * `fmt` is applied to every frame, so 9,650 counts up with its thousands separator.
+ */
+function countTo(el, value, unit, fmt = money) {
+  const from = Number(el.dataset.n ?? 0);
+  const to = Number(value || 0);
+  el.dataset.n = String(to);
+  const start = performance.now();
+  const span = from === to ? 0 : 420;
+  const step = (now) => {
+    const t = span ? Math.min(1, (now - start) / span) : 1;
+    const eased = 1 - (1 - t) ** 3;
+    el.innerHTML = `${fmt(Math.round(from + (to - from) * eased))}<small>${unit}</small>`;
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+/** Notices land in the corner, then leave. The status text in the top bar never
+    changed fast enough for anyone to see that it had. */
+function toast(text, level = "info") {
+  const glyph = { ok: "check", warn: "alert", bad: "x", info: "info" }[level] ?? "info";
+  const el = document.createElement("div");
+  el.className = `toast ${level}`;
+  el.innerHTML = `${icon(glyph)}<span></span>`;
+  el.lastChild.textContent = text;
+  $("toasts").prepend(el);
+  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 260); }, 4200);
+}
+
+/* ── theme: follow the system until the reader says otherwise ── */
+const THEMES = ["", "light", "dark"];
+function paintTheme(mode) {
+  if (mode) document.documentElement.dataset.theme = mode;
+  else delete document.documentElement.dataset.theme;
+  const dark = mode === "dark" || (!mode && matchMedia("(prefers-color-scheme: dark)").matches);
+  $("themeBtn").innerHTML = icon(dark ? "moon" : "sun");
+  $("themeBtn").title = mode ? `目前：${mode === "dark" ? "深色" : "淺色"}，點擊切換` : "目前：跟隨系統，點擊切換";
+}
+let theme = "";
+try { theme = localStorage.getItem("policydesk:theme") ?? ""; } catch { /* private window */ }
+paintTheme(theme);
+$("themeBtn").onclick = () => {
+  theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
+  try { localStorage.setItem("policydesk:theme", theme); } catch { /* private window */ }
+  paintTheme(theme);
+};
+
+/*
+  Every card folds from its header. The body is wrapped once so the fold runs on a grid
+  row: no height is measured, and `contain` on the card keeps the reflow inside it. The
+  choice is kept per card title, so a caseworker who never reads 稽核軌跡 opens the desk
+  with it folded.
+*/
+for (const card of document.querySelectorAll(".card")) {
+  const head = card.querySelector(":scope > header");
+  const body = card.querySelector(":scope > .body");
+  if (!head || !body) continue;
+  const fold = document.createElement("div");
+  fold.className = "fold";
+  fold.style.cssText = body.style.cssText;
+  body.removeAttribute("style");
+  fold.append(...body.childNodes);
+  body.append(fold);
+  const key = `policydesk:fold:${head.querySelector("h3")?.textContent.trim() ?? ""}`;
+  const chev = document.createElement("button");
+  chev.className = "chev"; chev.type = "button"; chev.title = "收合"; chev.setAttribute("aria-label", "收合");
+  chev.innerHTML = icon("chevron");
+  head.append(chev);
+  head.classList.add("handle");
+  let folded = false;
+  try { folded = localStorage.getItem(key) === "1"; } catch { /* private window */ }
+  card.classList.toggle("shut", folded);
+  chev.setAttribute("aria-expanded", String(!folded));
+  head.addEventListener("click", (e) => {
+    if (e.target.closest("button:not(.chev), a, input")) return;
+    folded = card.classList.toggle("shut");
+    chev.setAttribute("aria-expanded", String(!folded));
+    try { localStorage.setItem(key, folded ? "1" : "0"); } catch { /* private window */ }
+  });
+}
 
 /** Status reads as a glyph plus a word, never as a colour alone. */
 const PILLS = {
@@ -1214,25 +1626,53 @@ function waiting(on) {
   toBottom();
 }
 
-function renderSteps(stage) {
-  const idx = STAGES.findIndex(([k]) => k === stage);
-  const decided = stage === "approved" || stage === "rejected";
-  const drawn = STAGES.map(([key, label], i) => {
-    const cls = decided || i < idx ? "done" : i === idx ? "now" : "";
-    const bead = decided || i < idx ? icon("check", 3.5) : i + 1;
-    return `<span class="step ${cls}"><span class="bead">${bead}</span><span class="name">${label}</span></span>`
-         + (i < STAGES.length - 1 ? `<span class="step ${decided || i < idx ? "done" : ""}"><span class="bar"></span></span>` : "");
-  });
-  if (decided) {
-    const ok = stage === "approved";
-    drawn.push(`<span class="step ${ok ? "done" : "bad"}"><span class="bar"></span></span>`);
-    drawn.push(`<span class="step ${ok ? "done" : "bad"}"><span class="bead">${icon(ok ? "check" : "x", 3.5)}</span><span class="name">${ok ? "已核准" : "已退件"}</span></span>`);
-  }
-  $("steps").innerHTML = drawn.join("");
+/**
+ * The case as a board of facts, not a line of numbered steps.
+ *
+ * A proposal, a signature, an identity check and a decision do not wait for one another:
+ * a customer passes 資料核對 while still asking, a document sits unsigned after a
+ * decision, and the stage the server holds is only one of these. Each tile reads its own
+ * state off the snapshot, and the one that changed since the last push pops.
+ */
+const TILE_GLYPH = { done: icon("check", 3), wait: icon("clock"), flag: icon("alert"), bad: icon("x", 3), open: "" };
+let lastBoard = {};
+
+function renderBoard(c) {
+  const docs = c.documents ?? [], checks = c.identity_checks ?? [];
+  const signed = docs.filter(d => d.signed_at).length;
+  const rank = (stage) => STAGES.findIndex(([k]) => k === stage);
+  const decided = c.stage === "approved" || c.stage === "rejected";
+  const tiles = [
+    ["方案", decided || rank(c.stage) >= rank("proposed") ? ["done", "已提出"] : ["open", "詢問中"]],
+    ["文件", !docs.length ? ["open", "尚未交付"]
+           : signed === docs.length ? ["done", `${signed} 份已簽署`] : ["wait", `${signed}/${docs.length} 已簽署`]],
+    ["身分", checks.some(k => k.verified) ? ["done", "已核對"] : checks.length ? ["bad", "未通過"] : ["open", "尚未核對"]],
+    ["審核", c.stage === "review" ? ["flag", "待人工審核"]
+           : c.stage === "approved" ? ["done", "已核准"]
+           : c.stage === "rejected" ? ["bad", "已退件"] : ["open", "尚未送審"]],
+  ];
+  const fresh = c.case_id !== caseId;
+  $("board").innerHTML = tiles.map(([k, [state, v]]) => {
+    const just = !fresh && lastBoard[k] !== undefined && lastBoard[k] !== `${state}:${v}`;
+    return `<span class="tile ${state} ${just ? "just" : ""}"><span class="tdot">${TILE_GLYPH[state]}</span><span class="tk">${k}</span><span class="tv">${v}</span></span>`;
+  }).join("");
+  lastBoard = Object.fromEntries(tiles.map(([k, [state, v]]) => [k, `${state}:${v}`]));
+  // The badge pops only when the stage moved. A snapshot at the same stage redraws the
+  // same badge, and one that pops on every push says nothing when it finally matters.
+  $("caseHead").classList.toggle("advance", lastStage !== null && c.stage !== lastStage);
+  lastStage = c.stage;
 }
 
 function renderCase(c) {
+  // A new case arrives; a new version of the open one changes. The rows rise for the
+  // first and the header flashes for the second, so the reader knows which happened.
+  const fresh = c.case_id !== caseId;
+  const snapshot = `${c.case_id}:${c.case_version}`;
+  if (!fresh && snapshot !== lastSnapshot) flash($("caseHead"));
+  lastSnapshot = snapshot;
+  renderBoard(c);
   caseId = c.case_id;
+  resetDecide();
   $("caseWho").textContent = c.display_name || "—";
   $("caseMeta").textContent = `#${c.case_id} · v${c.case_version}`;
   $("caseStage").textContent = STAGE_NAMES[c.stage] ?? c.stage;
@@ -1242,7 +1682,6 @@ function renderCase(c) {
     : c.stage === "approved" ? PILLS.ok("已核准")
     : c.stage === "rejected" ? PILLS.no("已退件")
     : PILLS.wait(STAGE_NAMES[c.stage] ?? c.stage);
-  renderSteps(c.stage);
 
   const none = (v) => v ? esc(v) : `<span class="none">—</span>`;
   $("caseKv").innerHTML = `
@@ -1259,7 +1698,7 @@ function renderCase(c) {
     <dt>職業</dt><dd>${esc(c.occupation)}</dd>
     <dt>職業等級</dt><dd>第 ${c.occupation_class} 類</dd>`;
 
-  renderPolicies(c.policies ?? [], c);
+  renderPolicies(c.policies ?? [], c, fresh);
 
   const docs = c.documents ?? [];
   const signed = docs.filter(d => d.signed_at).length;
@@ -1284,6 +1723,7 @@ function renderCase(c) {
     <li class="${i === 0 ? "latest" : ""}"><span class="what">${esc(e.action)}</span><br>
         <span class="who">${esc(e.actor)} · v${e.case_version ?? "—"} · ${shortTime(e.created_at)}</span></li>`).join("")
     : `<li class="empty">尚無事件</li>`;
+  if (fresh) for (const id of ["docTable", "idTable", "trail"]) reveal($(id));
 
   $("decideBox").hidden = c.stage !== "review";
   renderModalDocs(docs);
@@ -1300,7 +1740,7 @@ const money = (n) => Number(n || 0).toLocaleString("zh-Hant-TW");
  * hangs off, which the schema enforces with a foreign key — so the book always shows a
  * rider next to a main policy that exists.
  */
-function renderPolicies(policies, c) {
+function renderPolicies(policies, c, fresh = false) {
   const today = (c.generated_at || "").slice(0, 10);
   const live = (p) => !p.lapsed_at || p.lapsed_at > today;
   const active = policies.filter(live);
@@ -1309,18 +1749,18 @@ function renderPolicies(policies, c) {
   const riders = policies.filter(p => p.main_policy_id);
 
   $("kpis").hidden = policies.length === 0;
-  $("kpiActive").innerHTML = `${active.length}<small>張 / 共 ${policies.length}</small>`;
-  $("kpiPremium").innerHTML = `${money(active.reduce((t, p) => t + Number(p.annual_premium || 0), 0))}<small>元</small>`;
+  countTo($("kpiActive"), active.length, `張 / 共 ${policies.length}`, String);
+  countTo($("kpiPremium"), active.reduce((t, p) => t + Number(p.annual_premium || 0), 0), "元");
   // 保險金額合計 stood here until summing `sum_insured` across policies with different
   // `unit_label`s turned out to mean nothing, and the tile was relabelled rather than
   // replaced — leaving two adjacent tiles both reading 有效保單 with the same number.
   // A lapsed policy is a conversation somebody has to start, so it earns the slot the
   // way 待辦 next to it does.
   const lapsed = policies.length - active.length;
-  $("kpiLapsed").innerHTML = `${lapsed}<small>張</small>`;
+  countTo($("kpiLapsed"), lapsed, "張", String);
   $("kpiLapsedBox").classList.toggle("alert", lapsed > 0);
   const todo = (c.documents ?? []).filter(d => !d.signed_at).length;
-  $("kpiTodo").innerHTML = todo ? `${todo}<small>項</small>` : `0<small>項</small>`;
+  countTo($("kpiTodo"), todo, "項", String);
   $("kpiTodoBox").classList.toggle("alert", todo > 0);
 
   $("policyCount").textContent = policies.length
@@ -1335,6 +1775,7 @@ function renderPolicies(policies, c) {
       <td class="mono">${esc(p.effective_at)}</td>
       <td>${live(p) ? PILLS.ok("有效") : PILLS.no("已停效")}</td>
     </tr>`).join("") : `<tr><td colspan="6" class="empty">尚無保單</td></tr>`;
+  if (fresh) reveal($("policyTable"));
 }
 
 function renderModalDocs(docs) {
@@ -1364,11 +1805,20 @@ function renderQueue(cases) {
       <span class="meta">${stagePill(c.stage)}<span class="id">v${c.case_version}</span></span>
     </div>`).join("")
     : `<div class="empty">尚無案件</div>`;
+  reveal($("queueList"));
   markQueue();
 }
 
+/** The dot rings once when the socket comes up, then sits still: a ring that never
+    stops is a loading indicator, and the desk is not loading. */
 function setLink(state, text) {
-  $("linkDot").className = `dot ${state}`;
+  const dot = $("linkDot");
+  const wasLive = dot.classList.contains("live");
+  dot.className = `dot ${state}`;
+  if (state === "live" && !wasLive) {
+    dot.classList.add("pulse");
+    setTimeout(() => dot.classList.remove("pulse"), 1900);
+  }
   $("deskStatus").textContent = text;
 }
 
@@ -1386,12 +1836,19 @@ function renderCitations(cited) {
   if (!cited?.length) return;
   const box = document.createElement("div");
   box.className = "cites";
-  box.innerHTML = `<span class="label">引用條款</span>` + cited.map(c => `
-    <a class="cite" target="_blank"
+  box.innerHTML = `<button class="cites-toggle" aria-expanded="false">${icon("book")}引用條款 ${cited.length} 條${icon("chevron").replace("<svg", '<svg class="chev"')}</button>
+    <div class="cites-list" hidden>` + cited.map((c, i) => `
+    <a class="cite" target="_blank" style="--i:${i}"
        href="/clause/${encodeURIComponent(c.product_id)}/${encodeURIComponent(c.clause_id)}?member=${memberId}&token=${encodeURIComponent(DESK_TOKEN)}"
        title="${esc(c.product_name)} 第 ${c.page} 頁">
       <code>${esc(c.clause_id)}</code><span>${esc(c.heading)}</span>
-    </a>`).join("");
+    </a>`).join("") + `</div>`;
+  box.querySelector(".cites-toggle").onclick = (e) => {
+    const list = box.querySelector(".cites-list");
+    list.hidden = !list.hidden;
+    e.currentTarget.setAttribute("aria-expanded", String(!list.hidden));
+    toBottom();
+  };
   $("chatLog").append(box);
   toBottom();
 }
@@ -1402,7 +1859,7 @@ function renderChips(items) {
   if (!items?.length) return;
   const box = document.createElement("div");
   box.className = "chips";
-  box.innerHTML = items.map(t => `<button class="chip">${esc(t)}</button>`).join("");
+  box.innerHTML = items.map((t, i) => `<button class="chip" style="--i:${i}">${esc(t)}</button>`).join("");
   box.addEventListener("click", (e) => {
     const chip = e.target.closest(".chip");
     if (!chip) return;
@@ -1549,6 +2006,10 @@ function connectCustomer(name) {
               ? `已為您帶入既有保單 ${m.policies} 張。\n`
               : `依您的年齡與職業等級，所選組合中的商品目前無法投保，名下暫無既有保單。\n`)
             + `資料已固定，請問需要什麼協助？`);
+        // A visitor who does not know what a desk can answer gets four questions to
+        // start from. Questions, like every chip: none of them buys anything.
+        renderChips(OPENERS);
+        $("chatInput").placeholder = "輸入問題，Enter 送出";
         $("chatInput").disabled = false;
         $("sendBtn").disabled = false;
         $("chatInput").focus();
@@ -1583,18 +2044,24 @@ function connectDesk() {
   deskWs.onopen = () => setLink("live", "已連線 · 即時同步");
   deskWs.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
-    if (m.type === "case") renderCase(m);
+    // A case push follows every turn. The other tabs read the same turn over HTTP, so
+    // whichever one is open re-reads now instead of waiting for someone to click 重新整理.
+    if (m.type === "case") { renderCase(m); refreshActive(); }
     if (m.type === "queue") renderQueue(m.cases ?? []);
-    if (m.type === "notice") setLink("live", m.text);
+    // A refused decision comes back as a notice, not as a case, so the busy button is
+    // released here or it spins until the next push.
+    if (m.type === "notice") { toast(m.text, m.level === "warn" ? "warn" : "info"); resetDecide(); }
   };
-  deskWs.onclose = () => setLink("down", "後台連線中斷");
+  deskWs.onclose = () => { setLink("down", "後台連線中斷"); toast("後台連線中斷，重新整理頁面可重連。", "bad"); };
 }
 
 async function reroll() {
+  $("rerollBtn").classList.add("busy");
   try {
     const r = await fetch("/api/alias");
     $("nameInput").value = (await r.json()).alias;
   } catch { $("nameInput").value = ""; }
+  finally { $("rerollBtn").classList.remove("busy"); }
 }
 reroll();
 $("rerollBtn").onclick = reroll;
@@ -1610,7 +2077,8 @@ $("ownNameBtn").onclick = () => {
 $("enterBtn").onclick = () => {
   const name = $("nameInput").value.trim();
   if (!name) { $("nameInput").focus(); return; }
-  $("gate").hidden = true;
+  $("gate").classList.add("out");
+  setTimeout(() => { $("gate").hidden = true; }, 360);
   // The composer stays disabled until the profile exists. There is nothing to answer
   // a question against before then.
   connectCustomer(name);
@@ -1624,6 +2092,9 @@ function send() {
   waiting(true);
   customerWs.send(JSON.stringify({ type: "say", text }));
   $("chatInput").value = "";
+  // The server writes the customer's line before it starts the turn, so the transcript
+  // beside the chat can show it while the reply is still being made.
+  if (activeTab === "inbox") setTimeout(loadInbox, 400);
 }
 $("sendBtn").onclick = send;
 $("chatInput").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
@@ -1646,10 +2117,60 @@ $("modalDocs").addEventListener("click", (e) => {
   }
 });
 
-$("approveBtn").onclick = () => deskWs?.send(JSON.stringify({ type: "decide", case_id: caseId, approved: true, by: "核保人員" }));
-$("rejectBtn").onclick = () => deskWs?.send(JSON.stringify({
-  type: "decide", case_id: caseId, approved: false, reason: $("decideReason").value.trim(), by: "核保人員",
-}));
+/**
+ * A decision is two clicks: the first turns the button into its own confirmation, the
+ * second sends. Four seconds later an unconfirmed button is an ordinary one again. A
+ * rejection also needs its reason before the first click counts, because the customer
+ * reads that text.
+ */
+const ARMED = { approveBtn: "再按一次確認核准", rejectBtn: "再按一次確認退件" };
+for (const id of Object.keys(ARMED)) $(id).dataset.idle = $(id).innerHTML;
+let armTimer = null;
+
+function resetDecide() {
+  clearTimeout(armTimer);
+  for (const id of Object.keys(ARMED)) {
+    const b = $(id);
+    b.classList.remove("confirm", "busy");
+    b.disabled = false;
+    b.innerHTML = b.dataset.idle;
+  }
+  $("decideHint").hidden = true;
+  $("decideReason").classList.remove("invalid");
+}
+
+function decide(id, approved) {
+  const b = $(id);
+  const reason = $("decideReason").value.trim();
+  if (!approved && !reason) {
+    const box = $("decideReason");
+    box.classList.remove("invalid");
+    void box.offsetWidth;
+    box.classList.add("invalid");
+    $("decideHint").textContent = "退件需要理由，保戶會看到這段文字。";
+    $("decideHint").hidden = false;
+    box.focus();
+    return;
+  }
+  if (!b.classList.contains("confirm")) {
+    resetDecide();
+    b.classList.add("confirm");
+    b.textContent = ARMED[id];
+    armTimer = setTimeout(resetDecide, 4000);
+    return;
+  }
+  clearTimeout(armTimer);
+  b.classList.add("busy");
+  b.innerHTML = `<span class="spinner"></span>處理中`;
+  $(approved ? "rejectBtn" : "approveBtn").disabled = true;
+  deskWs?.send(JSON.stringify({ type: "decide", case_id: caseId, approved, reason, by: "核保人員" }));
+}
+$("approveBtn").onclick = () => decide("approveBtn", true);
+$("rejectBtn").onclick = () => decide("rejectBtn", false);
+$("decideReason").addEventListener("input", () => {
+  $("decideReason").classList.remove("invalid");
+  $("decideHint").hidden = true;
+});
 
 /** The queue rail is navigation, so it answers the keyboard as well as the mouse. */
 function openRow(el) {
@@ -1671,14 +2192,16 @@ $("queueList").addEventListener("keydown", (e) => {
   mutation. They fetch when their tab opens, and the live one polls.
 */
 
+/** Two groups: what a caseworker does, and what an operator watches. Seven flat entries
+    asked the reader to know which four were not for them. */
 const TABS = [
-  ["overview", "總覽", "book"],
-  ["inbox", "聊天紀錄", "inbox"],
-  ["profile", "客戶資料", "user"],
-  ["trace", "LLM 追蹤", "layers"],
-  ["flow", "即時流程圖", "workflow"],
-  ["tokens", "各情境 token", "coins"],
-  ["dash", "LLM Dashboard", "gauge"],
+  ["overview", "總覽", "book", "作業"],
+  ["inbox", "聊天紀錄", "inbox", "作業"],
+  ["profile", "客戶資料", "user", "作業"],
+  ["trace", "LLM 追蹤", "layers", "系統監控"],
+  ["flow", "即時流程圖", "workflow", "系統監控"],
+  ["tokens", "各情境 token", "coins", "系統監控"],
+  ["dash", "LLM Dashboard", "gauge", "系統監控"],
 ];
 
 /** Every phase `llm_usage` can hold, plus the terminal node the pipeline adds. */
@@ -1744,8 +2267,31 @@ const phaseColour = (phase) => `var(--ph-${phase}, var(--ink-3))`;
 const ticks = (phases) => `<span class="ticks">${(phases ?? []).map(p =>
   `<i class="tick" style="background:${phaseColour(p)}" title="${esc(PHASE_NAMES[p] ?? p)}"></i>`).join("")}</span>`;
 
-$("tabList").innerHTML = TABS.map(([key, label, glyph]) =>
-  `<button class="tab" role="tab" data-tab="${key}" aria-current="${key === activeTab}">${icon(glyph)}${esc(label)}</button>`).join("");
+$("tabList").innerHTML = TABS.map(([key, label, glyph, group], i) =>
+  (group === TABS[i - 1]?.[3] ? "" : `<div class="tab-group">${esc(group)}</div>`)
+  + `<button class="tab" role="tab" data-tab="${key}" aria-current="${key === activeTab}">${icon(glyph)}${esc(label)}</button>`).join("")
+  + `<span class="tab-ink" id="tabInk"></span>`;
+
+/**
+ * Slide the one indicator to the current tab. The rail is a column on a wide screen and
+ * a strip under 1080px, so the bar travels on whichever axis the tabs are laid along.
+ * One layout read per switch, nothing measured on scroll.
+ */
+function inkTo(button) {
+  const ink = $("tabInk");
+  if (!button) return;
+  if (matchMedia("(max-width: 1080px)").matches) {
+    ink.style.transform = `translateX(${button.offsetLeft}px)`;
+    ink.style.width = `${button.offsetWidth}px`;
+  } else {
+    ink.style.transform = `translateY(${button.offsetTop}px)`;
+    ink.style.height = `${button.offsetHeight}px`;
+    ink.style.width = "";
+  }
+  ink.classList.add("on");
+}
+inkTo($("tabList").querySelector('[aria-current="true"]'));
+window.addEventListener("resize", () => inkTo($("tabList").querySelector('[aria-current="true"]')));
 
 $("tabList").addEventListener("click", (e) => {
   const button = e.target.closest("[data-tab]");
@@ -1760,9 +2306,18 @@ $("tabList").addEventListener("click", (e) => {
  * unread.
  */
 function openTab(key) {
+  if (key === activeTab) return;
   activeTab = key;
-  for (const button of $("tabList").children) button.setAttribute("aria-current", String(button.dataset.tab === key));
-  for (const pane of document.querySelectorAll("[data-pane]")) pane.hidden = pane.dataset.pane !== key;
+  for (const button of $("tabList").querySelectorAll("[data-tab]")) {
+    const on = button.dataset.tab === key;
+    button.setAttribute("aria-current", String(on));
+    if (on) inkTo(button);
+  }
+  for (const pane of document.querySelectorAll("[data-pane]")) {
+    const show = pane.dataset.pane === key;
+    pane.hidden = !show;
+    pane.classList.toggle("in", show);
+  }
   // The queue opens a case, and only the 總覽 pane renders one.
   $("queueHead").hidden = key !== "overview";
   $("queueList").hidden = key !== "overview";
@@ -1780,6 +2335,7 @@ function refreshActive() { LOAD[activeTab]?.(); }
 
 async function loadInbox() {
   const box = $("inboxList");
+  loading(box);
   try {
     const data = await api("/inbox", { member: memberId ?? "" });
     // The live customer to the top. A caseworker opens this tab while a conversation is
@@ -1797,6 +2353,8 @@ async function loadInbox() {
           r.last_speaker === "customer" ? `<i class="unread" title="尚未回覆"></i>` : ""
         }<span class="id">${r.messages ?? 0} 則</span></span>
       </div>`).join("") : `<div class="empty">尚無對話</div>`;
+    if (!box.dataset.loaded) reveal(box);
+    loaded(box);
     openTranscript(inboxPick ?? data.member_id ?? rows[0]?.member_id ?? null);
   } catch (err) { fail(box, err); }
 }
@@ -1812,15 +2370,69 @@ async function openTranscript(id) {
     const data = await api("/transcript", { member: inboxPick });
     $("txWho").textContent = data.display_name ? `${data.display_name} 的對話` : "對話內容";
     $("txCount").textContent = data.messages.length || "";
-    log.innerHTML = data.messages.length ? data.messages.map(m => `
-      <div class="row ${esc(m.speaker)}">
+    // A re-read after a new turn must not fold the panel a caseworker was reading.
+    const open = new Set([...log.querySelectorAll("details.trace[open]")].map(d => d.dataset.turn));
+    let asked = null;
+    log.innerHTML = data.messages.length ? data.messages.map(m => {
+      if (m.speaker === "customer") asked = m.created_at;
+      const agent = m.speaker === "agent";
+      const secs = agent && asked ? (new Date(m.created_at) - new Date(asked)) / 1000 : null;
+      return `<div class="row ${esc(m.speaker)}">
+        ${agent ? `<span class="by">AI 櫃台回覆</span>` : ""}
         <div class="bub">${esc(m.text)}</div>
         <span class="at">${shortTime(m.created_at)}${m.turn_id ? ` · ${esc(m.turn_id)}` : ""}</span>
-      </div>`).join("") : `<div class="empty">這位保戶尚無訊息</div>`;
+        ${agent && m.turn_id ? tracePanel(data.traces?.[m.turn_id] ?? null, m, secs, open.has(m.turn_id)) : ""}
+      </div>`;
+    }).join("") : `<div class="empty">這位保戶尚無訊息</div>`;
     // Opened at the latest message, like the customer pane. A caseworker opening a
-    // conversation is asking what was just said, not how it began.
+    // conversation is asking what was just said, not how it began. The whole log fades
+    // in as one: a stagger would land the newest rows, the ones on screen, last.
+    enter(log);
     requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
   } catch (err) { fail(log, err); }
+}
+
+/**
+ * 看看 AI 怎麼幫你回覆: one reply's account of itself, for a caseworker who does not
+ * know how the model works. Three questions in plain words — did it understand, did it
+ * look anything up, how long did that take — then what the answer stood on, then the
+ * codes folded away for whoever needs them. Same shape as the enoract inbox panel.
+ */
+function tracePanel(t, m, secs, open) {
+  const scenario = t?.display_name ?? null;
+  const read = scenario && (t.tools?.length ?? 0) > 0;
+  const steps = [
+    ["聽懂客人想要什麼", scenario ?? "一般對話", true],
+    ["幫客人查資料", read ? `用「${scenario}」查了資料` : "這次不需要查資料", read],
+    ["整理成回覆給客人", "", true],
+  ];
+  const cites = m.citations ?? [];
+  // A statute is cited in the text itself, as 〔保險法 第116條第1項〕, and has no clause row
+  // to resolve against: it is listed as written.
+  const statutes = [...new Set([...(m.text ?? "").matchAll(/〔([^〕]+)〕/g)].map(x => x[1]))];
+  return `<details class="trace" data-turn="${esc(m.turn_id)}"${open ? " open" : ""}>
+    <summary>${icon("sparkles")}看看 AI 怎麼幫你回覆${icon("chevron").replace("<svg", '<svg class="chev"')}</summary>
+    <div class="trace-body">
+      <div class="trace-steps">${steps.map(([title, sub, done], i) => `
+        <div class="ts ${done ? "done" : ""}"><span class="tdot">${done ? icon("check", 3) : i + 1}</span><b>${esc(title)}</b>${sub ? `<small>${esc(sub)}</small>` : ""}</div>`).join("")}</div>
+      ${secs !== null ? `<div class="trace-time">約 ${secs.toFixed(1)} 秒完成</div>` : ""}
+      <div class="trace-refs">${cites.length || statutes.length
+        ? `<span class="label">AI 是根據這些資料回覆的</span>` + cites.map((c, i) => `
+          <a class="cite" target="_blank" style="--i:${i}"
+             href="/clause/${encodeURIComponent(c.product_id)}/${encodeURIComponent(c.clause_id)}?member=${inboxPick}&token=${encodeURIComponent(DESK_TOKEN)}"
+             title="${esc(c.product_name)} 第 ${c.page} 頁"><code>${esc(c.clause_id)}</code><span>${esc(c.heading)}</span></a>`).join("")
+          + statutes.map((s, i) => `<span class="cite" style="--i:${cites.length + i}"><code>法條</code><span>${esc(s)}</span></span>`).join("")
+        : `<span class="none">這次沒有引用特定資料</span>`}</div>
+      <details class="trace-tech"><summary>技術細節</summary>
+        <dl class="kv">
+          <dt>判斷情境</dt><dd class="mono">${t?.scenario ? esc(t.scenario) : "—"}</dd>
+          <dt>使用的工具</dt><dd class="mono">${read ? esc(t.tools.join("、")) : "—"}</dd>
+          <dt>模型呼叫</dt><dd class="mono">${t ? `${t.calls} 次 · 合計 ${ms(t.latency_ms)}` : "—"}</dd>
+          <dt>turn_id</dt><dd class="mono">${esc(m.turn_id)}</dd>
+        </dl>
+      </details>
+    </div>
+  </details>`;
 }
 
 $("inboxList").addEventListener("click", (e) => {
@@ -1855,10 +2467,11 @@ function claimState(c) {
 async function loadProfile() {
   const box = $("profileKv");
   if (memberId === null) {
-    box.innerHTML = `<dd class="empty" style="grid-column:1/-1">請先於右側完成建檔</dd>`;
+    box.innerHTML = `<div class="empty" style="grid-column:1/-1">請先於右側完成建檔</div>`;
     $("profileNote").textContent = "尚未建檔";
     return;
   }
+  loading(box);
   try {
     const d = await api("/profile", { member: memberId });
     const m = d.member;
@@ -1894,23 +2507,40 @@ async function loadProfile() {
         <td class="mono">${esc(p.effective_at)}</td>
       </tr>`).join("") : `<tr><td colspan="5" class="empty">尚無保單</td></tr>`;
 
-    // An unpaid instalment is the row a caseworker is looking for, so it sorts first and is
-    // marked — the API already orders `paid_at IS NOT NULL` ahead of the date.
+    // One line per policy: what is owed, what has been paid, when the next one falls. The
+    // instalments themselves fold under it — a monthly policy is 146 rows of the same
+    // figure, and the one a caseworker wants is the unpaid one, which the line names.
     const owed = d.payments.filter(p => !p.paid_at).length;
     $("payCount").textContent = owed ? `${owed} 期未繳 / ${d.payments.length}` : d.payments.length || "";
-    $("profilePayments").innerHTML = d.payments.length ? d.payments.map(p => `
-      <tr${p.paid_at ? "" : ` style="background:color-mix(in oklab, var(--flag) 10%, transparent)"`}>
-        <td class="mono">${esc(String(p.due_at))}</td>
-        <td class="mono">${p.paid_at ? esc(String(p.paid_at)) : `<span class="none">未繳</span>`}</td>
-        <td class="num mono">${money(p.amount)}</td>
-        <td class="mono tight">${esc(p.policy_number)}</td>
-      </tr>`).join("") : `<tr><td colspan="4" class="empty">尚無繳費紀錄</td></tr>`;
+    const byPolicy = Map.groupBy(d.payments, p => p.policy_number);
+    $("profilePayments").innerHTML = byPolicy.size ? [...byPolicy].map(([num, rows], i) => {
+      rows.sort((a, b) => String(b.due_at).localeCompare(String(a.due_at)));
+      const unpaid = rows.filter(p => !p.paid_at);
+      const paid = rows.reduce((t, p) => t + (p.paid_at ? Number(p.amount) : 0), 0);
+      return `<details class="paygroup" style="--i:${i}">
+        <summary>
+          <span class="pnum">${esc(num)}</span>
+          ${unpaid.length ? PILLS.flag(`${unpaid.length} 期未繳`) : PILLS.ok("已繳清")}
+          <span class="count">${rows.length} 期 · 已繳 ${money(paid)} 元 · 最近應繳 ${esc(String(rows[0].due_at))}</span>
+          ${icon("chevron").replace("<svg", '<svg class="chev"')}
+        </summary>
+        <div class="scroller"><table>
+          <thead><tr><th style="width:110px">應繳日</th><th style="width:110px">實繳日</th><th class="num">金額</th></tr></thead>
+          <tbody>${rows.map(p => `
+            <tr class="${p.paid_at ? "" : "owed"}">
+              <td class="mono">${esc(String(p.due_at))}</td>
+              <td class="mono">${p.paid_at ? esc(String(p.paid_at)) : `<span class="none">未繳</span>`}</td>
+              <td class="num mono">${money(p.amount)}</td>
+            </tr>`).join("")}</tbody>
+        </table></div>
+      </details>`;
+    }).join("") : `<div class="empty">尚無繳費紀錄</div>`;
 
     $("benCount").textContent = d.beneficiaries.length || "";
     $("profileBeneficiaries").innerHTML = d.beneficiaries.length ? d.beneficiaries.map(b => `
       <tr>
         <td class="mono tight">${esc(b.policy_number)}</td>
-        <td>${esc(b.relation)}</td>
+        <td class="tight">${esc(b.relation)}</td>
         <td class="num mono">${b.share}%</td>
         <td class="mono">${esc(String(b.designated_at))}</td>
       </tr>`).join("") : `<tr><td colspan="4" class="empty">名下保單均未指定受益人</td></tr>`;
@@ -1943,6 +2573,8 @@ async function loadProfile() {
         </div>
         <div class="summary">${c.summary ? esc(c.summary) : `<span class="none">尚未產生摘要</span>`}</div>
       </div>`).join("") : `<div class="empty">尚無案件</div>`;
+    if (!box.dataset.loaded) for (const id of ["profilePolicies", "profilePayments", "profileBeneficiaries", "profileClaims", "profileFacts", "profileSummaries"]) reveal($(id));
+    loaded(box);
   } catch (err) { fail(box, err); }
 }
 
@@ -1967,6 +2599,7 @@ async function loadTrace() {
   const body = $("traceBody");
   $("traceTitle").textContent = TIER_NAMES[trace.tier] ?? trace.tier;
   $("traceClear").hidden = trace.caseId === null && trace.turnId === null;
+  loading(body);
   try {
     const data = await api("/llm", { tier: trace.tier, case_id: trace.caseId ?? "", turn_id: trace.turnId ?? "" });
     $("traceCount").textContent = data.rows.length || "";
@@ -2014,6 +2647,8 @@ async function loadTrace() {
           <td class="mono">${shortTime(r.started_at)}</td>
         </tr>`).join("") : `<tr><td colspan="8" class="empty">尚無紀錄</td></tr>`;
     }
+    if (!body.dataset.loaded) reveal(body);
+    loaded(body);
   } catch (err) { fail(body, err); }
 }
 
@@ -2059,6 +2694,7 @@ async function openCall(id) {
 
 async function loadLive() {
   const canvas = $("flowCanvas");
+  loading(canvas);
   try {
     const data = await api("/live");
     const running = data.turns.filter(t => !t.settled);
@@ -2079,6 +2715,10 @@ async function loadLive() {
           ${cards.length ? `<div class="stage-body">${cards.map(t => turnRow(t, data.idle_after_s)).join("")}</div>` : ""}
         </section>`;
     }).join("");
+    // The stages rise once. The poll redraws them every two seconds, and a board that
+    // re-enters on every tick is a board nobody can read.
+    if (!canvas.dataset.loaded) reveal(canvas);
+    loaded(canvas);
   } catch (err) { fail(canvas, err); }
 }
 
@@ -2104,7 +2744,7 @@ function turnRow(t, idleAfter) {
         <span>${t.scenario ? esc(t.scenario) : "未歸屬"}</span>
         <span>${ago(t.last_at)}</span>
       </div>
-      <div class="wait-bar"><i style="width:${pct.toFixed(0)}%;background:${phaseColour(t.phase)}"></i></div>
+      <div class="wait-bar"><i style="--p:${(pct / 100).toFixed(3)};background:${phaseColour(t.phase)}"></i></div>
     </div>`;
 }
 
@@ -2112,15 +2752,16 @@ function turnRow(t, idleAfter) {
 
 async function loadTokens() {
   const body = $("tokenBody");
+  loading(body);
   try {
     const data = await api("/scenarios");
     const rows = data.rows;
     const top = Math.max(1, ...rows.map(r => Number(r.total_tokens || 0)));
     const sum = (key) => rows.reduce((t, r) => t + Number(r[key] || 0), 0);
-    $("tkCalls").innerHTML = `${money(sum("calls"))}<small>次</small>`;
-    $("tkTotal").innerHTML = `${money(sum("total_tokens"))}<small>tok</small>`;
-    $("tkCached").innerHTML = `${money(sum("cached_tokens"))}<small>tok</small>`;
-    $("tkScenarios").innerHTML = `${rows.filter(r => r.scenario).length}<small>個</small>`;
+    countTo($("tkCalls"), sum("calls"), "次");
+    countTo($("tkTotal"), sum("total_tokens"), "tok");
+    countTo($("tkCached"), sum("cached_tokens"), "tok");
+    countTo($("tkScenarios"), rows.filter(r => r.scenario).length, "個", String);
     // A row whose model is absent from the rate table comes back with cost_usd NULL.
     // Counted and named rather than folded into the total as a zero: a bill that
     // silently omits a model reads as a cheaper deployment, not as an incomplete one.
@@ -2128,7 +2769,7 @@ async function loadTokens() {
     $("tkCost").innerHTML = `${usd(rows.some(r => r.cost_usd != null) ? sum("cost_usd") : null)}`
       + (unpriced ? `<small>${unpriced} 列未定價</small>` : "<small>USD</small>");
     $("tokenCount").textContent = rows.length || "";
-    body.innerHTML = rows.length ? rows.map(r => `
+    body.innerHTML = rows.length ? rows.map((r, i) => `
       <tr>
         <td>${r.scenario
           // Both names, then what it does. The key alone is an identifier an operator
@@ -2150,11 +2791,13 @@ async function loadTokens() {
         <td class="num">${money(r.cached_tokens)}</td>
         <td class="num"><div class="bar-cell">
           <span>${money(r.total_tokens)}</span>
-          <span class="track"><i style="width:${(100 * Number(r.total_tokens || 0) / top).toFixed(1)}%"></i></span>
+          <span class="track"><i style="--p:${(Number(r.total_tokens || 0) / top).toFixed(3)};--i:${i}"></i></span>
         </div></td>
         <td class="num mono tight">${round(r.p50_ms)} / ${round(r.p95_ms)}</td>
         <td class="num mono">${r.cost_usd == null ? `<span class="none">未定價</span>` : usd(r.cost_usd)}</td>
       </tr>`).join("") : `<tr><td colspan="8" class="empty">尚無紀錄</td></tr>`;
+    if (!body.dataset.loaded) reveal(body);
+    loaded(body);
   } catch (err) { fail(body, err); }
 }
 
@@ -2184,11 +2827,13 @@ function drawChart(days) {
   }
   days.forEach((d, i) => {
     const h = (ih * Number(d.total_tokens || 0)) / topTokens;
-    parts.push(`<rect class="bar" x="${(L + i * bw + bw * 0.22).toFixed(1)}" y="${(T + ih - h).toFixed(1)}"
+    parts.push(`<rect class="bar" style="--i:${i}" x="${(L + i * bw + bw * 0.22).toFixed(1)}" y="${(T + ih - h).toFixed(1)}"
       width="${(bw * 0.56).toFixed(1)}" height="${Math.max(0, h).toFixed(1)}" rx="2"><title>${esc(d.day)} · ${money(d.total_tokens)} token</title></rect>`);
     parts.push(`<text x="${x(i).toFixed(1)}" y="${H - 10}" text-anchor="middle">${esc(String(d.day).slice(5))}</text>`);
   });
-  parts.push(`<polyline class="line" points="${days.map((d, i) => `${x(i).toFixed(1)},${yCall(d).toFixed(1)}`).join(" ")}"/>`);
+  // pathLength="1" lets the stylesheet draw the line with a dash of length 1, whatever
+  // its real length is.
+  parts.push(`<polyline class="line" pathLength="1" points="${days.map((d, i) => `${x(i).toFixed(1)},${yCall(d).toFixed(1)}`).join(" ")}"/>`);
   days.forEach((d, i) => parts.push(
     `<circle class="dot" cx="${x(i).toFixed(1)}" cy="${yCall(d).toFixed(1)}" r="2.5"><title>${esc(d.day)} · ${d.calls} 次呼叫</title></circle>`));
   $("dashChart").innerHTML = parts.join("");
@@ -2196,23 +2841,24 @@ function drawChart(days) {
 
 function mix(rows, label, value) {
   const top = Math.max(1, ...rows.map(r => Number(value(r) || 0)));
-  return rows.length ? rows.map(r => `
+  return rows.length ? rows.map((r, i) => `
     <div class="m">
       <span>${label(r)}</span>
-      <span class="track"><i style="width:${(100 * Number(value(r) || 0) / top).toFixed(1)}%"></i></span>
+      <span class="track"><i style="--p:${(Number(value(r) || 0) / top).toFixed(3)};--i:${i}"></i></span>
       <span class="n">${money(value(r))}</span>
     </div>`).join("") : `<div class="empty">尚無紀錄</div>`;
 }
 
 async function loadDash() {
   const box = $("dashModels");
+  loading(box);
   try {
     const d = await api("/dashboard");
     const t = d.totals;
     // compact() on the token figures, not money(): five KPI tiles share the pane the
     // chat leaves, and a seven-digit group wrapped the unit onto a third line.
     $("dbToday").innerHTML = `${money(t.calls_today)}<small>次 · ${compact(t.tokens_today)} tok</small>`;
-    $("dbCalls").innerHTML = `${money(t.calls)}<small>次</small>`;
+    countTo($("dbCalls"), t.calls, "次");
     $("dbTokens").innerHTML = `${compact(t.total_tokens)}<small>tok</small>`;
     $("dbTurns").innerHTML = `${money(t.turns)}<small>/ ${money(t.cases)}</small>`;
     $("dbLatency").innerHTML = `${ms(t.p50_ms)}<small>/ ${ms(t.p95_ms)}</small>`;
@@ -2236,8 +2882,10 @@ async function loadDash() {
     // half as effective as it is.
     const rate = Number(t.prompt_tokens) ? Number(t.cached_tokens) / Number(t.prompt_tokens) : 0;
     $("cacheRate").textContent = `${(rate * 100).toFixed(1)}%`;
-    $("cacheBar").style.width = `${(rate * 100).toFixed(1)}%`;
+    $("cacheBar").style.setProperty("--p", rate.toFixed(3));
     $("cacheNote").textContent = `${money(t.cached_tokens)} / ${money(t.prompt_tokens)} prompt token 命中快取`;
+    if (!box.dataset.loaded) { reveal(box); reveal($("dashPhases")); }
+    loaded(box);
   } catch (err) { fail(box, err); }
 }
 
@@ -2251,8 +2899,14 @@ const LOAD = {
   dash: loadDash,
 };
 
+/* The reload button turns while the read is out, and for a beat after: a read that
+   returns in 40ms would otherwise look like a click that did nothing. */
 for (const button of document.querySelectorAll("[data-reload]")) {
-  button.onclick = () => LOAD[button.dataset.reload]?.();
+  button.onclick = async () => {
+    button.classList.add("busy");
+    try { await LOAD[button.dataset.reload]?.(); }
+    finally { setTimeout(() => button.classList.remove("busy"), 300); }
+  };
 }
 </script>
 </body>
