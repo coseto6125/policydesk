@@ -172,6 +172,13 @@ SOOTHE = Scenario(
         "保戶表達不滿、質疑公司做法、認為被騙、提到要申訴或提告、或引用法條質問時使用。"
         "例如「你們憑什麼解約」「這根本是騙人的」「我要去金管會申訴」「保險法不是寫…嗎」。"
         "保戶只是在問保障內容或理賠文件時不要選這個情境。"
+        # 「我是要改年繳欸，你不懂嗎?」 landed here, and this scenario answered with the
+        # complaint channel: the customer, who wanted a payment mode changed, was handed
+        # 金融消費者保護法 §13 and a chip reading 申訴要向誰提出. Impatience at being
+        # misread is not a complaint about the company; the scenario that can do the thing
+        # is the apology.
+        "保戶只是不耐煩地重述他剛才的要求（例如「我是要改年繳欸」「你不懂嗎」「我問的是這個」），"
+        "也不要選這個情境：直接選能辦那件事的情境，把他要的答案給他。"
     ),
     injection=(
         "statute_reference 是空的時候，代表這件事在本櫃台手上的三部法規裡找不到對應條文，不是系統查不到。承接他的情緒之後，照實說這一點需要進一步查證，並把 complaint_channel 的申訴管道與期限講清楚，不要憑印象給一個條號。\n"

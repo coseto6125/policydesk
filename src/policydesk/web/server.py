@@ -27,7 +27,8 @@ from typing import Any
 from msgspec import DecodeError, json
 from sanic import Request, Sanic, Websocket, html, response
 
-from policydesk.agent import memory
+from policydesk.agent import i18n, memory
+from policydesk.agent import locale as lang
 from policydesk.agent.executor import Turn, run_turn
 from policydesk.agent.scenario import OPENERS
 from policydesk.bootloader import logger
@@ -42,7 +43,7 @@ from policydesk.retrieval.vectors import open_vectors
 from policydesk.synthetic.alias import mint
 from policydesk.synthetic.person import generate, insurance_age, occupation_catalogue
 from policydesk.synthetic.portfolio import DEFAULT_PRESET, enrol, preset_catalogue
-from policydesk.web.console import console
+from policydesk.web.console import cited, console
 from policydesk.web.highlight import page_count, page_image
 from policydesk.web.params import int_arg
 from policydesk.web.session import Registry
@@ -616,38 +617,6 @@ async def _push_case(db: Database, ws: Websocket, application: Sanic, case_id: i
     await _broadcast_desk(application, payload)
 
 
-async def _cited(db: Database, case_id: int, clause_ids: tuple[str, ...]) -> list[dict[str, Any]]:
-    """
-    Resolve the clause ids in a reply to contracts the customer actually holds.
-
-    Args:
-        db: The database.
-        case_id: Whose case, and through it whose policies.
-        clause_ids: The ids the reply cited.
-
-    Returns:
-        One entry per contract each id resolves to, with its heading and page. A bare id
-        is not a link: the same `art.6` exists in every contract in the corpus, and which
-        one the reply meant is decided by the member's own book.
-
-    """
-    if not clause_ids:
-        return []
-    rows = await db.fetch(
-        """SELECT DISTINCT c.product_id, c.clause_id, c.heading, c.page, p.name AS product_name
-           FROM clause c
-           JOIN product p USING (product_id)
-           JOIN policy po ON po.product_id = c.product_id
-           JOIN "case" k ON k.member_id = po.member_id
-           WHERE k.case_id = $1::bigint AND c.clause_id = ANY($2::text[])
-           ORDER BY c.clause_id""",
-        [case_id, list(clause_ids)],
-    )
-    order = {clause_id: position for position, clause_id in enumerate(clause_ids)}
-    rows.sort(key=lambda r: order.get(r["clause_id"], len(order)))
-    return rows
-
-
 async def _last_message(db: Database, case_id: int) -> int:
     """
     Read where a case's conversation stands right now.
@@ -689,10 +658,13 @@ async def _answer(
         The turn, so the caller can read whether the identity gate stopped it.
 
     """
+    # The language is read off the message before it is stored, so the row records what
+    # was detected and the reply is written in what the conversation resolves to.
+    found, spoken = await lang.resolve(db, case_id, text)
     await db.execute(
-        """INSERT INTO conversation_message (case_id, speaker, text)
-           VALUES ($1::bigint,'customer',$2::text)""",
-        [case_id, text],
+        """INSERT INTO conversation_message (case_id, speaker, text, locale)
+           VALUES ($1::bigint,'customer',$2::text,$3::text)""",
+        [case_id, text, found],
     )
     # The profile freezes on the first message, as specified.
     await db.execute(
@@ -704,20 +676,22 @@ async def _answer(
     turn = await run_turn(
         request.app.ctx.provider, db,
         case_id=case_id, member_id=member_id, text=text, confirmed=confirmed,
-        index=request.app.ctx.clauses, since=floor,
+        index=request.app.ctx.clauses, since=floor, locale=spoken,
     )
+    # The clause ids go in with the reply, so the console's transcript can show a
+    # caseworker what the answer stood on after the socket that carried it is gone.
     await db.execute(
-        """INSERT INTO conversation_message (case_id, speaker, text, turn_id)
-           VALUES ($1::bigint,'agent',$2::text,$3::text)""",
-        [case_id, turn.reply, turn.turn_id],
+        """INSERT INTO conversation_message (case_id, speaker, text, turn_id, citations)
+           VALUES ($1::bigint,'agent',$2::text,$3::text,$4::text[])""",
+        [case_id, turn.reply, turn.turn_id, list(turn.citations)],
     )
     await ws.send(json.encode({
         "type": "reply",
         "text": turn.reply,
         "scenario": turn.scenario,
         "params": turn.params,
-        "quick": list(turn.quick_replies),
-        "citations": _jsonable(await _cited(db, case_id, turn.citations)),
+        "quick": list(await i18n.translate(db, spoken, turn.quick_replies)),
+        "citations": _jsonable(await cited(db, member_id, turn.citations)),
         "faults": list(turn.faults),
     }).decode())
     await _push_case(db, ws, request.app, case_id)

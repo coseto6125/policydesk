@@ -42,6 +42,8 @@ from policydesk.synthetic.person import insurance_age
 from policydesk.web.params import int_arg
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from policydesk.core.db import Database
 
 console = Blueprint("console", url_prefix="/api/console")
@@ -187,6 +189,40 @@ async def inbox(request: Request):
     return _json({"member_id": int_arg(request), "rows": rows, "generated_at": datetime.now(UTC)})
 
 
+async def cited(db: Database, member_id: int, clause_ids: Iterable[str]) -> list[dict[str, Any]]:
+    """
+    Resolve clause ids to contracts the customer actually holds.
+
+    Args:
+        db: The database.
+        member_id: Whose book decides which contract an id means.
+        clause_ids: The ids a reply cited, in the order it cited them.
+
+    Returns:
+        One entry per contract each id resolves to, with its heading and page. A bare id
+        is not a link: the same `art.6` exists in every contract in the corpus, and which
+        one the reply meant is decided by the member's own book.
+
+    Shared by the customer socket, which sends these with the reply, and the transcript
+    below, which reads the same ids back off the stored message.
+    """
+    wanted = list(clause_ids)
+    if not wanted:
+        return []
+    rows = await db.fetch(
+        """SELECT DISTINCT c.product_id, c.clause_id, c.heading, c.page, p.name AS product_name
+           FROM clause c
+           JOIN product p USING (product_id)
+           JOIN policy po ON po.product_id = c.product_id
+           WHERE po.member_id = $1::bigint AND c.clause_id = ANY($2::text[])
+           ORDER BY c.clause_id""",
+        [member_id, wanted],
+    )
+    order = {clause_id: position for position, clause_id in enumerate(wanted)}
+    rows.sort(key=lambda r: order.get(r["clause_id"], len(order)))
+    return rows
+
+
 @console.get("/transcript")
 async def transcript(request: Request):
     """
@@ -196,7 +232,10 @@ async def transcript(request: Request):
         request: The request, carrying `?member=`.
 
     Returns:
-        Every message that member has exchanged, oldest first.
+        Every message that member has exchanged, oldest first, each agent message with
+        the clauses it cited resolved to the member's own contracts; and `traces`, keyed
+        by turn_id, saying which scenario answered the turn, what it queried, and how
+        long the model spent.
 
     Ordered by `message_id` rather than `created_at`: two messages written inside the
     same turn share a timestamp to the millisecond, and a timestamp sort puts the reply
@@ -207,16 +246,46 @@ async def transcript(request: Request):
         return refusal
 
     db: Database = request.app.ctx.db
-    rows = await db.fetch(
-        """SELECT cm.message_id, cm.case_id, cm.speaker, cm.text, cm.turn_id, cm.created_at
-           FROM conversation_message cm
-           JOIN "case" c USING (case_id)
-           WHERE c.member_id = $1::bigint
-           ORDER BY cm.message_id""",
-        [member_id],
+    rows, turns = await asyncio.gather(
+        db.fetch(
+            """SELECT cm.message_id, cm.case_id, cm.speaker, cm.text, cm.turn_id, cm.citations,
+                      cm.created_at
+               FROM conversation_message cm
+               JOIN "case" c USING (case_id)
+               WHERE c.member_id = $1::bigint
+               ORDER BY cm.message_id""",
+            [member_id],
+        ),
+        db.fetch(
+            """SELECT u.turn_id, max(u.scenario) AS scenario, sum(u.latency_ms) AS latency_ms,
+                      count(*) AS calls
+               FROM llm_usage u
+               JOIN "case" c USING (case_id)
+               WHERE c.member_id = $1::bigint AND u.turn_id IS NOT NULL
+               GROUP BY u.turn_id""",
+            [member_id],
+        ),
     )
+    # One resolve for the whole conversation, then dealt back per message: a transcript
+    # of forty replies is one query, not forty.
+    hits = await cited(db, member_id, sorted({cid for row in rows for cid in (row["citations"] or ())}))
+    by_clause: dict[str, list[dict[str, Any]]] = {}
+    for hit in hits:
+        by_clause.setdefault(hit["clause_id"], []).append(hit)
+    for row in rows:
+        row["citations"] = [hit for cid in (row["citations"] or ()) for hit in by_clause.get(cid, ())]
+    # The scenario names what the turn read. Tools run inside the scenario are not LLM
+    # calls and leave no llm_usage row, so the declaration is the record of them.
+    named = {s.name: s for s in CATALOGUE}
+    for turn in turns:
+        found = named.get(turn["scenario"] or "")
+        turn["display_name"] = found.display_name if found else None
+        turn["tools"] = list(found.tools) if found else []
     who = await db.fetch_val("SELECT display_name FROM member WHERE member_id = $1::bigint", [member_id])
-    return _json({"member_id": member_id, "display_name": who, "messages": rows})
+    return _json({
+        "member_id": member_id, "display_name": who, "messages": rows,
+        "traces": {turn["turn_id"]: turn for turn in turns},
+    })
 
 
 # ---------------------------------------------------------------- 客戶資料
