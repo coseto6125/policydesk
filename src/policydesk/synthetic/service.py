@@ -35,6 +35,10 @@ GRACE_DAYS = 30
 """保險法 §116: 催告到達後屆三十日仍不交付, 保險契約之效力停止. The window a missed
 instalment sits in before the contract stops."""
 
+NOTICE_ON_RECORD = 0.7
+"""Missed instalments whose 催告 arrival date is on file. The rest are the case the desk
+cannot compute a deadline for, kept common enough that a demo reaches it."""
+
 RELATIONS: tuple[tuple[str, float], ...] = (
     ("配偶", 0.42), ("子女", 0.28), ("父母", 0.16), ("兄弟姊妹", 0.07), ("法定繼承人", 0.07),
 )
@@ -177,7 +181,20 @@ async def furnish(db: Database, member_id: int, *, today: date, seed: int | None
         # had stopped for non-payment that they owed nothing. The missed instalment is the
         # last one before the lapse, which is the due date §116's thirty days ran from.
         owes = in_grace or (lapsed is not None and len(due) > 1)
-        rows = [(policy["policy_id"], d, None if owes and d == due[-1] else d, instalment) for d in due]
+        # Most missed instalments have their 催告 on record, a few days after the due date;
+        # some do not. Both states exist in a real book, and the desk answers them
+        # differently: a recorded arrival gives a deadline it can compute, an absent one
+        # gives a question it has to ask.
+        notice = (
+            min(due[-1] + timedelta(days=rng.randint(3, 12)), today)
+            if owes and rng.random() < NOTICE_ON_RECORD
+            else None
+        )
+        rows = [
+            (policy["policy_id"], d, None if owes and d == due[-1] else d, instalment,
+             notice if owes and d == due[-1] else None)
+            for d in due
+        ]
         if owes:
             paid_through = due[-2]
 
@@ -236,8 +253,8 @@ async def furnish(db: Database, member_id: int, *, today: date, seed: int | None
 
     if instalment_rows:
         await db.execute_many(
-            """INSERT INTO premium_payment (policy_id, due_at, paid_at, amount)
-               VALUES ($1::bigint, $2::date, $3::date, $4::numeric)""",
+            """INSERT INTO premium_payment (policy_id, due_at, paid_at, amount, notice_arrived_at)
+               VALUES ($1::bigint, $2::date, $3::date, $4::numeric, $5::date)""",
             instalment_rows,
         )
     if policy_ids:

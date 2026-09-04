@@ -15,10 +15,13 @@ it exists — so the reply that just states a balance has told them the least us
 thing available.
 
 The date the thirty days run from is **the day the notice arrived**, not the due date and
-not today. This desk does not hold that date. So it says what the period is and what it runs
-from, and asks — the same shape `cooling_off` takes for 保險單送達的翌日, and for the same
-reason: computing a deadline from a date the database does not have produces a confident
-wrong answer about whether someone still has cover.
+not today. `premium_payment.notice_arrived_at` holds it when the 催告 is on record, and
+`payment_state` then computes `grace_ends_at` and `grace_days_left` in SQL — a figure from a
+tool, which the desk may quote. When it is not on record the desk says what the period is
+and what it runs from, and asks — the same shape `cooling_off` takes for 保險單送達的翌日,
+and for the same reason: a deadline the model computes from the due date is a confident
+wrong answer about whether someone still has cover. Measured: handed §116 verbatim, Haiku
+did exactly that 3/3 until the row carried the figure.
 
 ## What it may not do
 
@@ -30,7 +33,7 @@ inside a window whose end nobody here can compute.
 from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute, tools
-from policydesk.agent.scenario_base import Scenario, gather_tools
+from policydesk.agent.scenario_base import Param, Scenario, gather_tools
 
 if TYPE_CHECKING:
     from datetime import date
@@ -46,6 +49,10 @@ same corpus, which is why the stop-word list and this constant both exist."""
 
 GRACE_ARTICLE = 116
 """保險法 §116 — 保險費到期未交付的效果. Named so the filter below reads as a decision."""
+
+GRACE_DAYS = 30
+"""§116 I: 催告到達後屆三十日. Counted from the day after the notice arrives, so the last
+day is arrival + 30. Computed here, in SQL, from a date on record — never by the model."""
 
 MODE_LABEL: dict[str, str] = {
     "annual": "年繳", "semiannual": "半年繳", "quarterly": "季繳", "monthly": "月繳",
@@ -83,13 +90,16 @@ async def payment_state(db: Database, member_id: int, *, today: date) -> list[di
     backfilling it, and `furnish` only writes history for a member as they enrol.
 
     """
-    return await db.fetch(
+    rows = await db.fetch(
         """SELECT po.policy_id, po.policy_number, pr.name AS product_name,
                   po.premium_mode, po.paid_through, po.lapsed_at,
                   (po.lapsed_at IS NOT NULL AND po.lapsed_at <= $2::date) AS is_lapsed,
                   due.due_at AS unpaid_due_at,
                   due.amount AS unpaid_amount,
                   ($2::date - due.due_at) AS overdue_days,
+                  due.notice_arrived_at,
+                  (due.notice_arrived_at + $3::int)::date AS grace_ends_at,
+                  (due.notice_arrived_at + $3::int - $2::date) AS grace_days_left,
                   last.amount AS instalment,
                   last.paid_at AS last_paid_at,
                   (po.paid_through IS NULL AND due.due_at IS NULL) AS no_record,
@@ -103,7 +113,7 @@ async def payment_state(db: Database, member_id: int, *, today: date) -> list[di
            FROM policy po
            JOIN product pr USING (product_id)
            LEFT JOIN LATERAL (
-               SELECT pp.due_at, pp.amount FROM premium_payment pp
+               SELECT pp.due_at, pp.amount, pp.notice_arrived_at FROM premium_payment pp
                WHERE pp.policy_id = po.policy_id AND pp.paid_at IS NULL
                ORDER BY pp.due_at LIMIT 1
            ) due ON true
@@ -114,8 +124,23 @@ async def payment_state(db: Database, member_id: int, *, today: date) -> list[di
            ) last ON true
            WHERE po.member_id = $1::bigint
            ORDER BY due.due_at NULLS LAST, po.effective_at DESC""",
-        [member_id, today],
+        [member_id, today, GRACE_DAYS],
     )
+    # The row says what it means, so the prompt does not have to. `no_record` and
+    # paid-up both leave every payment column NULL and are opposite facts; a model told
+    # the difference in a paragraph of prose got it right, and a model handed a row that
+    # says `status: paid_up 每期都已繳` needs no paragraph. Measured with the validate
+    # skill: with `grace_days_left` on the row, the control quoted it 3/3 with no rule.
+    for row in rows:
+        row["mode"] = MODE_LABEL.get(row["premium_mode"], row["premium_mode"])
+        row["status"] = (
+            "lapsed 已停效" if row["is_lapsed"]
+            else "unpaid 有一期未繳，催告已送達" if row["unpaid_due_at"] and row["notice_arrived_at"]
+            else "unpaid 有一期未繳，尚無催告送達紀錄" if row["unpaid_due_at"]
+            else "no_record 查無繳費紀錄，請洽業務員或客服" if row["no_record"]
+            else "paid_up 每期都已繳"
+        )
+    return rows
 
 
 @tools.requires_identity
@@ -182,18 +207,97 @@ async def grace_rule(db: Database, *, retriever: Any | None = None) -> list[dict
     ]
 
 
+PAYING_HEADING = "交付|寬限"
+"""The articles about how a premium is paid: 保險責任的開始及交付保險費 and 第二期以後保險費的
+交付、寬限期間及契約效力的停止, in their several spellings. Matched on the heading rather
+than retrieved: no product in the corpus carries a 繳費方式變更 article — the 123 clauses
+that hold 變更 beside 繳費方式 are 名詞定義 and 復效 — and the ranked search puts
+exclusions first for any topic, which buried the 交付 article under a limit of four."""
+
+
+@tools.requires_identity
+async def mode_change_rule(db: Database, member_id: int) -> list[dict[str, Any]]:
+    """
+    Read what each of the member's contracts says about how its premiums are paid.
+
+    Args:
+        db: The database.
+        member_id: Whose book.
+
+    Returns:
+        Clause rows for the contracts still in force, each naming its product and the
+        policy it sits under. Empty for a book whose contracts carry no such article —
+        single-premium products and riders that follow their main contract.
+
+    A customer asking 可以改成年繳嗎 was answered with the ledger three times running,
+    because this scenario held nothing else to say about a mode. The change itself is a
+    契約變更 the company processes; what the desk can show is the contract's own words on
+    how the premium is paid — where a mode has a consequence the customer should hear
+    before switching: 年繳 gets a 催告 before its thirty days start, 月繳 does not.
+
+    """
+    return await db.fetch(
+        """SELECT po.policy_number, c.product_id, c.clause_id, c.heading, c.verbatim, c.page,
+                  pr.name AS product_name
+           FROM policy po
+           JOIN clause c USING (product_id)
+           JOIN product pr USING (product_id)
+           WHERE po.member_id = $1::bigint AND po.lapsed_at IS NULL AND c.heading ~ $2::text
+           ORDER BY po.policy_number, c.clause_id""",
+        [member_id, PAYING_HEADING],
+    )
+
+
 TOOLS: dict[str, Any] = {
     "payment_state": payment_state,
     "payment_history": payment_history,
     "grace_rule": grace_rule,
+    "mode_change_rule": mode_change_rule,
 }
 """The scenario's tools. `grace_rule` carries no mark, so it survives the gate and an
 unverified customer still learns what a missed premium means."""
 
 
+def _key(number: str) -> str:
+    """
+    Reduce a policy number as typed to what identifies it.
+
+    「CL9926-658746」, 「cl9926 658746」 and 「658746」 are one policy to the customer, and the
+    last of these matches by suffix.
+    """
+    return "".join(ch for ch in number.upper() if ch.isalnum())
+
+
+def _scoped(facts: dict[str, Any], number: str) -> dict[str, Any]:
+    """
+    Keep the rows of the policy the customer named.
+
+    Args:
+        facts: What the tools returned, by tool name.
+        number: The policy number the router collected. Empty scopes nothing.
+
+    Returns:
+        The same material, each list of policy rows cut to the named policy. A number that
+        matches none of a tool's rows leaves that tool's rows whole, so the reply can say
+        which policies exist rather than that none does.
+
+    """
+    wanted = _key(number)
+    if not wanted:
+        return facts
+    scoped: dict[str, Any] = {}
+    for tool, rows in facts.items():
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "policy_number" in rows[0]:
+            kept = [r for r in rows if _key(r["policy_number"]).endswith(wanted)]
+            scoped[tool] = kept or rows
+        else:
+            scoped[tool] = rows
+    return scoped
+
+
 async def gather(
     db: Database,
-    params: dict[str, str],  # noqa: ARG001 - this scenario takes none; the signature is shared
+    params: dict[str, str],
     *,
     member_id: int | None = None,
     today: date | None = None,
@@ -206,8 +310,9 @@ async def gather(
 
     Args:
         db: The database.
-        params: What the router collected. None needed — a customer asking about their own
-            premiums has already said everything the query needs.
+        params: What the router collected. `policy_number` names one policy when the
+            customer did; the rows are then cut to it, so a question about one policy is
+            answered about that policy.
         member_id: Whose book.
         today: The date to measure overdue against.
         retriever: The shared index, passed through to the statute search.
@@ -224,57 +329,58 @@ async def gather(
     if member_id is not None:
         factories["payment_state"] = lambda: payment_state(db, member_id, today=when)
         factories["payment_history"] = lambda: payment_history(db, member_id)
-    return await gather_tools(factories, allowed=allowed)
+        factories["mode_change_rule"] = lambda: mode_change_rule(db, member_id)
+    return _scoped(await gather_tools(factories, allowed=allowed), params.get("policy_number", ""))
 
 
 PAYMENT = Scenario(
     name="payment",
     display_name="繳費與寬限期",
     summary="查各張保單繳到哪、有無欠繳與寬限期規則",
+    # Routing material. The examples are the customer's own words, in the customer's
+    # language; the rule around them is for the router.
     description=(
-        "保戶問繳費相關的事情時使用："
-        "我這期繳了嗎、下次什麼時候繳、一期要繳多少、我忘記繳了會怎樣、寬限期還有多久、"
-        "沒繳保單會不會失效、"
-        # billing pushes these here by name and this list did not take them, so the
-        # sentence 有月繳或季繳，差別在哪 was refused by one scenario and unrecognised by
-        # the other. `payment_state` reads `premium_mode` and MODE_LABEL renders it —
-        # the answer was ready and the route was not. billing's own quick reply
-        # 我想了解可以改成月繳嗎 lands here too.
-        "我是月繳還是年繳、有沒有月繳季繳、兩種繳別差在哪、我想改繳別。"
-        "問的是總共一年繳多少或想比較商品費率時不要選這個情境。"
+        "Use for anything about paying premiums: whether an instalment is paid, when the next one "
+        "is due, how much one is, what a missed payment leads to, the grace period, whether the "
+        "policy lapses, which mode a policy is paid by (年繳, 半年繳, 季繳, 月繳), how the modes "
+        "differ, and a change of mode. Examples: 「我這期繳了嗎」「下次什麼時候繳」「我忘記繳了會怎樣」"
+        "「寬限期還有多久」「我是月繳還是年繳」「可以改成年繳嗎」「這張改月繳」. "
+        "A message that only names a policy number, after a payment question, continues that "
+        "question in this scenario. "
+        "The premium total for a year, and a comparison of product rates, belong to other scenarios."
     ),
+    # Three sentences. The rows say what they mean (`status`, `mode`, `grace_days_left`),
+    # the router's rules already cover promises, figures and filing, and the clauses say
+    # the rest. What is left is the one state a row cannot answer for itself: a 催告 with
+    # no arrival on record.
+    #
+    # Measured 2026-09-05 (validate-prompt-rules, Haiku, isolated, n=3 per arm). Before
+    # `grace_days_left` existed, the control handed §116 verbatim computed 「還剩 19 天」
+    # from the due date 3/3. With the figure on the row it quoted the figure 3/3 with no
+    # rule. With the figure NULL and the status saying 尚無催告送達紀錄, the control
+    # asserted 「尚未送出催告」 3/3 — a claim the desk cannot make — and the last sentence
+    # below turned that into a question 3/3.
     injection=(
-        "payment_state 是空的時候，代表這位保戶名下沒有保單，不是系統查不到；"
-        "payment_state 某一列的 unpaid_due_at 是空的、no_record 為假、而且 is_lapsed 也為假時，"
-        "代表那張保單每一期都繳齊了，那是好消息，直接告訴他目前沒有欠繳。"
-        "這句話只能對那一列講，不可以因為某幾張沒有欠繳就說「您目前沒有欠繳」——"
-        "同一位保戶名下可能有另一張正在欠繳或已經停效。\n"
-        "no_record 為真是另一回事：那張保單沒有任何繳費紀錄可查，不是繳齊也不是欠繳。"
-        "照實說本櫃台查不到那張保單的繳費紀錄，請他洽原業務員或客服，"
-        "不要說他已經繳清，也不要說他欠繳。\n\n"
-        "你正在回答保戶自己的繳費狀況。逐張說明，每一張講清楚四件事：繳別（premium_mode，"
-        "年繳、半年繳、季繳、月繳照 MODE_LABEL 的說法講）、一期金額（instalment）、"
-        "已繳到哪一天（paid_through）、以及有沒有未繳的一期（unpaid_due_at）。\n"
-        "問到下一期什麼時候繳，就照 next_due_at 那一欄回答，那是依繳別推出來的應繳日。"
-        "next_due_at 是空的時候不要自己推算日期：有未繳的一期時下一期就是那一期，"
-        "保單已停效或查無繳費紀錄時則沒有下一期可談。\n\n"
-        "**有未繳的一期時，這才是重點，不是餘額。** 照 grace_rule 回傳的條文說明："
-        "保險費到期未交付，經催告到達後屆三十日仍不交付，契約效力停止。"
-        "引用時照 citation 欄位一字不差標註，例如〔保險法 第116條第1項〕。\n\n"
-        "那三十天從催告送達的翌日起算，不是從到期日起算，也不是從今天起算。"
-        "本櫃台沒有催告送達日這筆資料，所以絕對不要算出一個剩幾天或哪一天截止的答案。"
-        "說明期間怎麼算、從什麼時候起算，然後請他確認收到催告通知的日期。\n"
-        "overdue_days 是從到期日算到今天的天數，只能拿來說明已經逾期多久，"
-        "不可以拿來當作寬限期剩幾天。\n\n"
-        "已經停效的保單（is_lapsed 為真）照實說目前不提供保障，並告訴他復效要另外辦理，"
-        "細節請他回頭問復效的事。不要在這裡說明復效條件。\n\n"
-        "不可以說保單一定會失效或一定不會失效，也不可以承諾任何寬限或通融——"
-        "催告與停效由公司依條款作業，你能做的是把規則和他目前的狀態攤開。\n"
-        "金額一律照工具回傳的數字說，不要自己加總或換算。"
+        "payment_state: an empty list means the customer holds no policy, and a row's status "
+        "says where that policy stands. mode_change_rule holds what each contract says about "
+        "how its premiums are paid, by policy_number; when no clause covers a change of mode, "
+        "say the contract holds no such article.\n"
+        "Cite grace_rule as its citation field is written, for example 〔保險法 第116條第1項〕, "
+        "and a clause as [clause_id].\n"
+        "When grace_days_left is empty, no 催告 arrival is on record, which is not the same as "
+        "no 催告 sent: state that the thirty days in 保險法 §116 run from the day after it "
+        "arrives, and ask the customer when it arrived."
     ),
-    tools=("payment_state", "payment_history", "grace_rule"),
+    tools=("payment_state", "payment_history", "grace_rule", "mode_change_rule"),
     tools_module="policydesk.agent.scenarios.payment",
-    params=(),
+    params=(
+        Param(
+            name="policy_number",
+            description="The policy the customer named, as they wrote it, for example CL9926-658746 or 658746.",
+            example="CL9926-658746",
+            when_unsaid="Empty when the customer named no policy.",
+        ),
+    ),
     # 我想知道下一期什麼時候繳？ was here, and the injection now requires every reply to
     # state `next_due_at` per policy — so the chip spent a tap on lines already on screen.
     quick_replies=("逾期了還能補繳嗎？", "可以改成年繳嗎？", "催告通知會寄到哪裡？"),

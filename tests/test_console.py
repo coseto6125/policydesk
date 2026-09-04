@@ -370,3 +370,63 @@ async def test_the_unattributed_bucket_keeps_its_row_and_gains_no_name():
     assert row["scenario"] is None
     assert row["display_name"] is None
     assert row["summary"] is None
+
+
+# ---------------------------------------------------------------- the transcript's trace
+
+class _RoutedDB(_FakeDB):
+    """Answers each query from the table it names, so one handler can read three."""
+
+    def __init__(self, tables: dict[str, list[dict]]) -> None:
+        super().__init__()
+        self.tables = tables
+
+    async def fetch(self, sql: str, params=None) -> list[dict]:
+        self.queries.append(sql)
+        for table, rows in self.tables.items():
+            if table in sql:
+                return [dict(row) for row in rows]
+        return []
+
+
+def _transcript_db() -> _RoutedDB:
+    return _RoutedDB({
+        "conversation_message": [
+            {"message_id": 1, "case_id": 1, "speaker": "customer", "text": "猶豫期幾天", "turn_id": None,
+             "citations": [], "created_at": datetime.now(UTC)},
+            {"message_id": 2, "case_id": 1, "speaker": "agent", "text": "十天", "turn_id": "t-1",
+             "citations": ["art.3"], "created_at": datetime.now(UTC)},
+        ],
+        "llm_usage": [{"turn_id": "t-1", "scenario": "explain_cover", "latency_ms": 1300, "calls": 2}],
+        "FROM clause": [{"product_id": "P1", "clause_id": "art.3", "heading": "契約撤銷權", "page": 2,
+                         "product_name": "某終身醫療"}],
+    })
+
+
+async def test_the_transcript_resolves_a_stored_citation_against_the_book():
+    """
+    The socket sent the customer a link; the transcript must show the caseworker the same
+    link, from the id the reply stored, not a bare `art.3` that every contract has.
+    """
+    body = _decode(await mod.transcript(_Request({"token": "x", "member": "7"}, db=_transcript_db())))
+    agent = body["messages"][1]
+    assert agent["citations"][0]["product_id"] == "P1"
+    assert agent["citations"][0]["heading"] == "契約撤銷權"
+    assert body["messages"][0]["citations"] == []
+
+
+async def test_the_transcript_names_the_scenario_and_what_it_read_per_turn():
+    """The trace panel speaks the scenario's own name and lists what it queried."""
+    body = _decode(await mod.transcript(_Request({"token": "x", "member": "7"}, db=_transcript_db())))
+    trace = body["traces"]["t-1"]
+    assert trace["display_name"] == "查詢保障內容"
+    assert trace["latency_ms"] == 1300
+    assert trace["tools"], "the scenario's declared tools are the record of what it read"
+
+
+def test_the_reply_stores_its_citations_beside_the_text():
+    """A citation the socket sent and the table forgot is one the transcript cannot show."""
+    server = Path("src/policydesk/web/server.py").read_text()
+    insert = server[server.index("INSERT INTO conversation_message (case_id, speaker, text, turn_id"):]
+    assert "citations" in insert[:120]
+    assert Path("infra/migrations/20260905090000_citations.sql").exists()

@@ -6,7 +6,7 @@ An unpaid instalment is a countdown, not a balance. 保險法 §116 counts thirt
 here must never do is state how long they have left.
 """
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -84,20 +84,45 @@ async def test_a_member_who_owes_nothing_says_so_rather_than_nothing(db):
     rows = await payment_state(db, int(clean), today=date(2026, 8, 29))
     assert rows, "a member with policies returned no payment state"
     assert all(r["unpaid_due_at"] is None for r in rows)
-    assert "都繳齊了" in PAYMENT.injection, "the model must be told what all-clear looks like"
+    assert all(r["status"].startswith("paid_up") for r in rows), "the row itself must say all-clear"
 
 
-def test_the_injection_forbids_computing_the_deadline():
+def test_the_deadline_is_computed_from_the_notice_on_record_and_never_guessed():
     """
-    The thirty days run from the 催告 arriving, and this desk does not hold that date.
-
-    `cooling_off` has the same shape for 保險單送達的翌日 and the same reason: a deadline
-    computed from a date the database does not have is a confident wrong answer about
-    whether somebody still has cover.
+    The thirty days run from the 催告 arriving. With that date on record the row carries
+    the deadline, computed in SQL; without it the desk asks. The model computes nothing.
     """
-    assert "不是從到期日起算" in PAYMENT.injection
-    assert "絕對不要算出一個剩幾天" in PAYMENT.injection
-    assert "overdue_days" in PAYMENT.injection, "the one number on the row must be given its meaning"
+    assert "When grace_days_left is empty" in PAYMENT.injection
+    assert "ask the customer when it arrived" in PAYMENT.injection
+
+
+async def test_a_recorded_notice_yields_a_deadline_and_an_absent_one_yields_none(db):
+    with_notice = await db.fetch_one(
+        """SELECT po.member_id, pp.notice_arrived_at, po.policy_number FROM premium_payment pp
+           JOIN policy po USING (policy_id)
+           WHERE pp.paid_at IS NULL AND pp.notice_arrived_at IS NOT NULL AND po.lapsed_at IS NULL LIMIT 1"""
+    )
+    if with_notice is None:
+        pytest.skip("no unpaid instalment carries a 催告 date")
+    today = date(2026, 9, 5)
+    rows = await payment_state(db, int(with_notice["member_id"]), today=today)
+    row = next(r for r in rows if r["policy_number"] == with_notice["policy_number"])
+    assert row["grace_ends_at"] == with_notice["notice_arrived_at"] + timedelta(days=payment.GRACE_DAYS)
+    assert row["grace_days_left"] == (row["grace_ends_at"] - today).days
+    assert row["status"].startswith("unpaid")
+    assert "催告已送達" in row["status"]
+
+    without = await db.fetch_one(
+        """SELECT po.member_id, po.policy_number FROM premium_payment pp JOIN policy po USING (policy_id)
+           WHERE pp.paid_at IS NULL AND pp.notice_arrived_at IS NULL AND po.lapsed_at IS NULL LIMIT 1"""
+    )
+    if without is None:
+        pytest.skip("every unpaid instalment carries a 催告 date")
+    rows = await payment_state(db, int(without["member_id"]), today=today)
+    row = next(r for r in rows if r["policy_number"] == without["policy_number"])
+    assert row["grace_ends_at"] is None
+    assert row["grace_days_left"] is None
+    assert "尚無催告送達紀錄" in row["status"]
 
 
 def test_the_public_half_survives_the_gate():
@@ -121,3 +146,45 @@ async def test_an_instalment_is_a_whole_number_of_dollars(db):
         "SELECT amount FROM premium_payment WHERE amount <> round(amount) LIMIT 5"
     )
     assert not fractional, f"a premium is billed in whole dollars: {fractional}"
+
+
+# ---------------------------------------------------------------- 改繳別
+
+async def test_a_mode_change_reads_the_contracts_own_words_on_how_premiums_are_paid(db):
+    """
+    可以改成年繳嗎 was answered with the ledger three times running, because the scenario
+    held nothing else about a mode. The contract's 交付 article is what it can show.
+    """
+    member_id = await db.fetch_val(
+        "SELECT member_id FROM policy WHERE lapsed_at IS NULL GROUP BY member_id ORDER BY count(*) DESC LIMIT 1"
+    )
+    rows = await payment.mode_change_rule(db, member_id)
+    assert rows, "a member with policies in force gets at least their 交付 article"
+    assert all(r["product_name"] for r in rows), "each clause names the contract it is from"
+    assert any("繳" in r["heading"] or "交付" in r["heading"] for r in rows)
+
+
+def test_a_named_policy_scopes_the_rows_and_a_stranger_leaves_them_whole():
+    """
+    可以改成年繳嗎 → CL6490628670 → 658746張呢: the number is the whole message, and the
+    reply is about that policy. A number matching nothing keeps every row, so the reply can
+    say which policies exist.
+    """
+    facts = {
+        "payment_state": [{"policy_number": "CL9926-658746", "premium_mode": "monthly"},
+                          {"policy_number": "CL6490-628670", "premium_mode": "annual"}],
+        "grace_rule": [{"citation": "〔保險法 第116條第1項〕"}],
+    }
+    assert [r["policy_number"] for r in payment._scoped(facts, "658746")["payment_state"]] == ["CL9926-658746"]
+    assert [r["policy_number"] for r in payment._scoped(facts, "cl6490 628670")["payment_state"]] == ["CL6490-628670"]
+    assert payment._scoped(facts, "999999")["payment_state"] == facts["payment_state"]
+    assert payment._scoped(facts, "658746")["grace_rule"] == facts["grace_rule"]
+    assert [p.name for p in PAYMENT.params] == ["policy_number"]
+
+
+def test_impatience_at_being_misread_is_not_routed_to_the_complaint_desk():
+    """「我是要改年繳欸，你不懂嗎?」 got 金融消費者保護法 §13 and a 申訴 chip."""
+    from policydesk.agent.scenarios.soothe import SOOTHE
+
+    assert "不耐煩地重述" in SOOTHE.description
+    assert "你不懂嗎" in SOOTHE.description
