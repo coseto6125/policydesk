@@ -206,8 +206,8 @@ def test_the_router_is_told_to_call_a_scenario_it_cannot_fully_parameterise():
     # on the shelf.
     from policydesk.agent.scenario import ROUTER_INSTRUCTIONS
 
-    assert "推不出來也要先呼叫情境工具" in ROUTER_INSTRUCTIONS
-    assert "留空字串" in ROUTER_INSTRUCTIONS
+    assert "call the scenario tool anyway" in ROUTER_INSTRUCTIONS
+    assert "empty string" in ROUTER_INSTRUCTIONS
 
 
 def test_a_refused_customer_is_not_offered_a_question_from_two_turns_ago():

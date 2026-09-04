@@ -95,9 +95,17 @@ class Scenario(Struct, frozen=True):
     one pixel away from a mis-tap, and a mis-tap that reads as 我要買這張 is an
     expression of intent the customer never made. Buying is typed, never tapped.
     """
+    calculator: bool = False
+    """Whether the answering call is offered the calculator tool.
+
+    Off by default. A calculator in every scenario let the router's free answer work out
+    1+1 for a customer who had wandered off topic, and no scenario's injection asks the
+    model to compute: the figures a customer reads come from tool rows, and `quote` runs
+    `calculate` itself, deterministically, before the model sees the material.
+    """
 
 
-UNSAID = "保戶沒有說到這一項時填空字串，不要拿例子、常見情況或推測補上。"
+UNSAID = "Leave this an empty string when the customer did not say it. Fill nothing in from an example, a common case or a guess."
 """Said on every parameter, because `required` makes the model produce *something*.
 
 保戶 asked 我想問住院理賠 — five characters, no duration — and the router filled

@@ -38,6 +38,8 @@ dependencies = [
   "onnxruntime>=1.29.0",
   "tokenizers>=0.23.1",
   "pillow>=12.3.0",
+  "fast-langdetect>=1.0.1",
+  "opencc>=1.4.2",
 ]
 
 [project.optional-dependencies]

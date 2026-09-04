@@ -114,6 +114,17 @@ def test_the_desk_addresses_the_customer_and_not_a_third_party():
     """
     from policydesk.agent.scenario import WRITING
 
-    assert "稱呼一律用「您」" in WRITING
+    assert "in the second person" in WRITING
     assert "這位保戶" in WRITING, "the wrong form must be named, not only the right one"
-    assert "不是給他看的" in WRITING, "and the reason — the labels are for the model"
+    assert "not for the customer" in WRITING, "and the reason — the labels are for the model"
+
+
+def test_a_folded_card_keeps_its_header_on_screen():
+    """
+    The card's collapsed state was called `folded`, which is also the enrolment card's
+    summary line — a class that hides itself. Collapsing 保單清單 made the whole card,
+    header included, `display: none`, and a caseworker had no chevron left to reopen it.
+    """
+    assert ".card.shut > .body { grid-template-rows: 0fr; }" in PAGE
+    assert 'classList.toggle("folded"' not in PAGE
+    assert ".folded { display: none;" in PAGE, "the enrolment summary line still owns that name"

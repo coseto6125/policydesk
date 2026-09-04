@@ -30,7 +30,8 @@ from uuid import uuid4
 import etoon
 from msgspec import DecodeError, json
 
-from policydesk.agent import memory, statute, tools
+from policydesk.agent import i18n, memory, statute, tools
+from policydesk.agent import locale as lang
 from policydesk.agent.scenario import (
     ASKED_ALREADY,
     BY_NAME,
@@ -95,6 +96,9 @@ class Turn:
         self.computations: tuple[tuple[str, int], ...] = ()
         """Expressions the model asked the calculator to evaluate, and their results.
         Empty means the reply states no computed figure, or states one it should not."""
+        self.locale: str = lang.DEFAULT
+        """The language the reply is written in, as `agent.locale` read it off the
+        customer's message. The prompt names it, and the chips are rendered in it."""
 
 
 async def _record_failure(db: Database, turn: Turn, phase: Phase, scenario: str | None, error: str, latency_ms: int) -> None:
@@ -199,8 +203,8 @@ async def _route(
         # customer at `run_turn`'s `scenario is None` branch. It is also the path where the
         # model has the most freedom to write a long unstructured paragraph, since no
         # scenario injection is shaping it.
-        instructions=f"{ROUTER_INSTRUCTIONS}\n\n{WRITING}",
-        user_input=f"{past}# 本次訊息\n{text}",
+        instructions=f"{ROUTER_INSTRUCTIONS}\n\n{WRITING}\n\n{i18n.hint(turn.locale)}",
+        user_input=f"{past}# This message\n{text}",
         tools=[tool_schema(s) for s in reachable(stage)],
     )
     await _record(db, turn, Phase.ROUTE, completion, None)
@@ -460,10 +464,11 @@ def _render(scenario: Scenario, facts: dict[str, Any]) -> str:
         The reply, assembled from data rather than generated.
 
     """
+    template = scenario.template
     match scenario.name:
         case "issue_documents":
             waiting = facts.get("pending_signatures") or {}
-            return scenario.template.format(count=waiting.get("count", 0), names=waiting.get("names", ""))
+            return template.format(count=waiting.get("count", 0), names=waiting.get("names", ""))
         case "billing":
             summary = facts.get("billing_summary") or {}
             # A total mixing instalment rows with rate-card estimates says so. Without
@@ -475,7 +480,7 @@ def _render(scenario: Scenario, facts: dict[str, Any]) -> str:
                 f"另有 {uncosted} 張查不到費率，未計入這個金額" if uncosted else "",
             ]
             said = "；".join(c for c in caveats if c)
-            return scenario.template.format(
+            return template.format(
                 active=summary.get("active", 0),
                 premium=f"{float(summary.get('premium') or 0):,.0f}",
                 caveat=f"（{said}）" if said else "",
@@ -483,16 +488,16 @@ def _render(scenario: Scenario, facts: dict[str, Any]) -> str:
         case "coverage":
             rows = facts.get("coverage_summary") or []
             lines = "\n".join(f"　{r['product_name']}（{r['policy_number']}）：{r['insured']}" for r in rows)
-            return scenario.template.format(lines=lines or "　（查無有效保單）")
+            return template.format(lines=lines or "　（查無有效保單）")
         case _:
             # A template reaching here with a placeholder in it renders the braces to the
             # customer, which is how 「共 {count} 份」 was read by one. Every template that
             # needs a value has a case above; this branch is for the ones that need none,
             # and it says so rather than assuming it.
-            if "{" in scenario.template:
+            if "{" in template:
                 logger.warning("template_unfilled", scenario=scenario.name)
                 return "本次查詢未能組出完整回覆，已保留紀錄並轉由專人與您聯繫。"
-            return scenario.template
+            return template
 
 
 async def run_turn(
@@ -506,6 +511,7 @@ async def run_turn(
     index: Retriever | None = None,
     today: date | None = None,
     since: int = 0,
+    locale: str | None = None,
 ) -> Turn:
     """
     Handle one thing the customer said.
@@ -521,6 +527,9 @@ async def run_turn(
             tool marked `requires_identity` — the scenario is refused before its tools
             run, not after.
         today: The date to judge currency against.
+        since: The message this connection started above.
+        locale: The language to reply in, when the caller already resolved it. None
+            reads it off the message and the conversation.
 
     Returns:
         The turn, carrying the reply and anything that failed a check.
@@ -531,6 +540,7 @@ async def run_turn(
     """
     today = today or datetime.now(UTC).date()
     turn = Turn(case_id, member_id)
+    turn.locale = locale or (await lang.resolve(db, case_id, text))[1]
     # Two layers, gathered together. The transcript is the current session, cut at an
     # hour's silence; the card is what outlived that window. A customer who asks about a
     # claim, then a premium, then comes back to the application is coherent only because
@@ -561,7 +571,7 @@ async def run_turn(
         # Stated, because the summary the sweep wrote during the unverified half of the
         # conversation says the opposite, and the model believed it — answering a
         # verified customer with 目前尚無法執行身分核對 one turn after the check passed.
-        known = f"# 本次連線已完成身分核對，可以查詢這位保戶的資料\n\n{known}"
+        known = f"# This session has passed 資料核對. The customer's records may be read.\n\n{known}"
     if not confirmed:
         # Told to the model, so the ask arrives in the conversation rather than as a
         # system refusal, and enforced below, so a model that ignores it still reads
@@ -571,15 +581,17 @@ async def run_turn(
         # for anyone's policy data, and answering 嗨 with 請提供您的身分證字號 is a desk
         # frisking someone at the door. The check belongs to the question that needs it.
         known = (
-            "# 本次連線尚未完成身分核對\n"
-            "保戶還沒核對身分，所以你看不到他的任何保單資料。\n"
-            "打招呼、詢問服務範圍這類完全不涉及保險內容的話，直接回答就好。\n"
-            "但只要問到保險本身——猶豫期幾天、據實說明是什麼、停效多久還能復效、有哪些商品——"
-            "還是要呼叫對應的情境工具。那些情境查得到公開的條款與法條，未核對身分一樣答得出來，"
-            "而你自己憑印象講的天數或金額沒有任何東西可以查證。\n"
-            "一旦他問到自己的保單、保費、保額、理賠或投保規劃，就需要先核對身分——"
-            "那時再請他提供身分證字號，不要提早要。\n"
-            "任何情況下都不要猜測或編造他的保單內容。\n"
+            "# This session has not passed 資料核對\n"
+            "The customer has not verified their identity, so none of their policy data is visible to you.\n"
+            "A greeting, or a question about what this desk does, gets a direct answer.\n"
+            "A question about insurance itself (the free-look period, what 據實說明 means, how long "
+            "a lapsed policy can be reinstated, which products exist) still calls the matching "
+            "scenario tool. Those scenarios read public clauses and statutes and answer an "
+            "unverified customer. A number of days or an amount from your own memory has nothing "
+            "behind it that can be checked.\n"
+            "Once the customer asks about their own policies, premiums, sums insured, claims or "
+            "a plan to buy, identity comes first: ask for the national ID number then, and not before.\n"
+            "Every statement about their policies comes from the material.\n"
             + ASKED_ALREADY + "\n"
         )
     past = f"{known}{profile}{memory.transcript(messages[:-1])}"
@@ -659,14 +671,13 @@ async def run_turn(
     material = etoon.dumps({k: _short(v) for k, v in facts.items()})
     answering = time.perf_counter()
     try:
-        # The calculator is offered here, not merely described. Without it the
-        # instruction "金額由計算工具產生" had no mechanism behind it: the model wrote
-        # figures into prose from the material it had been handed, and nothing checked
-        # them. A tool the model cannot reach is a claim, not a guarantee.
+        # The calculator is offered only where the scenario asks for it. Offered
+        # everywhere, it made the desk a calculator for a customer who had wandered off
+        # topic; a scenario that needs a figure the rows do not carry sets `calculator`.
         completion = await provider.complete(
-            instructions=f"{ROUTER_INSTRUCTIONS}\n\n{scenario.injection}\n\n{WRITING}",
-            user_input=f"{past}# 本次訊息\n{text}\n\n# 工具回傳\n{material}",
-            tools=[TOOL_SCHEMA],
+            instructions=f"{ROUTER_INSTRUCTIONS}\n\n{scenario.injection}\n\n{WRITING}\n\n{i18n.hint(turn.locale)}",
+            user_input=f"{past}# This message\n{text}\n\n# Tool results\n{material}",
+            tools=[TOOL_SCHEMA] if scenario.calculator else None,
         )
     except ProviderError as exc:
         latency = int((time.perf_counter() - answering) * 1000)

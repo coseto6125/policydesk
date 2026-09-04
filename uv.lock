@@ -418,6 +418,18 @@ wheels = [
 ]
 
 [[package]]
+name = "colorlog"
+version = "6.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8c/55/ba79756cb90c8d69d599d57785398ac87bba7b19c80e87f4e8a562197c93/colorlog-6.12.0.tar.gz", hash = "sha256:2a7924c1dadf18b22a0eb8b06d1c7b01d5341707ec1641eb6fcc4fde0c3e8e5f", size = 18151, upload-time = "2026-07-23T13:40:40.71Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d4/19/0b6647bf5e331521e55d2b63bfbdc210bd9cd605189273f03614a05f702d/colorlog-6.12.0-py3-none-any.whl", hash = "sha256:30d392604e9110045a2c2aeefc27d7a017abbab63f3a8aee594eac0801df784e", size = 12239, upload-time = "2026-07-23T13:40:39.562Z" },
+]
+
+[[package]]
 name = "cryptography"
 version = "50.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -475,6 +487,26 @@ dependencies = [
     { name = "orjson" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/5d/49/54f054719c6c51934a868cd6483f50f92bc839f0d77a91201d76be3cf7e4/etoon-0.8.0.tar.gz", hash = "sha256:09a29590bf63b6cce4fbff3ec5225ea10033a906e64f362e96c6e54ff22943b4", size = 61927, upload-time = "2026-08-22T21:29:36.664Z" }
+
+[[package]]
+name = "fast-langdetect"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "fasttext-predict" },
+    { name = "requests" },
+    { name = "robust-downloader" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/24/83/639b1afc54b4cc73bf56c7f8efe50218b967364a9503947612b2b49212fa/fast_langdetect-1.0.1.tar.gz", hash = "sha256:22c651bf576aff3cb90edf070071f256996eabe612111ea9ced5b935e4376413", size = 796296, upload-time = "2026-05-06T04:24:14.984Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/46/1c/e4171f5235c2052ffcba1e19f8243cc6643ff678615d6cc803924343ed6f/fast_langdetect-1.0.1-py3-none-any.whl", hash = "sha256:d965844dfe44bb5e6042779dbc592618f227d447b752c4e2e503b0fd6abe5a4f", size = 789970, upload-time = "2026-05-06T04:24:13.436Z" },
+]
+
+[[package]]
+name = "fasttext-predict"
+version = "0.9.2.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/0e/9defbb9385bcb1104cc1d686a14f7d9fafe5fe43f220cccb00f33d91bb47/fasttext_predict-0.9.2.4.tar.gz", hash = "sha256:18a6fb0d74c7df9280db1f96cb75d990bfd004fa9d669493ea3dd3d54f84dbc7", size = 16332, upload-time = "2024-11-23T17:24:44.801Z" }
 
 [[package]]
 name = "filelock"
@@ -841,6 +873,19 @@ wheels = [
 ]
 
 [[package]]
+name = "opencc"
+version = "1.4.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e0/12/09e62f051af1de7ca84be1d69154bd0514416ef72237e2081584cc268bc9/opencc-1.4.2.tar.gz", hash = "sha256:47977905f131d7d9cfcec29fba5d841154907e1da73103105a4a68744e0f4f1a", size = 11637673, upload-time = "2026-08-22T19:09:31.761Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fd/66/6198bde333ecc6151d7ee3e25c6d5ba2b9494130c1739e943e03ad459830/opencc-1.4.2-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:0b14d64943de6c3575ae1e863dbbf4a3c6c7e7ce7e90f85772b2ec4dc24a5aca", size = 2150039, upload-time = "2026-08-22T19:13:51.722Z" },
+    { url = "https://files.pythonhosted.org/packages/19/0b/94de5296f99aa3a7e8e9ced388b0ada742b57394eb8cec8bc5ecc882af54/opencc-1.4.2-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:2dd2f8c3f7e633d252753c8f69298d5f446e02d62a3cf9c6a3c18683b5346c89", size = 2051838, upload-time = "2026-08-22T19:09:38.554Z" },
+    { url = "https://files.pythonhosted.org/packages/03/a6/45a09a6f0344cca2d645254ee9494684733ecdf1c7faf3135577430a4d8c/opencc-1.4.2-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:050bdc8516b4830be810504dfed1e5d6ac8ca81f19030b7c187abec5160683ca", size = 2408987, upload-time = "2026-08-22T19:11:03.299Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/f4/9402bf733bd685b6a54a86d4f6ba3893e03088e0816080b5b95b63a94fda/opencc-1.4.2-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:d054897f2e597d663410b9dc20b9e79d9410a893b9578ef3eaf3f6eef5fbcb52", size = 2446514, upload-time = "2026-08-22T19:09:30.297Z" },
+    { url = "https://files.pythonhosted.org/packages/92/8b/60963db0f968623ce7ce002f7480c083ebf8732314efc03c4f87a2d8f1d5/opencc-1.4.2-cp314-cp314-win_amd64.whl", hash = "sha256:06f215590050d8504ceb713be0c822dd00b14095fd10a0b66f689bab40821119", size = 2954295, upload-time = "2026-08-22T19:13:47.686Z" },
+]
+
+[[package]]
 name = "orjson"
 version = "3.12.0"
 source = { registry = "https://pypi.org/simple" }
@@ -973,11 +1018,13 @@ dependencies = [
     { name = "aiohttp", extra = ["speedups"] },
     { name = "cachebox" },
     { name = "etoon" },
+    { name = "fast-langdetect" },
     { name = "jieba-next" },
     { name = "logxide" },
     { name = "msgspec" },
     { name = "numpy" },
     { name = "onnxruntime" },
+    { name = "opencc" },
     { name = "pdfplumber" },
     { name = "pillow" },
     { name = "psqlpy" },
@@ -1003,11 +1050,13 @@ requires-dist = [
     { name = "aiohttp", extras = ["speedups"], specifier = ">=3.14.3" },
     { name = "cachebox", specifier = ">=6.2.0" },
     { name = "etoon", specifier = ">=0.6" },
+    { name = "fast-langdetect", specifier = ">=1.0.1" },
     { name = "jieba-next", specifier = ">=1.0.0rc1" },
     { name = "logxide", specifier = ">=0.2.2" },
     { name = "msgspec", specifier = ">=0.21.1" },
     { name = "numpy", specifier = ">=2.5.2" },
     { name = "onnxruntime", specifier = ">=1.29.0" },
+    { name = "opencc", specifier = ">=1.4.2" },
     { name = "pdfplumber", specifier = ">=0.11" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "psqlpy", specifier = ">=0.12.1" },
@@ -1258,6 +1307,35 @@ wheels = [
 ]
 
 [[package]]
+name = "requests"
+version = "2.34.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "certifi" },
+    { name = "charset-normalizer" },
+    { name = "idna" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/c3/e2a2b89f2d3e2179abd6d00ebd70bff6273f37fb3e0cc209f48b39d00cbf/requests-2.34.2.tar.gz", hash = "sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed", size = 142856, upload-time = "2026-05-14T19:25:27.735Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl", hash = "sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0", size = 73075, upload-time = "2026-05-14T19:25:26.443Z" },
+]
+
+[[package]]
+name = "robust-downloader"
+version = "0.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorlog" },
+    { name = "requests" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/63/20/8d28efa080f58fa06f6378875ac482ee511c076369e5293a2e65128cf9a0/robust-downloader-0.0.2.tar.gz", hash = "sha256:08c938b96e317abe6b037e34230a91bda9b5d613f009bca4a47664997c61de90", size = 15785, upload-time = "2023-11-13T03:00:20.637Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/56/a1/779e9d0ebbdc704411ce30915a1105eb01aeaa9e402d7e446613ff8fb121/robust_downloader-0.0.2-py3-none-any.whl", hash = "sha256:8fe08bfb64d714fd1a048a7df6eb7b413eb4e624309a49db2c16fbb80a62869d", size = 15534, upload-time = "2023-11-13T03:00:18.957Z" },
+]
+
+[[package]]
 name = "ruff"
 version = "0.16.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1451,6 +1529,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/8e/b44a6afb77b94118655c029081b7932d64bb4c5b1c8ba2b7f5808b5d0bc2/ujson-5.13.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:38afcf994b28ed85ea2420e2a8d79a37d0a77348b3daf53850c16edda66f942d", size = 1038553, upload-time = "2026-06-14T22:36:21.245Z" },
     { url = "https://files.pythonhosted.org/packages/7e/93/fab1d786174c8780eb3e386c73f1925a435e97fbf77c957fea4fca83994d/ujson-5.13.0-cp314-cp314t-musllinux_1_2_i686.whl", hash = "sha256:1bdf2518971586f2b413156c49d9dd8b56cc990a8647081e1bd00af60564d469", size = 1197938, upload-time = "2026-06-14T22:36:22.585Z" },
     { url = "https://files.pythonhosted.org/packages/f3/bc/2f073bb708f9d128f5d1cb39063a5f6421b1ce94c61be8661c55a189f407/ujson-5.13.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:751ad01042472f1c7c02f5c597c7aee79834e82a6cc384ca302173bbc8e8deb8", size = 1090938, upload-time = "2026-06-14T22:36:23.947Z" },
+]
+
+[[package]]
+name = "urllib3"
+version = "2.7.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/0c/06f8b233b8fd13b9e5ee11424ef85419ba0d8ba0b3138bf360be2ff56953/urllib3-2.7.0.tar.gz", hash = "sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c", size = 433602, upload-time = "2026-05-07T16:13:18.596Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897", size = 131087, upload-time = "2026-05-07T16:13:17.151Z" },
 ]
 
 [[package]]

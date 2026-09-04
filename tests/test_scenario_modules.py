@@ -150,7 +150,7 @@ async def test_a_confirmed_turn_runs_every_tool(scenario, db, member_id):
     assert set(facts) - {"_allowed_clauses", "_identity_required"}, f"{scenario.name} returned no material at all"
 
 
-EXPLAINS = re.compile(r"是空的時候|沒有回傳任何項目時|查無|沒有符合")
+EXPLAINS = re.compile(r"是空的時候|沒有回傳任何項目時|查無|沒有符合|[Aa]n empty (list|result)|is empty|returns nothing")
 
 
 @pytest.mark.parametrize(
