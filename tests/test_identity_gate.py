@@ -135,8 +135,8 @@ def test_the_model_is_told_as_well_as_blocked():
     produces a system refusal in the middle of a conversation.
     """
     body = EXECUTOR[EXECUTOR.index("if not confirmed:"):EXECUTOR.index('past = f"{known}')]
-    assert "本次連線尚未完成身分核對" in body
-    assert "不要猜" in body
+    assert "This session has not passed 資料核對" in body
+    assert "comes from the material" in body
 
 
 def test_the_number_is_compared_on_the_server():
@@ -360,7 +360,7 @@ async def test_a_scenario_promising_public_material_actually_returns_some(scenar
     if public:
         assert material, f"{scenario.name} declares {sorted(public)} and returned none of it"
     else:
-        assert "沒有任何公開資訊時" in scenario.injection, (
+        assert "holds no public information" in scenario.injection, (
             f"{scenario.name} has no public tool, so the paragraph must say what to do with none"
         )
 
