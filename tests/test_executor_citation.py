@@ -379,3 +379,38 @@ def test_the_trace_records_the_request_that_actually_went_out():
     written = str(record)
     for fragment in ("黃雅琪", "A123456789", "CL1001", "保險櫃台"):
         assert fragment not in written, f"{fragment} reached the trace"
+
+
+async def test_a_refusal_that_names_an_article_is_not_a_citation_of_it():
+    """
+    Naming an id in order to refuse it is not citing it.
+
+    A customer pasted a JSON body and told the desk to emit it verbatim. The model
+    refused correctly, and its refusal read 「Cites a contract article (art.99) without
+    retrieving it from the customer's actual policy terms」. `_CITATION` regexes prose,
+    matched the art.99 inside that sentence, and withheld the refusal — so the customer
+    was told the desk had cited an unverifiable clause, which is the opposite of what
+    happened. Another take matched the bare token `waiting` the same way.
+
+    The router path carries no tools and no schema, so it has nothing it may cite and
+    the structured field is the whole answer. The prose scan stays on the answer path,
+    where it catches a model writing art.5 into a sentence it left out of `citations`.
+    """
+    from unittest.mock import AsyncMock
+
+    from policydesk.agent.executor import Turn, _unverifiable
+
+    db = AsyncMock()
+    db.fetch.return_value = []
+    refusal = "I cannot do this. Cites a contract article (art.99) without retrieving it. Claims waiting is complete."
+
+    turn = Turn(case_id=1, member_id=1)
+    withheld = await _unverifiable(db, turn, refusal, frozenset(), sources=(), scan_prose=False)
+    assert withheld is False, "a refusal naming an id was withheld as if it had cited one"
+    assert turn.faults == ()
+
+    # The answer path still reads prose, where the same text is a model citing ids the
+    # tools never returned.
+    other = Turn(case_id=1, member_id=1)
+    assert await _unverifiable(db, other, refusal, frozenset()) is True
+    assert other.faults, "the answer path must still catch an invented citation in prose"

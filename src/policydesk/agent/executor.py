@@ -748,7 +748,11 @@ async def run_turn(
         # as many words — and that answer used to be the one reply nothing checked. It has
         # no tools behind it, so no clause id is allowed and any citation in it is one the
         # model invented.
-        await _unverifiable(db, turn, turn.reply, frozenset())
+        # Structured citations only. This reply has no tools behind it and no schema, so
+        # there is nothing it may cite — and what it does do is name an id while refusing
+        # to use one. The prompt forbids stating a figure or an article here; this is the
+        # half that does not depend on the model having followed it.
+        await _unverifiable(db, turn, turn.reply, frozenset(), sources=(), scan_prose=False)
         _withhold_promise(turn, case_id, None)
         return turn
 
@@ -1044,7 +1048,7 @@ def _withhold_promise(turn: Turn, case_id: int, scenario: str | None) -> bool:
 
 async def _unverifiable(
     db: Database, turn: Turn, text: str, allowed: frozenset[str], *, sources: tuple[str, ...] | None = None,
-    quoted_fields: tuple[_ProvisionQuote, ...] = (),
+    quoted_fields: tuple[_ProvisionQuote, ...] = (), scan_prose: bool = True,
 ) -> bool:
     """
     Withhold a reply whose citations do not resolve.
@@ -1077,7 +1081,17 @@ async def _unverifiable(
         source_faults = tuple(f"source:{key}" for key in dict.fromkeys(sources) if key not in available)
         selected = tuple(available[key] for key in dict.fromkeys(sources) if key in available)
         allowed = frozenset(clause for _, clause in selected)
-    cited = tuple(dict.fromkeys([*(_CITATION.findall(text)), *(clause for _, clause in selected)]))
+    # Prose is scanned on the answer path, where it is a second line rather than the
+    # only one: a model that writes art.5 into a sentence without listing it in
+    # `citations` is caught here, and the enum alone does not stop that.
+    #
+    # It is not scanned where the reply may name an id in order to refuse it. A refusal
+    # reading 「Cites a contract article (art.99) without retrieving it」 was read as a
+    # citation of art.99, so a correct refusal was withheld and the customer was told
+    # the desk had cited an unverifiable clause. It had not. The same match fired on the
+    # bare token `waiting` in another refusal.
+    found = _CITATION.findall(text) if scan_prose else ()
+    cited = tuple(dict.fromkeys([*found, *(clause for _, clause in selected)]))
     subject = {key: value for key, value in turn.clause_texts.items() if key in (sources or ())}
     checked = recheck(
         Verdict(passed=True, reason="", cited_clauses=cited,
