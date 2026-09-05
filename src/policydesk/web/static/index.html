@@ -1995,6 +1995,19 @@ function connectCustomer(name) {
         setupCard = renderSetup(m);
         break;
       case "profile":
+        if (m.identity_required) {
+          memberId = null;
+          deskWs?.close();
+          deskWs = null;
+          $("chatWho").textContent = m.name;
+          bubble("them", `${m.name} 您好。查詢個人保單前，請先輸入身分證字號完成核對；也可以先詢問公開商品資訊。`);
+          renderChips(OPENERS);
+          $("chatInput").placeholder = "輸入問題或身分證字號，Enter 送出";
+          $("chatInput").disabled = false;
+          $("sendBtn").disabled = false;
+          $("chatInput").focus();
+          break;
+        }
         memberId = m.member_id;
         setupCard?.fold(m);
         setupCard = null;
