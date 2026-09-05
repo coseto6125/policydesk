@@ -49,8 +49,18 @@ services:
       # The prebuilt vector index. Rebuilding 15,824 passages on the host would spend
       # Workers AI quota to reproduce bytes the workstation already has.
       - ./data/vectors:/app/data/vectors:ro
+      # BM25 rebuilds its index at every boot in about two minutes, so it needs
+      # somewhere writable but nothing durable. A named volume mounts as root-owned
+      # and the image runs as uid 10001, so the first write fails and the desk loses
+      # its lexical channel; tmpfs at 1777 — /tmp's own mode — takes the write and
+      # disappears with the container, which is what a rebuilt cache wants.
+      - type: tmpfs
+        target: /app/data/bm25
+        tmpfs:
+          mode: 0o1777
 
     ports:
       # Bound to loopback: the public entrance is the Cloudflare tunnel, so the port
       # itself needs no exposure on the host's own interface.
-      - "127.0.0.1:8100:8100"
+      - "127.0.0.1:8101:8100"
+
