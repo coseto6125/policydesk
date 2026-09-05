@@ -1,5 +1,62 @@
 # Supervisor notes
 
+## Rejected names and duplicate documents — 2026-09-06, 00:06
+
+The second pass separates unresolved labels from real same-name documents.
+The positive title selector rejected the reported section headings, but the refresh
+fallback kept their old labels. That fallback is now an explicit `商品名稱待核對`.
+The PDF builder uses the same label instead of a filename. Document IDs remain separate;
+the shared label does not assert that unresolved documents describe the same product.
+An explicit `本公司『…』(以下簡稱本商品)` declaration supplies a disclosure's product name.
+Mere examples, references and conflicting declarations do not.
+
+Applied 166 name-only updates: 11 recovered names and 155 explicit unresolved labels.
+The 155 comprise 152 unknown sources and 3 brochures. All 299 contract names are unchanged.
+The reported vendor-heading, carbon-label, health-promotion and two fund-heading groups
+now have zero old labels. Footer names and padded names remain zero. No rows were merged
+or deleted. No unresolved name appears in sale_catalog; all 288 held policies still
+reference contract sources. This does not mean all 660 records have verified names.
+Old names, IDs and source URLs remain in `data/evaluations/product-name-review-20260906.json`.
+Actual SQL and raw output are in `data/evaluations/corpus-sql-audit-20260906.txt`.
+These are local audit artifacts. FU-2026-09-05-ac4c0e84b442 remains open for manual review.
+
+Before: 660 rows, 448 distinct names and 170 duplicate-name groups.
+After excluding the unresolved label: 505 named rows, 320 distinct names and 161
+duplicate-name groups. Of those groups, 155 mix source kinds; five contain multiple contracts.
+These counts are not a deduplication score. The shared unresolved label must be excluded.
+
+The two requested examples were checked against local PDF pages:
+
+- 實全心意 has two 8-page contracts: 84844c349049 is filed on 109.04.28;
+  c9bcc741c6c6 adds 112.02.08 and 113.07.01 revisions. The other two records are
+  2-page introductions: 7f54efbd9e21 is 2023-07/CV1; 55361627506e is 2024-07/CV2.
+  Each introduction contains M10/M20/M30; these are not separate coverage-band PDFs.
+- 真富利雙享 has a 39-page contract (8bad693d64b3), a 737-page product explanation
+  (1002c5a77160, issued 111-10), and a 4-page introduction (6c665b43a75a, 2022-10/V63).
+  Keeping these source records is appropriate; calling them three contracts is not.
+
+An exception prevents claiming all five contract pairs are different versions:
+新吉美發 6e7ec357daa7 and b6d2e482c470 have identical full extracted text after
+whitespace removal. Their raw extracted text differs. This does not compare images or
+signatures. The demo prices remain 39160 and 17160; a PDF hash is not evidence for
+a version-price difference. FU-2026-09-06-39c5a044dc8d tracks catalogue identity review.
+No document or price was merged in this name-only patch.
+
+Clause count 11775 and policy count 288 are unchanged. Before/after fingerprints match:
+clause product/ID/heading/text/page=df9e6247c510463b0794025eef812081;
+policy ID/member/product/cover=d9723e35e019d25dd3eaeed6f46a8cb6.
+contract_clause remains 10512 rows, maximum 54451 characters, zero over 100000.
+This patch does not change clause boundaries, text, source kinds or vector inputs.
+No vector rebuild is required for this patch. The raw brochure-boundary follow-up stays open.
+The old tracked SQLite cache remains unchanged; importing it still requires names-only refresh.
+
+Regression baseline: 9 failed, 80 passed. After the fix, source tests and DB reads passed.
+Final command, after applying the metadata update:
+`.venv/bin/python -m pytest tests/test_clause_index.py tests/test_quote.py tests/test_product_clauses.py tests/test_corpus_loader.py::test_copy_corpus_legacy_ideographs_are_normalized_before_postgres tests/test_corpus_loader.py::test_refresh_product_names_printed_title_updates_only_unchanged_source tests/test_corpus_loader.py::test_refresh_product_names_unresolved_is_reported_not_guessed tests/test_corpus_loader.py::test_refresh_product_names_unresolved_marker_is_idempotent tests/test_corpus_loader.py::test_refresh_product_names_same_product_different_sources_keeps_both_records -q -ra --tb=short`.
+Result: 210 passed, 0 skipped, 0 deselected, in 18.04 seconds. Ruff passed.
+The service was active; TCP 5434 and SELECT 1 succeeded before DB tests.
+Only named isolated/mock corpus-loader cases ran, not that whole file or the full suite.
+
 ## Corpus names and demonstration rates — 2026-09-05, 23:43
 
 The old title selector accepted the first readable line after a furniture denylist.
