@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from conftest import mock_database
 from policydesk.retrieval.base import CLAUSE, Hit
 
 
@@ -83,14 +84,16 @@ async def test_run_turn_ambiguous_policy_lists_only_matching_numbers_and_full_na
         colliding_policies[1]["product_id"] = "p1"
         colliding_policies[1]["product_name"] = "安心醫療"
     policies = colliding_policies[::-1] if reverse else colliding_policies
-    monkeypatch.setattr(tools, "list_policies", AsyncMock(return_value=policies))
+    monkeypatch.setattr(tools, "list_policies", AsyncMock(
+        return_value=policies, requires_identity=tools.list_policies.requires_identity,
+    ))
     monkeypatch.setattr(executor, "_route", AsyncMock(return_value=(
         BY_NAME[scenario_name], {"policy": "安心醫療", "topic": "住院", "event": "住院"},
     )))
     monkeypatch.setattr(executor.memory, "recent", AsyncMock(return_value=[]))
     monkeypatch.setattr(executor.memory, "card", AsyncMock(return_value=""))
     monkeypatch.setattr(tools, "standing_brief", AsyncMock(return_value={}))
-    lookups = {name: AsyncMock() for name in (
+    lookups = {name: AsyncMock(requires_identity=getattr(tools, name).requires_identity) for name in (
         "find_clause", "required_documents", "find_multiplier", "clause_ids_for",
     )}
     for name, lookup in lookups.items():
@@ -99,8 +102,7 @@ async def test_run_turn_ambiguous_policy_lists_only_matching_numbers_and_full_na
     provider.complete.return_value = Completion(
         text='{"reply":"您指哪一張？","citations":[],"calculations":[]}', provider="test",
     )
-    db, index = AsyncMock(), Mock()
-    db.fetch_val.return_value = "inquiry"
+    db, index = mock_database(fetch_val="inquiry"), Mock()
     turn = await executor.run_turn(
         provider, db, case_id=1, member_id=1, text="安心醫療的住院保障",
         confirmed=True, locale="zh-TW", index=index,
@@ -129,14 +131,18 @@ async def test_gather_unresolved_personal_policy_does_not_retrieve(monkeypatch, 
 
     policies = [{"policy_number": f"CL{number}", "product_id": f"p{number}",
                  "product_name": f"住院保險{number}"} for number in (1, 2)]
-    monkeypatch.setattr(tools, "list_policies", AsyncMock(return_value=policies))
-    clauses = AsyncMock()
+    monkeypatch.setattr(tools, "list_policies", AsyncMock(
+        return_value=policies, requires_identity=tools.list_policies.requires_identity,
+    ))
+    clauses = AsyncMock(requires_identity=tools.find_clause.requires_identity)
     monkeypatch.setattr(tools, "find_clause", clauses)
-    documents, multipliers, clause_ids = AsyncMock(), AsyncMock(), AsyncMock()
+    documents = AsyncMock(requires_identity=tools.required_documents.requires_identity)
+    multipliers = AsyncMock(requires_identity=tools.find_multiplier.requires_identity)
+    clause_ids = AsyncMock(requires_identity=tools.clause_ids_for.requires_identity)
     monkeypatch.setattr(tools, "required_documents", documents)
     monkeypatch.setattr(tools, "find_multiplier", multipliers)
     monkeypatch.setattr(tools, "clause_ids_for", clause_ids)
-    db, index = AsyncMock(), Mock()
+    db, index = mock_database(), Mock()
     facts = await executor._gather(db, BY_NAME[scenario_name], executor.Turn(1, 1),
                                    today=date(2026, 9, 5), params={"policy": reference, "topic": "住院"},
                                    confirmed=True, index=index)
@@ -164,11 +170,14 @@ async def test_gather_personal_policy_scope_limits_retrieval(monkeypatch, params
 
     policies = [{"policy_number": f"CL{number}", "product_id": f"p{number}",
                  "product_name": f"住院保險{number}"} for number in (1, 2)]
-    monkeypatch.setattr(tools, "list_policies", AsyncMock(return_value=policies))
-    clause_ids = AsyncMock(return_value=frozenset())
+    monkeypatch.setattr(tools, "list_policies", AsyncMock(
+        return_value=policies, requires_identity=tools.list_policies.requires_identity,
+    ))
+    clause_ids = AsyncMock(return_value=frozenset(), requires_identity=tools.clause_ids_for.requires_identity)
     monkeypatch.setattr(tools, "clause_ids_for", clause_ids)
     scenario = BY_NAME[scenario_name]
-    lookups = {name: AsyncMock(return_value=[]) for name in scenario.tools if name != "list_policies"}
+    lookups = {name: AsyncMock(return_value=[], requires_identity=getattr(tools, name).requires_identity)
+               for name in scenario.tools if name != "list_policies"}
     for name, lookup in lookups.items():
         monkeypatch.setattr(tools, name, lookup)
     facts = await executor._gather(AsyncMock(), scenario, executor.Turn(1, 1),
@@ -330,8 +339,7 @@ async def test_run_turn_module_uses_its_own_identity_requirements(monkeypatch, s
     monkeypatch.setattr(executor.statute, "unresolved", AsyncMock(return_value=[]))
     provider = AsyncMock()
     provider.complete.return_value = Completion(text='{"reply":"公開商品條款說明。","citations":[],"calculations":[]}', provider="test")
-    db = AsyncMock()
-    db.fetch_val.return_value = "inquiry"
+    db = mock_database(fetch_val="inquiry")
     turn = await executor.run_turn(provider, db, case_id=1, member_id=1, text="查指定商品的除外責任", confirmed=False, locale="zh-TW")
     assert turn.awaiting_identity is pending
     assert turn.quick_replies == (PUBLIC_OPENERS if pending else scenario.quick_replies)
@@ -350,8 +358,7 @@ async def test_run_turn_lookup_scope_instruction_is_only_sent_to_router(monkeypa
         Completion(text="", tool_calls=({"name": "product_clauses", "arguments": '{"product":"x","topic":"保障"}'},), provider="test"),
         Completion(text='{"reply":"現有資料不足以確認。","citations":[],"calculations":[]}', provider="test"),
     ]
-    db = AsyncMock()
-    db.fetch_val.return_value = "inquiry"
+    db = mock_database(fetch_val="inquiry")
     turn = await executor.run_turn(provider, db, case_id=1, member_id=1, text="商品保障", locale="zh-TW")
     route, answer = [call.kwargs for call in provider.complete.call_args_list]
     assert route["instructions"].startswith(LOOKUP_SCOPE)
@@ -376,8 +383,7 @@ async def test_run_turn_stable_sections_precede_variable_prompt_sections(monkeyp
         Completion(text="", tool_calls=({"name": "product_clauses", "arguments": '{"product":"x","topic":"保障"}'},), provider="test"),
         Completion(text='{"reply":"資料不足。","citations":[],"calculations":[],"quoted_fields":[]}', provider="test"),
     ]
-    db = AsyncMock()
-    db.fetch_val.return_value = "inquiry"
+    db = mock_database(fetch_val="inquiry")
     await executor.run_turn(provider, db, case_id=1, member_id=1, text="商品保障", confirmed=True, locale="zh-TW")
     route, answer = [call.kwargs for call in provider.complete.call_args_list]
     for call in (route, answer):
