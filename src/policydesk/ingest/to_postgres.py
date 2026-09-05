@@ -48,7 +48,9 @@ _BANDS: dict[str, tuple[int, int, int]] = {
 
 _UNITS: dict[str, tuple[str, int, int, int]] = {
     # line: (demo unit label, numeric pricing basis, min annual premium, max)
-    "health": ("每 1,000 元保額", 1_000, 1200, 4800),
+    # Generic health cover includes lump sums. Daily-benefit prices cannot price this
+    # basis; use a synthetic 1%-5% range without changing held policies' cover scale.
+    "health": ("每 1,000 元保額", 1_000, 10, 50),
     "accident": ("每 100 萬元保額", 1_000_000, 900, 3600),
     "life": ("每 100 萬元保額", 1_000_000, 6000, 42000),
     "annuity": ("每 10 萬元年金", 100_000, 8000, 30000),
