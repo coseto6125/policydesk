@@ -15,6 +15,31 @@ import conftest
 from policydesk.core import db as database_module
 
 
+@pytest.mark.parametrize("body_fails", [False, True])
+async def test_mock_database_transaction_shares_queries_and_propagates_errors(body_fails):
+    db = conftest.mock_database(fetch_val="issued", fetch=[{"document_id": 17}])
+
+    async def use_session():
+        async with db.transaction() as session:
+            assert await session.fetch_val("stage") == "issued"
+            assert await session.fetch("documents") == [{"document_id": 17}]
+            await session.execute_many("roles", [[17, "mock"]])
+            if body_fails:
+                raise RuntimeError("transaction body failed")
+
+    if body_fails:
+        with pytest.raises(RuntimeError, match="transaction body failed"):
+            await use_session()
+    else:
+        await use_session()
+    db.transaction.assert_called_once_with()
+    db.transaction.return_value.__aenter__.assert_awaited_once()
+    db.transaction.return_value.__aexit__.assert_awaited_once()
+    db.fetch_val.assert_awaited_once_with("stage")
+    db.fetch.assert_awaited_once_with("documents")
+    db.execute_many.assert_awaited_once_with("roles", [[17, "mock"]])
+
+
 async def test_connected_database_connection_failure_fails_and_closes(monkeypatch):
     pool = AsyncMock()
     pool.fetch_val.side_effect = ConnectionError("postgres://private-user:private-secret@unit.invalid/database")
