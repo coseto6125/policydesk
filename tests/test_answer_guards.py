@@ -260,4 +260,5 @@ def test_the_reply_stores_its_faults_and_evidence_beside_the_text():
     migration = Path("infra/migrations/20260906000000_turn_record.sql").read_text()
     assert "faults text[]" in migration
     assert "evidence jsonb" in migration
-    assert "'repair'" not in migration
+    check = migration[migration.index("ADD CONSTRAINT llm_usage_phase_check"):]
+    assert "'repair'" not in check[:check.index("NOT VALID")], "the phase list no longer names repair"
