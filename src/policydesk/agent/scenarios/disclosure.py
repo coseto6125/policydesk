@@ -49,7 +49,7 @@ from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute
 from policydesk.agent.scenario_base import Param, Scenario, gather_tools
-from policydesk.agent.tools import requires_identity
+from policydesk.agent.tools import public, requires_identity
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
@@ -88,6 +88,7 @@ a scenario that hands the model 'hypertension' gets a reply that says 'hypertens
 
 
 
+@public
 async def disclosure_duty(
     db: Database, concern: str, *, limit: int = 2, retriever: Any | None = None
 ) -> list[dict[str, Any]]:

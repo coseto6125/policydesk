@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import tools
 from policydesk.agent.scenario_base import Scenario
-from policydesk.agent.tools import requires_identity
+from policydesk.agent.tools import public, requires_identity
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
@@ -131,7 +131,7 @@ async def _grant_headings(db: Database, product_ids: list[str]) -> list[dict[str
     """
     return await db.fetch(
         """SELECT c.product_id, p.name AS product_name, c.heading
-           FROM clause c JOIN product p USING (product_id)
+           FROM contract_clause c JOIN product p USING (product_id)
            WHERE c.kind = 'grant' AND ($1::text[] IS NULL OR c.product_id = ANY($1::text[]))""",
         [product_ids or None],
     )
@@ -205,6 +205,7 @@ changes what this insurer sells changes the list with it.
 """
 
 
+@public
 async def category_catalog(db: Database, *, floor: int | None = None) -> list[dict[str, Any]]:
     """
     List every benefit category this insurer's whole catalog recognises.

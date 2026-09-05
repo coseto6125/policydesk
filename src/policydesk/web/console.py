@@ -211,7 +211,7 @@ async def cited(db: Database, member_id: int, clause_ids: Iterable[str]) -> list
         return []
     rows = await db.fetch(
         """SELECT DISTINCT c.product_id, c.clause_id, c.heading, c.page, p.name AS product_name
-           FROM clause c
+           FROM contract_clause c
            JOIN product p USING (product_id)
            JOIN policy po ON po.product_id = c.product_id
            WHERE po.member_id = $1::bigint AND c.clause_id = ANY($2::text[])

@@ -61,7 +61,7 @@ from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute, tools
 from policydesk.agent.scenario_base import Param, Scenario, gather_tools
-from policydesk.agent.tools import requires_identity
+from policydesk.agent.tools import public, requires_identity
 
 if TYPE_CHECKING:
     from datetime import date
@@ -123,6 +123,7 @@ def _as_rows(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+@public
 async def designation_rules(
     db: Database, concern: str, *, limit: int = 2, retriever: Any | None = None
 ) -> list[dict[str, Any]]:
@@ -144,6 +145,7 @@ async def designation_rules(
     return _as_rows(await statute.search_statute(db, topic, STATUTE_SCOPE, limit=limit, retriever=retriever))
 
 
+@public
 async def undesignated_fallback(db: Database, *, retriever: Any | None = None) -> list[dict[str, Any]]:
     """
     Find §112-113's provisions on what happens when nobody was named.
@@ -173,6 +175,7 @@ async def undesignated_fallback(db: Database, *, retriever: Any | None = None) -
     return _as_rows([hit for hit in hits if hit["article"] == _UNDESIGNATED])
 
 
+@public
 async def designated_protection(db: Database, *, retriever: Any | None = None) -> list[dict[str, Any]]:
     """
     Find §112's provision on what designating a beneficiary protects.

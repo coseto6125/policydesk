@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute
 from policydesk.agent.scenario_base import Param, Scenario, gather_tools
+from policydesk.agent.tools import public
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
 STATUTE_SCOPE: list[str] = ["insurance_act", "insurance_act_rules", "financial_consumer_protection_act"]
 """Which statutes a complaint may be answered from."""
 
+@public
 async def statute_reference(
     db: Database, concern: str, limit: int = 4, *, retriever: Any | None = None
 ) -> list[dict[str, Any]]:
@@ -102,6 +104,7 @@ saying it has talked him out of a right.
 """
 
 
+@public
 async def complaint_channel(db: Database) -> dict[str, str]:
     """
     State the escalation route, with the provision it rests on.

@@ -814,7 +814,7 @@ async def clause_page(request: Request, product_id: str, clause_id: str):
 
     row = await request.app.ctx.db.fetch_one(
         """SELECT c.heading, c.verbatim, c.page, c.kind, p.name AS product_name, p.doc_sha
-           FROM clause c JOIN product p USING (product_id)
+           FROM contract_clause c JOIN product p USING (product_id)
            WHERE c.product_id = $1::text AND c.clause_id = $2::text
              AND EXISTS (SELECT 1 FROM policy po
                          WHERE po.product_id = c.product_id AND po.member_id = $3::bigint)""",

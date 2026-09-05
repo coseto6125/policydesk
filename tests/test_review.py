@@ -128,7 +128,7 @@ async def test_gather_names_a_category_no_policy_covers(monkeypatch):
                         "is_lapsed": False,
                     }
                 ]
-            if "FROM clause c JOIN product p" in sql:
+            if "FROM contract_clause c JOIN product p" in sql:
                 if params and params[0]:
                     # Scoped to the member's own covered products.
                     return [{"product_id": "P1", "product_name": "測試商品", "heading": "住院日額保險金的申領"}]
@@ -180,7 +180,7 @@ async def test_gather_marks_a_rider_uncovered_when_its_main_has_lapsed():
                         "is_lapsed": False,
                     },
                 ]
-            if "FROM clause c JOIN product p" in sql:
+            if "FROM contract_clause c JOIN product p" in sql:
                 # Nothing is effectively covered, so `held_categories` never reaches
                 # this stub at all; only `category_catalog`'s corpus-wide call does.
                 assert not (params and params[0])
@@ -201,7 +201,7 @@ async def test_gather_with_only_the_public_tool_allowed_never_queries_the_member
         async def fetch(self, sql: str, params: list[object] | None = None) -> list[dict[str, object]]:
             if "FROM policy" in sql:
                 raise AssertionError("list_policies must not run when it is not in `allowed`")
-            if "FROM clause c JOIN product p" in sql:
+            if "FROM contract_clause c JOIN product p" in sql:
                 return [{"product_id": "P1", "product_name": "測試商品", "heading": "住院日額保險金的申領"}]
             raise AssertionError(sql)
 
@@ -235,7 +235,7 @@ async def test_gather_with_held_categories_not_allowed_keeps_policies_but_drops_
                         "is_lapsed": False,
                     }
                 ]
-            if "FROM clause c JOIN product p" in sql:
+            if "FROM contract_clause c JOIN product p" in sql:
                 if params and params[0]:
                     raise AssertionError("held_categories must not run when it is not in `allowed`")
                 return [{"product_id": "P1", "product_name": "測試商品", "heading": "住院日額保險金的申領"}]

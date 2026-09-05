@@ -42,6 +42,7 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import tools
+from policydesk.agent.tools import public
 from policydesk.agent.scenario_base import Param, Scenario, gather_tools
 from policydesk.agent.tools import LINES
 from policydesk.bootloader import logger
@@ -143,6 +144,7 @@ def _in_order(keyword: str) -> str:
     return "%" + "%".join(_escaped(c) for c in keyword) + "%"
 
 
+@public
 async def product_rate(
     db: Database, line: str, keyword: str = "", amount: int | None = None, limit: int = 5
 ) -> list[dict[str, Any]]:
@@ -194,7 +196,7 @@ async def product_rate(
         """SELECT p.product_id, p.name, p.line, p.attachment, ce.unit_premium, ce.unit_label,
                   ce.issue_age_min, ce.issue_age_max, ce.max_occupation, ce.requires_main,
                   count(*) OVER () AS matching_in_line
-           FROM catalog_entry ce JOIN product p USING (product_id)
+           FROM sale_catalog ce JOIN product p USING (product_id)
            WHERE ce.on_sale AND p.line = ANY($1::text[])
              AND ($2::text = '' OR p.name ILIKE $3::text OR p.name ILIKE $4::text)
            ORDER BY (p.name ILIKE $3::text) DESC, ce.unit_premium ASC
