@@ -92,4 +92,15 @@ uv run policydesk                    # http://localhost:8100
 uv run python -c "import asyncio; from pathlib import Path; from policydesk.ingest.cathay import fetch_all; asyncio.run(fetch_all(Path('data/cathay')))"
 ```
 
+既有語料新增來源分類時，先套用 `infra/migrations/20260905120000_document_kind.sql`，
+再執行 `uv run python -m policydesk.ingest --source-kinds-only`，從本機 PDF 核對分類，
+不改寫既有條款或保單。完整的 `policydesk-ingest` 重建也會寫入分類。
+契約查詢與推薦只使用契約來源；商品說明書及未確認來源保留在原始資料中。
+分類變更後須重建兩個檢索索引並重新啟動服務，才能更新記憶體中的索引。
+
+升級目錄來源欄位時，另套用 `infra/migrations/20260905130000_catalog_origin.sql`。
+目錄建置會將產生的費率、計價基數與資格標記為 `synthetic_demo`；這些不是正式費率表，
+也不能用來判定契約的保險金額屬於日額或投保計畫。未標記來源的資料保留為 `unknown`，
+缺少數值計價基數時不產生保費試算。更新後須重新啟動服務。
+
 `.env` 放 `OPENAI_API_KEY` 才會有對話；沒有時 agent 會說接不到模型，不會編答案。
