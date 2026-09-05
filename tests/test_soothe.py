@@ -330,17 +330,31 @@ async def case(db):
 
 
 class _Says:
-    """A provider that writes one fixed reply, to put a known citation on the real path."""
+    """
+    A provider that routes to `soothe`, then writes one fixed reply as its answer.
+
+    The router calls a tool on every turn now. A stub that only returns text lands on
+    `out_of_scope` and never reaches this route's statute check, which is what these
+    tests are for.
+    """
 
     name = "stub"
 
     def __init__(self, text: str) -> None:
         self.text = text
 
-    async def complete(self, **_: object):
+    async def complete(self, **kwargs):
+        from msgspec import json
+
         from policydesk.llm.provider import Completion
 
-        return Completion(text=self.text, model="stub", provider="stub")
+        if kwargs.get("tools"):
+            return Completion(text="", model="stub", provider="stub",
+                              tool_calls=[{"name": "soothe", "arguments": "{}"}])
+        return Completion(
+            text=json.encode({"reply": self.text, "citations": [], "calculations": []}).decode(),
+            model="stub", provider="stub",
+        )
 
 
 async def test_an_invented_provision_is_withheld_on_the_soothe_route(db, case):

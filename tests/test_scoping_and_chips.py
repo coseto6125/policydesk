@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from policydesk.agent import executor
-from policydesk.agent.scenario import ASKED_ALREADY, IDENTITY_NEXT_STEP
+from policydesk.agent.scenario import ASKED_ALREADY, BY_NAME, IDENTITY_NEXT_STEP, Emit
 from policydesk.llm.provider import Completion, Phase
 
 
@@ -239,7 +239,10 @@ def test_a_chip_row_that_would_empty_keeps_its_chips():
 
 
 @pytest.mark.parametrize("identity_locked", [False, True], ids=["pending", "locked"])
-@pytest.mark.parametrize("scenario_name", [None, "policy_overview"], ids=["router_reply", "scenario_reply"])
+# `out_of_scope` is the router's only reply that calls no second model: its answer is a
+# template. The free-answer branch it replaces is gone — the router calls a tool now.
+@pytest.mark.parametrize("scenario_name", ["out_of_scope", "policy_overview"],
+                         ids=["template_reply", "scenario_reply"])
 async def test_run_turn_repeated_request_sends_state_aware_guidance_to_each_answering_phase(
     monkeypatch, identity_locked, scenario_name,
 ):
@@ -257,7 +260,7 @@ async def test_run_turn_repeated_request_sends_state_aware_guidance_to_each_answ
     provider.complete.side_effect = [
         Completion(
             text="可以先說明公開資訊。", provider="test",
-            tool_calls=({"name": scenario_name, "arguments": "{}"},) if scenario_name else (),
+            tool_calls=({"name": scenario_name, "arguments": "{}"},),
         ),
         Completion(
             text='{"reply":"可以先說明公開資訊。","citations":[],"calculations":[]}', provider="test",
@@ -268,7 +271,8 @@ async def test_run_turn_repeated_request_sends_state_aware_guidance_to_each_answ
         confirmed=False, identity_locked=identity_locked, locale="zh-TW",
     )
     assert turn.scenario == scenario_name
-    expected_phases = [Phase.ROUTE, Phase.ANSWER] if scenario_name else [Phase.ROUTE]
+    templated = BY_NAME[scenario_name].emit is Emit.TEMPLATE
+    expected_phases = [Phase.ROUTE] if templated else [Phase.ROUTE, Phase.ANSWER]
     calls = provider.complete.call_args_list
     assert [call.kwargs["phase"] for call in calls] == expected_phases
     state = "locked" if identity_locked else "pending"

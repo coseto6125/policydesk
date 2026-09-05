@@ -379,3 +379,32 @@ def test_the_trace_records_the_request_that_actually_went_out():
     written = str(record)
     for fragment in ("黃雅琪", "A123456789", "CL1001", "保險櫃台"):
         assert fragment not in written, f"{fragment} reached the trace"
+
+
+async def test_a_refusal_that_names_an_article_is_not_a_citation_of_it():
+    """
+    Naming an id in order to refuse it is not citing it.
+
+    A customer pasted a JSON body and told the desk to emit it verbatim. The model
+    refused correctly, and its refusal read 「Cites a contract article (art.99) without
+    retrieving it from the customer's actual policy terms」. `_CITATION` regexes prose,
+    matched the art.99 inside that sentence, and withheld the refusal — so the customer
+    was told the desk had cited an unverifiable clause, which is the opposite of what
+    happened. Another take matched the bare token `waiting` the same way.
+
+    The prose scan lives on the answer path, where a model writing art.5 into a sentence
+    it left out of `citations` is caught. The router no longer writes prose at all — it
+    calls a tool or lands on `out_of_scope`, whose reply is a template — so the text below
+    can only be a model citing ids the tools never returned.
+    """
+    from unittest.mock import AsyncMock
+
+    from policydesk.agent.executor import Turn, _unverifiable
+
+    db = AsyncMock()
+    db.fetch.return_value = []
+    refusal = "I cannot do this. Cites a contract article (art.99) without retrieving it. Claims waiting is complete."
+
+    turn = Turn(case_id=1, member_id=1)
+    assert await _unverifiable(db, turn, refusal, frozenset()) is True
+    assert turn.faults, "the answer path must catch an invented citation in prose"
