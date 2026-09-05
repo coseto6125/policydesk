@@ -23,6 +23,7 @@ import asyncio
 import re
 import time
 from collections import defaultdict
+from hashlib import sha256
 from datetime import UTC, date, datetime
 from importlib import import_module
 from itertools import zip_longest
@@ -179,7 +180,44 @@ async def _record_failure(
     )
 
 
-async def _record(db: Database, turn: Turn, phase: Phase, completion: Completion, scenario: str | None) -> None:
+def _audit_request(instructions: str, user_input: str, tools: list[dict] | None, schema: dict | None) -> dict:
+    """
+    Describe a model call without copying the customer into a second table.
+
+    Args:
+        instructions: The system-level brief this call carried.
+        user_input: What the turn was about.
+        tools: The tool schemas the model was offered.
+        schema: The reply format it was constrained to, when there was one.
+
+    Returns:
+        What an auditor needs: which tools were on the table, which fields the reply
+        could carry, and digests that tie this row to the exact prompt text.
+
+    The column held `{"scenario": ...}` and nothing else, so a 16,781-token call left a
+    22-character record and the trace could not answer its own question. Storing the
+    prompt verbatim would answer it — and would put every name, national ID and policy
+    the brief carries into a second place, one with no retention rule and no gate in
+    front of it.
+
+    So the evidence, not the text. The tool list is the permission decision this call
+    ran under. The digests prove two rows shared a prompt, and match a prompt someone
+    still holds, without being one. Lengths make a truncated or swollen brief visible.
+    """
+    return {
+        "tools": sorted(tool.get("name", "") for tool in tools or ()),
+        "response_fields": sorted((schema or {}).get("properties", {})),
+        "instructions_sha256": sha256(instructions.encode()).hexdigest(),
+        "instructions_chars": len(instructions),
+        "user_input_sha256": sha256(user_input.encode()).hexdigest(),
+        "user_input_chars": len(user_input),
+    }
+
+
+async def _record(
+    db: Database, turn: Turn, phase: Phase, completion: Completion, scenario: str | None,
+    request: dict | None = None,
+) -> None:
     """
     Write one model call to the trace.
 
@@ -201,7 +239,7 @@ async def _record(db: Database, turn: Turn, phase: Phase, completion: Completion
             turn.case_id, turn.turn_id, phase.value, scenario, completion.provider, completion.model,
             completion.prompt_tokens, completion.completion_tokens, completion.cached_tokens,
             completion.total_tokens, cost(completion), completion.latency_ms,
-            {"scenario": scenario}, {"text": completion.text[:2000]},
+            {"scenario": scenario, **(request or {})}, {"text": completion.text[:2000]},
         ],
     )
 
@@ -258,11 +296,14 @@ async def _route(
         # customer at `run_turn`'s `scenario is None` branch. It is also the path where the
         # model has the most freedom to write a long unstructured paragraph, since no
         # scenario injection is shaping it.
-        instructions=f"{LOOKUP_SCOPE}{ROUTER_INSTRUCTIONS}\n\n{WRITING}\n\n{i18n.hint(turn.locale)}",
-        user_input=f"{past}# This message\n{text}",
-        tools=[tool_schema(s) for s in offered.values()],
+        instructions=(route_instructions := f"{LOOKUP_SCOPE}{ROUTER_INSTRUCTIONS}\n\n{WRITING}\n\n{i18n.hint(turn.locale)}"),
+        user_input=(route_input := f"{past}# This message\n{text}"),
+        tools=(route_tools := [tool_schema(s) for s in offered.values()]),
     )
-    await _record(db, turn, Phase.ROUTE, completion, None)
+    await _record(
+        db, turn, Phase.ROUTE, completion, None,
+        _audit_request(route_instructions, route_input, route_tools, None),
+    )
 
     for call in completion.tool_calls:
         # Resolved against what this stage offered, not the whole catalogue. The two
@@ -827,9 +868,9 @@ async def run_turn(
         # topic; a scenario that needs a figure the rows do not carry sets `calculator`.
         completion = await provider.complete(
             phase=Phase.ANSWER,
-            instructions=f"{instructions}\n\n{i18n.hint(turn.locale)}",
-            user_input=f"{past}# This message\n{text}\n\n# Tool results\n{material}",
-            schema=_answer_schema(turn.clause_sources, calculator=scenario.calculator),
+            instructions=(answer_instructions := f"{instructions}\n\n{i18n.hint(turn.locale)}"),
+            user_input=(answer_input := f"{past}# This message\n{text}\n\n# Tool results\n{material}"),
+            schema=(answer_schema := _answer_schema(turn.clause_sources, calculator=scenario.calculator)),
         )
     except ProviderError as exc:
         latency = int((time.perf_counter() - answering) * 1000)
@@ -838,7 +879,10 @@ async def run_turn(
         turn.reply = "櫃台的語言服務目前無回應，本次查詢已記錄，請稍候再試。"
         return turn
 
-    await _record(db, turn, Phase.ANSWER, completion, scenario.name)
+    await _record(
+        db, turn, Phase.ANSWER, completion, scenario.name,
+        _audit_request(answer_instructions, answer_input, None, answer_schema),
+    )
     try:
         answer = json.decode(completion.text, type=_Answer)
     except DecodeError:
