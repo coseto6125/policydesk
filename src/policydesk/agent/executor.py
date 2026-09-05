@@ -36,8 +36,8 @@ from policydesk.agent import i18n, memory, statute, tools
 from policydesk.agent import locale as lang
 from policydesk.agent.scenario import (
     ASKED_ALREADY,
-    BY_NAME,
     CATALOGUE,
+    DOCUMENT_PROGRESS,
     IDENTITY_LOCKED_REPLY,
     IDENTITY_NEXT_STEP,
     LOOKUP_SCOPE,
@@ -580,9 +580,6 @@ def _render(scenario: Scenario, facts: dict[str, Any]) -> str:
     """
     template = scenario.template
     match scenario.name:
-        case "issue_documents":
-            waiting = facts.get("pending_signatures") or {}
-            return template.format(count=waiting.get("count", 0), names=waiting.get("names", ""))
         case "billing":
             summary = facts.get("billing_summary") or {}
             # A total mixing instalment rows with rate-card estimates says so. Without
@@ -627,6 +624,7 @@ async def run_turn(
     today: date | None = None,
     since: int = 0,
     locale: str | None = None,
+    document_event: bool = False,
 ) -> Turn:
     """
     Handle one thing the customer said.
@@ -647,6 +645,8 @@ async def run_turn(
         since: The message this connection started above.
         locale: The language to reply in, when the caller already resolved it. None
             reads it off the message and the conversation.
+        document_event: Internal socket event, not customer-selected routing. Runs the
+            read-only document scenario through the same identity and answer checks.
 
     Returns:
         The turn, carrying the reply and anything that failed a check.
@@ -714,11 +714,17 @@ async def run_turn(
             "Every statement about their policies comes from the material.\n"
             + ASKED_ALREADY + "\n"
         )
-    past = f"{known}{memory.transcript(messages[:-1])}{profile}"
+    history = messages if document_event else messages[:-1]
+    past = f"{known}{memory.transcript(history)}{profile}"
 
     started = time.perf_counter()
+    document_refusal = text if document_event else ""
     try:
-        scenario, params = await _route(provider, db, turn, text, past, stage)
+        if document_event:
+            scenario, params = DOCUMENT_PROGRESS, {}
+            text = "請依本次文件操作結果與本案最新工具紀錄，說明目前進度和下一步。"
+        else:
+            scenario, params = await _route(provider, db, turn, text, past, stage)
     except ProviderError as exc:
         latency = int((time.perf_counter() - started) * 1000)
         logger.warning("turn_unrouted", case_id=case_id, error=str(exc))
@@ -767,6 +773,8 @@ async def run_turn(
     turn.params = params
     facts = await _gather(db, scenario, turn, today=today, params=params, confirmed=confirmed, index=index)
     allowed: frozenset[str] = facts.pop("_allowed_clauses")
+    if document_refusal and confirmed:
+        facts["document_action"] = {"refusal": document_refusal}
 
     if (scope := facts.get("policy_scope")) and scope["status"] == "ambiguous":
         # The choice must identify each contract, even if the model omits or merges candidates.

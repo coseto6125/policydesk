@@ -57,14 +57,22 @@ SIGNING_PARTIES: tuple[str, ...] = ("要保人", "被保險人")
 
 
 async def signing_documents(db: Database, case_id: int) -> list[dict[str, Any]]:
-    """Read only this case; stale timestamps never establish a current signature."""
+    """
+    Read this case's current grants, including their explicit simulation marker.
+
+    A stale timestamp never establishes a current signature. Any matching mock grant
+    marks the record as simulated; this flag is not proof of a real signature.
+    """
     return await db.fetch(
         """SELECT d.document_id, d.kind, d.title, d.sha, d.uploaded_name,
                   CASE WHEN signed.parties = cardinality($2::text[]) THEN d.signed_at END AS signed_at,
-                  signed.parties AS signed_parties
+                  signed.parties AS signed_parties,
+                  signed.simulated AS signature_simulated
            FROM case_document d
            CROSS JOIN LATERAL (
-               SELECT count(DISTINCT g.scope) AS parties FROM authorization_grant g
+               SELECT count(DISTINCT g.scope) AS parties,
+                      coalesce(bool_or(g.provider = 'mock'), false) AS simulated
+               FROM authorization_grant g
                WHERE g.case_id = d.case_id AND g.stage = 'signed'
                  AND g.document_sha = d.sha AND d.sha <> ''
                  AND g.scope IN (

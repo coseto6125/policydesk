@@ -8,9 +8,9 @@ emits its answer.
 
 `emit` is the important one here. Set to `Emit.TEMPLATE` the executor renders the
 scenario's own template from the tool rows and never reaches a model. Everything that states a figure, a
-clause or a document requirement runs that way, so the sentence a customer reads about
-their own policy is assembled from database rows rather than generated. The model's
-job is the conversation around those sentences, not the sentences themselves.
+clause or a document requirement can use that path. Document guidance uses the model
+to explain current tool state; commands alone change that state. Its wording is not
+a condition for accepting an upload or advancing a case.
 
 The parameters carry a trap enoract's own comments flag: they must reach the tool
 schema's `properties` AND its `required`. Omit that and the model calls the scenario
@@ -229,20 +229,68 @@ RECOMMEND = Scenario(
     transitions=("issue_documents",),
 )
 
+DOCUMENT_GUIDANCE = IDENTITY_PENDING + """
+
+Guide the document demonstration from pending_signatures, not from earlier replies.
+Here signed counts completed MOCK signatures because simulation_only is true.
+The simulated signers are exactly signing_parties; 展示人員 is an operator, not an additional signer.
+identity_verified states whether this case has a successful mock check on record.
+submitted_for_review distinguishes a completed check from a submitted case.
+Explain completed work from these facts; only unfinished steps remain for the operator.
+Document titles and button labels identify UI choices: copy their full names exactly.
+This scenario reads progress; it does not issue documents, verify identity or submit cases.
+When document_action.refusal is present, explain why that attempt failed before describing the remaining work.
+A rejected attempt leaves existing progress unchanged; only pending_signatures.missing determines missing files.
+A rejection is not receipt or completed signing.
+
+Choose the current state and next step ONLY from pending_signatures.stage:
+- inquiry/proposed: files are not ready; list unissued and ask 展示人員 to prepare them first.
+- issued: state signed/total and list every missing title, one per line. Guide the customer to
+  右上角「應簽署文件」 and「下載」to view the forms. Then offer BOTH buttons by their full names:
+  「正確示範文件」records the filename and both roles' simulated signatures.
+  「錯誤示範文件」selects an unrelated sheet of paper (空白便條紙), not the required form.
+  The demo rejects that sample and writes nothing; it neither records a note nor resets progress.
+  Progress updates after each choice.
+  Also explain the next step in this reply: completing all files finishes the document demo;
+  展示人員 then handles mock identity verification and submission.
+- signed: documents are complete only when missing is empty. Say there are no missing files and no more uploads.
+  Next, 展示人員 performs 模擬身分驗證, then submits for manual review. The customer UI has neither action.
+- verified: mock identity verification is complete, submission is still pending, and manual review has not started.
+  Ask 展示人員 to submit; only after submission should the customer wait for a review decision.
+- review: already submitted for 人工審核; 等待 the reviewer's decision.
+- approved: the recorded demo decision is approval; this ends the demo, not a real policy issuance process.
+- rejected: report 本示範案件已退件. Ask 展示人員 about the next step; do not ask the customer to sign again.
+If unissued is nonempty, report those unavailable files separately; never call an incomplete set ready.
+Reporting a recorded demo decision does not establish real coverage or promise an outcome.
+
+Explain the actual state, remaining documents and next action in natural language.
+Keep the demonstration boundary clear, including in completion and rejection replies:
+this flow accepts no real files, and completed signing records are simulations, not genuine signatures.
+Demo limits are user-facing operating instructions, not technical failure details.
+The samples use fixed demo rules, NOT model verification. The「！」beside the UI notice explains
+planned local-model data checks for a future real setting; that capability is not active today.
+"""
+
+
 ISSUE_DOCUMENTS = Scenario(
     name="issue_documents",
     display_name="交付應簽署文件",
     summary="保戶決定投保後，交出應簽署的文件",
     description="保戶決定投保，要求文件或表示要簽約時使用。",
-    emit=Emit.TEMPLATE,
-    template=(
-        "已為您備妥應簽署文件共 {count} 份：\n{names}\n\n"
-        "請點選右上角「應簽署文件」逐份下載、簽名後上傳。\n"
-        "要保人與被保險人均須親自簽名，不得由他人代簽。"
-    ),
+    injection=DOCUMENT_GUIDANCE,
     tools=("pending_signatures",),
     transitions=("verify_identity",),
     requires_stage="proposed",
+)
+
+DOCUMENT_PROGRESS = Scenario(
+    name="document_progress",
+    display_name="文件示範進度",
+    summary="說明本案文件示範的缺件、操作及下一步",
+    description="查詢本案目前進度、核對或送審狀態、下一步，以及投保文件怎麼操作或還缺什麼時使用。每次讀取最新紀錄，不沿用先前對話；不處理理賠應備文件。",
+    injection=DOCUMENT_GUIDANCE,
+    tools=("pending_signatures",),
+    quick_replies=("我還缺哪幾份文件？", "模擬上傳會記錄什麼？", "文件完成後下一步是什麼？"),
 )
 
 VERIFY_IDENTITY = Scenario(
@@ -250,9 +298,8 @@ VERIFY_IDENTITY = Scenario(
     display_name="身分驗證",
     summary="文件簽署後核對身分證字號與生日",
     description="文件簽署完成後進行身分驗證時使用。",
-    emit=Emit.TEMPLATE,
-    template="請輸入身分證字號完成驗證。驗證通過後，本案才會送交核保人員審核。",
-    tools=(),
+    injection=DOCUMENT_GUIDANCE,
+    tools=("pending_signatures",),
     params=(Param(name="national_id", description="身分證字號", example="A123456789"),),
     transitions=("submit",),
     requires_stage="signed",
@@ -355,6 +402,7 @@ CATALOGUE: tuple[Scenario, ...] = (
     BROWSE_PRODUCTS,
     RECOMMEND,
     ISSUE_DOCUMENTS,
+    DOCUMENT_PROGRESS,
     VERIFY_IDENTITY,
     CLAIM_CHECKLIST,
     BILLING,
@@ -405,6 +453,11 @@ ROUTER_INSTRUCTIONS = f"""\
 You are the service desk of a Taiwanese life insurer, speaking with the policyholder.
 
 Pick the one scenario tool that fits what the customer wants now, and call it.
+
+Case progress is a live record, not an inference from the transcript.
+For application progress, document completion, verification or submission status, call document_progress.
+This includes follow-up questions about the next step, even when an earlier reply described that step.
+Only a fresh tool result establishes what has completed; this demo never establishes real insurance coverage.
 
 **Look up first, ask only for what remains.** The customer's policies, sums insured, payment \
 records, occupation class, age, existing cover and contract clauses are all on file. Call the \

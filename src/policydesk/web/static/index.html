@@ -1022,9 +1022,11 @@
   .modal-head { padding: var(--s3) var(--s4); border-bottom: 1px solid var(--rule); font-weight: 600; font-size: 14.5px; }
   .modal-body { padding: 0 var(--s4); max-height: 60vh; overflow-y: auto; }
   .modal-foot { padding: var(--s3) var(--s4); border-top: 1px solid var(--rule); display: flex; justify-content: flex-end; gap: var(--s2); }
-  .doc-row { display: flex; align-items: center; gap: var(--s2); padding: 10px 0; border-bottom: 1px solid var(--rule-soft); font-size: 13.5px; }
+  .doc-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: 10px 0; border-bottom: 1px solid var(--rule-soft); font-size: 13.5px; }
   .doc-row:last-child { border-bottom: 0; }
-  .doc-row .name { flex: 1; min-width: 0; }
+  .doc-row .name { flex: 1 1 160px; min-width: 0; }
+  .document-demo-help > summary { display: flex; align-items: center; gap: var(--s2); min-height: 44px; cursor: pointer; color: var(--accent); }
+  .document-demo-help > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   /* ═══════════════ responsive ═══════════════ */
 
@@ -1435,16 +1437,23 @@
   </div>
 </div>
 
-<dialog id="docModal">
+<dialog id="docModal" aria-describedby="documentDemoNotice">
   <div class="modal-head">應簽署文件</div>
-  <div class="modal-body"><div id="modalDocs"></div></div>
+  <div class="modal-body">
+    <p id="documentDemoNotice">這是示範流程。請選「正確示範文件」或「錯誤示範文件」，使用伺服器提供的固定示範樣本，不會上傳文件內容。伺服器依示範規則檢查：正確樣本會記錄雙方角色的模擬簽署，錯誤樣本不會完成文件或改動既有進度。這不是模型驗證，也不是真實簽署。</p>
+    <details class="document-demo-help">
+      <summary aria-label="正式場景驗證說明"><span aria-hidden="true">！</span>正式場景驗證說明</summary>
+      <p>正式場景規劃以地端模型檢查文件資料正確性；本展示使用固定樣本與示範規則，尚未執行地端模型驗證。資料檢查不等同身分或簽署效力認證。</p>
+    </details>
+    <div id="modalDocs"></div>
+  </div>
   <div class="modal-foot"><button id="closeModal">關閉</button></div>
 </dialog>
 
 <script>
 const STAGES = [
   ["inquiry","詢問"],["proposed","提出方案"],["issued","交付文件"],
-  ["signed","已簽署"],["verified","身分已驗"],["review","人工審核"],
+  ["signed","文件已記錄"],["verified","身分已驗"],["review","人工審核"],
 ];
 const STAGE_NAMES = Object.fromEntries(STAGES.concat([["approved","已核准"],["rejected","已退件"]]));
 const DESK_TOKEN = "__DESK_TOKEN__";
@@ -1640,12 +1649,13 @@ let lastBoard = {};
 function renderBoard(c) {
   const docs = c.documents ?? [], checks = c.identity_checks ?? [];
   const {signed, total, pending} = c.document_status;
+  const signatureLabel = docs.some(d => d.signature_simulated) ? "模擬簽署" : "已簽署";
   const rank = (stage) => STAGES.findIndex(([k]) => k === stage);
   const decided = c.stage === "approved" || c.stage === "rejected";
   const tiles = [
     ["方案", decided || rank(c.stage) >= rank("proposed") ? ["done", "已提出"] : ["open", "詢問中"]],
     ["文件", !docs.length ? ["open", "尚未交付"]
-           : pending === 0 ? ["done", `${signed} 份已簽署`] : ["wait", `${signed}/${total} 已簽署`]],
+           : pending === 0 ? ["done", `${signed} 份${signatureLabel}`] : ["wait", `${signed}/${total} ${signatureLabel}`]],
     ["身分", checks.some(k => k.verified) ? ["done", "已核對"] : checks.length ? ["bad", "未通過"] : ["open", "尚未核對"]],
     ["審核", c.stage === "review" ? ["flag", "待人工審核"]
            : c.stage === "approved" ? ["done", "已核准"]
@@ -1705,7 +1715,7 @@ function renderCase(c) {
   $("docCount").textContent = total ? `${signed}/${total}` : "";
   $("docTable").innerHTML = (docs.map(d => `
     <tr><td>${esc(d.kind)}</td>
-        <td>${d.signed_at ? PILLS.ok("已簽署") : PILLS.wait("待簽署")}</td>
+        <td>${d.signed_at ? PILLS.ok(d.signature_simulated ? "模擬簽署完成" : "已簽署") : PILLS.wait(d.signature_simulated ? "模擬簽署未齊" : "待模擬簽署")}</td>
         <td class="mono">${shortTime(d.signed_at) || "—"}</td></tr>`).join("")
     + unissued.map(kind => `<tr><td>${esc(kind)}</td><td>${PILLS.wait("尚未交付")}</td><td>—</td></tr>`).join(""))
     || `<tr><td colspan="3" class="empty">尚未交付</td></tr>`;
@@ -1784,9 +1794,10 @@ function renderModalDocs(docs, unissued = []) {
     <div class="doc-row">
       <span class="name">${esc(d.kind)}</span>
       ${d.signed_at
-        ? PILLS.ok("已簽署")
+        ? PILLS.ok(d.signature_simulated ? "模擬簽署完成" : "已簽署")
         : `<button data-doc="${d.document_id}" class="dl">${icon("download")}下載</button>
-           <button data-doc="${d.document_id}" class="up primary">${icon("upload")}上傳簽署本</button>`}
+           <button data-doc="${d.document_id}" data-sample="matching" class="up primary" aria-describedby="documentDemoNotice">${icon("upload")}正確示範文件</button>
+           <button data-doc="${d.document_id}" data-sample="mismatched" class="up" aria-describedby="documentDemoNotice">${icon("upload")}錯誤示範文件</button>`}
     </div>`).join("")
     + unissued.map(kind => `<div class="doc-row"><span class="name">${esc(kind)}</span>${PILLS.wait("尚未交付，請由專人補齊")}</div>`).join(""))
     || `<div class="empty">目前沒有待簽署文件。</div>`;
@@ -2123,12 +2134,7 @@ $("modalDocs").addEventListener("click", (e) => {
   if (button.classList.contains("dl")) {
     window.open(`/doc/${id}?token=${encodeURIComponent(DESK_TOKEN)}`, "_blank");
   } else {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.onchange = () => {
-      customerWs.send(JSON.stringify({ type: "upload", document_id: Number(id), filename: input.files[0]?.name ?? "" }));
-    };
-    input.click();
+    customerWs.send(JSON.stringify({ type: "upload", document_id: Number(id), sample: button.dataset.sample }));
   }
 });
 

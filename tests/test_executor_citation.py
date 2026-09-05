@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, Mock
 
 import etoon
 import pytest
+from msgspec import json
 
 from policydesk.agent.executor import _CITATION
 from policydesk.validation.validator import Verdict, recheck
@@ -168,6 +169,84 @@ async def test_run_turn_twelve_products_sends_bounded_prompt_and_visible_sources
     keys = call["schema"]["properties"]["citations"]["items"]["enum"]
     assert set(keys) == {f"{product}|{clause}" for product, clause in turn.clause_sources}
     assert turn.reply.startswith(executor.EVIDENCE_LIMITED)
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+async def test_run_turn_document_event_keeps_history_and_identity_gate(monkeypatch, confirmed):
+    from policydesk.agent import executor
+    from policydesk.llm.provider import Completion, Phase
+
+    monkeypatch.setattr(executor.memory, "recent", AsyncMock(return_value=[
+        {"speaker": "agent", "text": "LAST_REAL_REPLY", "message_id": 1},
+    ]))
+    monkeypatch.setattr(executor.memory, "card", AsyncMock(return_value=""))
+    monkeypatch.setattr(executor.tools, "standing_brief", AsyncMock(return_value={}))
+    monkeypatch.setattr(executor.statute, "unresolved", AsyncMock(return_value=[]))
+    monkeypatch.setattr(executor, "_record", AsyncMock())
+    document_tool = AsyncMock(return_value={"stage": "issued", "missing": ["ONLY_THIS_CASE"]})
+    monkeypatch.setattr(executor.tools, "pending_signatures", executor.tools.requires_identity(document_tool))
+    router = AsyncMock()
+    monkeypatch.setattr(executor, "_route", router)
+    provider, db = AsyncMock(), AsyncMock()
+    db.fetch_val.return_value = "issued"
+    db.fetch.return_value = []
+    provider.complete.return_value = Completion(
+        text='{"reply":"本次僅為示範，不收真實文件。ONLY_THIS_CASE。正確示範文件、錯誤示範文件。","citations":[],"calculations":[],"quoted_fields":[]}',
+        provider="test",
+    )
+    turn = await executor.run_turn(
+        provider, db, case_id=12, member_id=34, text="", confirmed=confirmed,
+        locale="zh-TW", document_event=True,
+    )
+    router.assert_not_awaited()
+    assert turn.scenario == "document_progress"
+    assert "LAST_REAL_REPLY" in provider.complete.call_args.kwargs["user_input"]
+    assert provider.complete.call_args.kwargs["phase"] is Phase.ANSWER
+    if confirmed:
+        document_tool.assert_awaited_once_with(db, 12)
+    else:
+        document_tool.assert_not_awaited()
+        assert "ONLY_THIS_CASE" not in provider.complete.call_args.kwargs["user_input"]
+        assert turn.awaiting_identity
+
+
+@pytest.mark.parametrize("reply", [
+    "模擬驗證已完成，待送審。",
+    "身分核對完成了，接下來由展示人員送審，目前尚未送出。",
+    "The mock check is complete. Staff submission is the next step.",
+])
+async def test_run_turn_document_wording_does_not_trigger_repair(monkeypatch, reply):
+    """
+    State tests prove workflow correctness, not whether the model speaks truthfully.
+
+    Assess reply fidelity separately by meaning, never by required keyword matches.
+    This regression only proves that prose variations are not rewritten or appended.
+    """
+    from policydesk.agent import executor
+    from policydesk.llm.provider import Completion, Phase
+
+    monkeypatch.setattr(executor.memory, "recent", AsyncMock(return_value=[]))
+    monkeypatch.setattr(executor.memory, "card", AsyncMock(return_value=""))
+    monkeypatch.setattr(executor.tools, "standing_brief", AsyncMock(return_value={}))
+    monkeypatch.setattr(executor.statute, "unresolved", AsyncMock(return_value=[]))
+    monkeypatch.setattr(executor, "_gather", AsyncMock(return_value={
+        "pending_signatures": {"stage": "verified", "signed": 10, "missing": []},
+        "_allowed_clauses": frozenset(),
+    }))
+    monkeypatch.setattr(executor, "_record", AsyncMock())
+    provider, db = AsyncMock(), AsyncMock()
+    provider.complete.return_value = Completion(text=json.encode({
+        "reply": reply, "citations": [], "calculations": [], "quoted_fields": [],
+    }).decode(), provider="test")
+    db.fetch_val.return_value = "verified"
+    turn = await executor.run_turn(
+        provider, db, case_id=12, member_id=34, text="", confirmed=True,
+        locale="zh-TW", document_event=True,
+    )
+    provider.complete.assert_awaited_once()
+    assert provider.complete.call_args.kwargs["phase"] is Phase.ANSWER
+    assert turn.reply == reply
+    assert not turn.faults
 
 
 def test_citation_pattern_reads_ids_out_of_prose():

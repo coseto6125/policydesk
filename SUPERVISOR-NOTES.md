@@ -1,5 +1,41 @@
 # Supervisor notes
 
+## Document demo acceptance — 2026-09-06
+
+The user limits this release to an internal demonstration, with no real document intake or signatures.
+The customer chooses fixed matching or mismatched samples; matching records both mock signing roles.
+The UI and printable forms identify simulation, with an accessible ! explanation of planned local-model checks.
+No local model verifies this release's samples. A data check would not establish identity or signature validity.
+
+Commands and DB records determine progress. Queries cannot sign, verify or submit a case.
+State tests prove workflow correctness, not truthful model prose. Reply fidelity requires separate semantic evaluation.
+The document-specific keyword checker and rewrite loop were removed; the model receives current records and writes natural guidance.
+Current tool facts include successful identity checks, submission status and the actual signing roles.
+These facts are read under the case lock; model wording never grants permission to advance.
+Scenario routing now looks up application-progress follow-ups instead of inferring current state from earlier replies.
+
+Targeted command:
+`rtk proxy .venv/bin/python -m pytest tests/test_executor_citation.py tests/test_identity_gate.py tests/test_document_flow.py tests/test_desk_ui.py tests/test_acceptance_fixes.py tests/test_identity_inventory.py -q -ra --tb=short`.
+Result: 362 passed, 0 skipped, in 12.79 seconds. Ruff and the prompt reference audit passed.
+Mutation proof: changing submission's target from REVIEW to VERIFIED made the new lifecycle test fail at the state assertion.
+The mutation was restored. No full suite or corpus-loader tests ran, and no browser visual acceptance is claimed.
+
+The final transcript uses the real customer socket handler, DB and Anthropic HTTP provider; the socket transport is a test driver.
+Staff prepares documents and performs mock verification/submission through core commands, not nonexistent customer buttons.
+Raw transcripts and semantic probes live under `data/evaluations/document-guidance-*-final-20260906.txt`.
+The final walk completed all ten samples, verified, then submitted; both progress questions left records unchanged.
+After cleanup: product=660, policy=288, clause=11775, contract_clause=10512, doc-prefixed members=0.
+The final Haiku HTTP probe has three replies per arm for nine branches, plus six routing trials.
+All three final verified replies describe completed verification and a future submission; all six routes select document_progress.
+Earlier probes exposed a repeated-verification error and an invented signer; the final tool facts address those evidence gaps.
+This is scoped semantic review, not a guarantee about future answers or local-model verification.
+Earlier A/B keyword scores, including v5's 0/3, are not semantic acceptance evidence.
+The old-template control is instruction wording, not an old-runtime replay; small samples do not establish a production error rate.
+
+FU-2026-09-06-ced541697419 is scoped to demo transparency and guidance.
+Real intake still requires authenticated role-specific consent, actual file/storage/signature checks,
+client-viewed version binding, replay handling and per-upload audit. Those are outside this release.
+
 ## Security findings 04 and 06 — 2026-09-06, 00:24
 
 04 is fixed in the runtime dispatch gate, not only in inventory tests.
@@ -12,7 +48,8 @@ The new gather regression first proved an unmarked member reader actually execut
 a confirmed session, then passed after the fix. Gate matrices cover absent declarations,
 None, zero, one, string flags, public access and confirmed private access.
 
-06 is assessed but not fixed. It needs deterministic socket/core checks, not LLM recheck.
+The original, pre-scope 06 assessment follows; the document demo section above supersedes its release scope.
+Real intake needs deterministic socket/core checks, not LLM recheck.
 Existing guards cover confirmed session, session case ID, document ownership, stage,
 filename length and a single transaction with case/document locks.
 Actual handler probes show string IDs and list filenames raise uncaught exceptions;
@@ -31,7 +68,7 @@ Before real intake, isolate that mock signing action and establish authenticated
 role-specific consent, persistent rate limits and actual file/storage/signature verification.
 OCI edge controls and browser network behavior were not tested. No real file bytes are
 accepted today, so a suspicious filename alone is not evidence of filesystem traversal.
-FU-2026-09-06-ced541697419 remains open pending the demo-versus-real-intake scope decision.
+The user subsequently selected internal demo scope; the acceptance section above records that decision.
 
 Actual probe scripts, outputs and test commands:
 `data/evaluations/security-04-06-20260906.md` (local audit artifact).

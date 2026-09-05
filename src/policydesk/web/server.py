@@ -561,6 +561,13 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
 
                     if not pending_question:
+                        stage = await db.fetch_val('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
+                        if stage in ("proposed", "issued", "signed", "verified", "review"):
+                            await _answer(
+                                request, ws, db, case_id=case_id, text="", confirmed=True,
+                                floor=floor, document_event=True,
+                            )
+                            continue
                         await ws.send(json.encode({
                             "type": "reply",
                             "text": "感謝您的耐心核對，身分已確認。請問需要什麼協助？",
@@ -571,10 +578,17 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
 
                     # Answer what they actually asked, before the check interrupted them.
                     text, pending_question = pending_question, None
-                    await _answer(
+                    turn = await _answer(
                         request, ws, db, case_id=case_id, text=text,
                         confirmed=True, floor=floor, identity_locked=locked,
                     )
+                    if turn.scenario not in ("issue_documents", "document_progress", "verify_identity"):
+                        stage = await db.fetch_val('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
+                        if stage in ("proposed", "issued", "signed", "verified", "review"):
+                            await _answer(
+                                request, ws, db, case_id=case_id, text="", confirmed=True,
+                                floor=floor, document_event=True,
+                            )
 
                 case "say" if case_id is not None:
                     text = (message.get("text") or "").strip()
@@ -598,19 +612,30 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
 
                 case "upload" if case_id is not None and confirmed:
                     document_id = int(message.get("document_id") or 0)
-                    filename = (message.get("filename") or "").strip()
-                    outcome = await cmd.upload_document(
-                        db, case_id, document_id=document_id, filename=filename,
-                    )
+                    sample = message.get("sample")
+                    if sample is not None:
+                        outcome = await cmd.upload_document(db, case_id, document_id=document_id, sample=sample)
+                    else:
+                        filename = (message.get("filename") or "").strip()
+                        outcome = await cmd.upload_document(db, case_id, document_id=document_id, filename=filename)
                     if isinstance(outcome, cmd.Refusal):
                         await ws.send(json.encode({
                             "type": "notice",
-                            "text": f"尚有 {len(outcome.missing)} 份文件未簽署" if outcome.missing else outcome.reason,
+                            "text": f"尚有 {len(outcome.missing)} 份文件未完成模擬簽署" if outcome.missing else outcome.reason,
                             "level": "info" if outcome.missing else "warn",
                         }).decode())
                         if not outcome.missing:
+                            if sample == "mismatched":
+                                await _answer(
+                                    request, ws, db, case_id=case_id, text=outcome.reason,
+                                    confirmed=True, floor=floor, document_event=True,
+                                )
                             continue
                     await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
+                    await _answer(
+                        request, ws, db, case_id=case_id, text="", confirmed=True,
+                        floor=floor, document_event=True,
+                    )
 
                 case "verify" if case_id is not None and confirmed:
                     national_id = (message.get("national_id") or "").strip()
@@ -624,6 +649,11 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     if isinstance(outcome, cmd.Refusal):
                         await ws.send(json.encode({"type": "notice", "text": outcome.reason, "level": "warn"}).decode())
                     await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
+                    if not isinstance(outcome, cmd.Refusal):
+                        await _answer(
+                            request, ws, db, case_id=case_id, text="", confirmed=True,
+                            floor=floor, document_event=True,
+                        )
 
     except (ConnectionError, asyncio.CancelledError):
         logger.info("customer_socket_closed", name=name)
@@ -681,6 +711,7 @@ async def _last_message(db: Database, case_id: int) -> int:
 async def _answer(
     request: Request, ws: Websocket, db: Database, *, case_id: int, text: str,
     confirmed: bool, floor: int = 0, identity_locked: bool = False,
+    document_event: bool = False,
 ) -> Turn:
     """
     Run one turn and send it, recording both halves of the exchange.
@@ -694,6 +725,8 @@ async def _answer(
         confirmed: Whether this session has passed 資料核對.
         floor: The message this connection started above. 0 reads the whole case.
         identity_locked: Whether this connection has exhausted its verification attempts.
+        document_event: A server-originated state update. Records the reply but never
+            invents a customer message or changes their detected language.
 
     Returns:
         The turn, so the caller can read whether the identity gate stopped it.
@@ -701,24 +734,26 @@ async def _answer(
     """
     # The language is read off the message before it is stored, so the row records what
     # was detected and the reply is written in what the conversation resolves to.
-    found, spoken = await lang.resolve(db, case_id, text)
-    await db.execute(
-        """INSERT INTO conversation_message (case_id, speaker, text, locale)
-           VALUES ($1::bigint,'customer',$2::text,$3::text)""",
-        [case_id, text, found],
-    )
-    # The profile freezes on the first message, as specified.
-    await db.execute(
-        """UPDATE member SET profile_frozen_at = coalesce(profile_frozen_at, now())
-           WHERE member_id = (SELECT member_id FROM "case" WHERE case_id = $1::bigint)""",
-        [case_id],
-    )
+    found, spoken = await lang.resolve(db, case_id, "" if document_event else text)
+    if not document_event:
+        await db.execute(
+            """INSERT INTO conversation_message (case_id, speaker, text, locale)
+               VALUES ($1::bigint,'customer',$2::text,$3::text)""",
+            [case_id, text, found],
+        )
+        # Only a customer message freezes the profile, not a server event.
+        await db.execute(
+            """UPDATE member SET profile_frozen_at = coalesce(profile_frozen_at, now())
+               WHERE member_id = (SELECT member_id FROM "case" WHERE case_id = $1::bigint)""",
+            [case_id],
+        )
     member_id = await db.fetch_val('SELECT member_id FROM "case" WHERE case_id = $1::bigint', [case_id])
     turn = await run_turn(
         request.app.ctx.provider, db,
         case_id=case_id, member_id=member_id, text=text, confirmed=confirmed,
         identity_locked=identity_locked,
         index=request.app.ctx.clauses, since=floor, locale=spoken,
+        document_event=document_event,
     )
     # The clause ids go in with the reply, so the console's transcript can show a
     # caseworker what the answer stood on after the socket that carried it is gone.
@@ -1306,6 +1341,8 @@ def _render_document(row: dict[str, Any]) -> str:
     return f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
 <title>{kind}</title><style>{_DOC_STYLE}</style></head><body>
 <h1>{kind}</h1>
+<p><strong>內部示範文件：不收真實文件，不具法律效力。</strong>
+選擇「正確示範文件」只記錄示範檔名，不上傳內容；系統記錄雙方角色的模擬簽署，不是真實簽署。</p>
 <div class="meta">案號 #{_esc(row["case_id"])} · 文件編號 {_esc(row["document_id"])} · 文件雜湊 {_esc(row["sha"])}</div>
 <p>{_DOC_BODY.get(kind, "")}</p>
 <dl>
@@ -1330,7 +1367,7 @@ def _render_document(row: dict[str, Any]) -> str:
 </div>
 <div class="note">
   本文件為 policydesk 示範系統產生，非真實保險文件，不具法律效力。
-  簽署後請以「上傳簽署本」回傳，系統將以本文件雜湊 {_esc(row["sha"])} 綁定該次簽署。
+  請以固定示範文件體驗正確與錯誤樣本。文件識別碼只用於示範紀錄，不證明文件內容或簽署真偽。
 </div>
 </body></html>"""
 
