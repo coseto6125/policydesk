@@ -22,49 +22,23 @@ import bisect
 import re
 from hashlib import blake2b
 from typing import TYPE_CHECKING
+from unicodedata import normalize
 
 from msgspec import Struct
 from pypdf import PdfReader
 
-from policydesk.core.models import Citation, Clause, ClauseKind
+from policydesk.core.models import Citation, Clause, ClauseKind, DocumentKind
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 _CN_DIGITS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
-# "第十七條 除外責任" and "第 19 條 保險範圍" — the same insurer numbers its articles two
-# ways, and which one you get depends on when the contract was approved: contracts filed
-# under the older approvals spell the number (第十七條), those revised from 113 年 onward
-# print it (第 19 條). A parser that reads only one system silently drops half the corpus,
-# and the half it drops is the currently-sold products.
-#
-# Anchored to the start of a line, because article headings start one and cross-references
-# never do. Without the anchor, the body of article 5 ("除第二條第一項及第九條之限制外")
-# registers as a fresh article 2 and overwrites the real one — and the summary table on
-# page one ("（一）附約的保證續保及限制（第 19 條）") would register as every article at once.
-_ARTICLE = re.compile(r"^[ \t　]*第\s*([一二三四五六七八九十百]+|\d{1,3})\s*條\s+([^\n]{0,30})", re.MULTILINE)
-
 # "但為重建其基本功能所作之必要整型，不在此限" — the restoring half of an exclusion.
 _CARVE_BACK = re.compile(r"但[^。；]{4,80}?(?:不在此限|除外|不適用)")
 
 # "自本附約生效日起持續有效三十日以後" — a waiting period wearing a definition's clothes.
 _WAITING = re.compile(r"(?:生效日|復效日)起持續有效([一二三四五六七八九十百]+)日")
-
-# Page furniture that sits above the product name on page one: "第1頁，共31頁",
-# "第 1 頁， 共 17 頁", "Since2023", an approval reference, a complaints hotline. The
-# spacing varies per document because it comes from the PDF's glyph positions, not
-# from the text, so every gap here tolerates whitespace.
-_FURNITURE = re.compile(
-    r"^(?:第\s*\d+\s*頁|共\s*\d+\s*頁|Since\s*\d{4}|[\W\d_]+)$|頁\s*，\s*(?:共|第)"
-    r"|核准文號|認證編號|認証番号|免費申訴"
-)
-"""...
-
-認證編號 and its Japanese spelling were missing, so 22 of 660 contracts took an approval
-line as their product name: 認證編號：0610132-31 is what a customer would have been
-offered in a recommendation. 核准文號 was already here — the same furniture, printed under
-a different label by a different insurer's template."""
 
 # Justified CJK lines come out of extraction with a space between every glyph:
 # "國 泰 人 壽新憶樂活認 知 功 能 障 礙終身健 康 保 險". Token matching then fails on every
@@ -76,6 +50,16 @@ a different label by a different insurer's template."""
 # 及方式 reached a customer verbatim, and a class of ideographs alone leaves every 、。（）
 # stranded between spaces.
 _CJK_GAP = re.compile(r"(?<=[　-〿㐀-鿿＀-￯])[ \t　]+(?=[　-〿㐀-鿿＀-￯])")
+
+_IDEOGRAPH_MAP = {
+    code: normalized for code in range(0xF900, 0xFB00)
+    if (normalized := normalize("NFKC", chr(code))) != chr(code)
+}
+
+
+def normalize_ideographs(text: str) -> str:
+    """Normalize compatibility ideographs while preserving fullwidth punctuation."""
+    return text.translate(_IDEOGRAPH_MAP)
 
 
 def _tidy(text: str) -> str:
@@ -90,9 +74,8 @@ def _tidy(text: str) -> str:
 
     Applied to what gets stored, never to the page the offsets are measured in. Two
     things break when a page is normalised before it is scanned: `page_ends` then
-    addresses text that no longer exists at those offsets, and `_ARTICLE` loses the
-    `條\\s+` that tells a heading line from a sentence citing 第十條 in passing —
-    measured, that second one took a real contract from 24 articles to none.
+    addresses text that no longer exists at those offsets, and the article scanner
+    loses the whitespace separating a clause number from its heading.
 
     The cost is the one row of a benefit table that still had its columns: 項目 給付條件
     給付金額 becomes 項目給付條件給付金額. That table is already unreadable in the text
@@ -100,7 +83,7 @@ def _tidy(text: str) -> str:
     from is the pdfplumber extraction in `benefit`, not this text. Measured on the live
     corpus: 10,726 of 11,741 clauses change, 612,593 characters of stray spacing removed.
     """
-    return "\n".join(_CJK_GAP.sub("", line).rstrip() for line in text.splitlines())
+    return "\n".join(_CJK_GAP.sub("", line).rstrip() for line in normalize_ideographs(text).splitlines())
 
 _HEADING_KIND = (
     ("名詞定義", ClauseKind.DEFINITION),
@@ -127,6 +110,7 @@ def cn_to_int(text: str) -> int:
     """
     if text.isdigit():
         return int(text)
+    text = text.replace("廿", "二十").replace("卅", "三十")
     if (tens := text.find("十")) == -1:
         return sum(_CN_DIGITS.get(c, 0) for c in text)
     head = text[:tens]
@@ -134,69 +118,119 @@ def cn_to_int(text: str) -> int:
     return (_CN_DIGITS.get(head, 1) if head else 1) * 10 + (_CN_DIGITS.get(tail, 0) if tail else 0)
 
 
-_CJK_CHAR = re.compile(r"[\u4e00-\u9fff]")
+UNRESOLVED_PRODUCT_NAME = "商品名稱待核對"
+_TITLE_PREFIX = "國泰人壽"
+_TITLE_ENDINGS = ("保險", "壽險", "附約", "附加條款", "批註條款")
+_TITLE_MAX_LINES = 4
+_TITLE_MAX_CHARACTERS = 120
+_TITLE_BRACKETS = {"（": "）", "(": ")", "【": "】"}
+_TITLE_WRAP_TERMS = ("保險", "壽險", "健康", "醫療", "住院", "年金", "變額", "利率", "終身", "定期",
+                    "附加", "批註", "外幣", "美元", "澳幣", "重大", "長期", "豁免")
+_TITLE_FAMILY_PREFIXES = ("投資型", "利率變動型", "指數連結型", "一年", "人身", "股票")
 
-_TITLE_CJK = 3
-"""Ideographs a line needs before it can be a product name. Three rejects 36 of the 660
-current titles, every one of them furniture — an approval number, a 碳標字 reference, a
-商品代號, the sha a document with no readable title falls back to. The shortest real name
-in the corpus carries far more."""
 
-
-def _reads_as_chinese(line: str) -> bool:
-    r"""
-    Say whether a line is text a person could read, or a CID font's leftovers.
-
-    Args:
-        line: One candidate title, already tidied and stripped.
-
-    Returns:
-        True when it holds at least `_TITLE_CJK` ideographs.
-
-    `_FURNITURE`'s `[\W\d_]+` arm catches a line of pure punctuation and digits, and a
-    subset-embedded CID font decodes to characters that are `\w` — ॆᔊఊฌᜊᕘຬঐྪᎈ passed
-    every filter and became a product name the moment the line above it, 保障您所愛,
-    dropped below the length floor. Measured across 660 contracts: six titles move when
-    the floor is applied to a stripped line, five of them for the better and this one
-    document for the worse.
-
-    **A count, not a ratio.** The first version asked for half the characters to be CJK
-    and rejected 澳幣計價股票指數連結結構型商品(無擔保)【鏈結指數為韓國KOSPI 200指數
-    (KOSPI 200 Index)】 — a real product whose name carries the Latin and the digits its
-    own prospectus prints. The mojibake is Devanagari, Telugu, Thai and Tibetan
-    codepoints and holds **zero** ideographs, so a count separates the two cleanly where
-    a ratio punishes the honest name for the company it keeps.
-    """
-    return len(_CJK_CHAR.findall(line)) >= _TITLE_CJK
+def _title_base(text: str) -> str | None:
+    """Separate complete title qualifiers without folding their printed punctuation."""
+    base_end = len(text)
+    closing: list[str] = []
+    for position, char in enumerate(text):
+        if char in _TITLE_BRACKETS:
+            if not closing and base_end == len(text):
+                base_end = position
+            closing.append(_TITLE_BRACKETS[char])
+        elif char in _TITLE_BRACKETS.values():
+            if not closing or closing.pop() != char:
+                return None
+        elif not closing and position >= base_end and not char.isspace():
+            return None
+    return text[:base_end].rstrip() if not closing else None
 
 
 def _title_of(first_page: str) -> str:
     """
-    Read the product name off page one.
+    Select a printed product title, never the first readable line or PDF metadata.
 
-    The name is rarely the first line. Above it sit a page counter, a "Since2023"
-    watermark, an approval reference, a complaints hotline — furniture that a naive
-    "first non-empty line" picks up instead, which is how a corpus ends up with six
-    documents all titled 第1頁，共31頁.
+    Require the insurer prefix and a complete insurance-title ending. A disclosure's
+    explicit "本公司『…』(以下簡稱本商品)" also identifies its own product, not a reference.
+    Adjacent wrapped lines and parenthesized qualifiers retain their printed punctuation. A page with
+    multiple main products is unresolved, even if one occurs first. Endorsement titles
+    do not displace a unique main title. No product evidence returns an empty string;
+    callers must retain that uncertainty rather than invent a product for a vendor list.
 
-    Args:
-        first_page: Extracted text of page one.
-
-    Returns:
-        The product name, or an empty string when the page has no line that reads
-        like one.
-
+    This function changes title metadata only. It never changes clause text or offsets.
     """
-    for raw in first_page.splitlines():
-        # `.strip()`, not `_tidy` alone: `_tidy` only rstrips, and `_FURNITURE` anchors
-        # three of its branches at `^`. One leading space and 「 第 1 頁」 stops looking
-        # like furniture and becomes the product's name — measured, `_title_of` returned
-        # 「 第   1   頁」 as a title. That is the bug this filter was widened to fix, back
-        # through a different door.
-        if len(line := _tidy(raw).strip()) < 8 or _FURNITURE.search(line) or not _reads_as_chinese(line):
+    first_article = next((start for start, _, number, _ in _article_marks(first_page) if number == 1), None)
+    cover = first_page[:first_article] if first_article is not None else first_page
+    lines = [_tidy(raw).strip().lstrip("•●■ ") for raw in cover.splitlines()]
+    candidates: dict[str, str] = {}
+    for start, line in enumerate(lines):
+        if line.startswith("本公司『"):
+            definition = "".join(lines[start : start + _TITLE_MAX_LINES]).removeprefix("本公司『")
+            subject, delimiter, rest = definition.partition("』")
+            base = _title_base(subject)
+            if (delimiter and rest.lstrip().startswith(("(以下簡稱本商品)", "（以下簡稱本商品）"))
+                    and base and base.startswith(_TITLE_PREFIX) and base.endswith(_TITLE_ENDINGS)
+                    and len(base.removeprefix(_TITLE_PREFIX)) >= 4
+                    and len(subject) <= _TITLE_MAX_CHARACTERS
+                    and not any(char in subject for char in "、，。；：,:;!?！？�")):
+                candidates[subject] = base
+        base = _title_base(line)
+        if base and base.endswith("結構型商品") and "計價" in base:
+            candidates[line] = base
             continue
-        return line
-    return ""
+        if not line.startswith(_TITLE_PREFIX):
+            continue
+        if line != _TITLE_PREFIX and not any(term in line.removeprefix(_TITLE_PREFIX) for term in _TITLE_WRAP_TERMS):
+            continue
+        candidate = ""
+        for offset, part in enumerate(lines[start : start + _TITLE_MAX_LINES]):
+            if not part or (offset and part.startswith(_TITLE_PREFIX)):
+                break
+            if part.endswith(("公司", "說明書", "商品")):
+                break
+            candidate += part
+            # Inline benefits are a separate paragraph, not part of a title qualifier.
+            for opening in _TITLE_BRACKETS:
+                before, separator, after = candidate.partition(opening)
+                if separator and before.rstrip().endswith(_TITLE_ENDINGS) and (":" in after or "：" in after):
+                    candidate = before.rstrip()
+                    break
+            if len(candidate) > _TITLE_MAX_CHARACTERS or any(char in candidate for char in "，。；：,:;!?！？�"):
+                break
+            base = _title_base(candidate)
+            if base is None or not base.endswith(_TITLE_ENDINGS):
+                continue
+            if len(base.removeprefix(_TITLE_PREFIX)) < 4:
+                break
+            # A following qualifier belongs to this name; a benefits paragraph does not.
+            following = start + offset + 1
+            if following < len(lines) and lines[following].startswith(tuple(_TITLE_BRACKETS)):
+                extended = candidate + lines[following]
+                qualifier = lines[following].rstrip("）)】")
+                if (qualifier.endswith(("型", "保險商品", "無身故給付", "無擔保"))
+                        and not any(char in extended for char in "，。；：,:;!?！？�")
+                        and _title_base(extended) == base):
+                    candidate = extended
+            candidates[candidate] = base
+            break
+    main = {title: base for title, base in candidates.items() if not base.endswith(("附加條款", "批註條款"))}
+    # A second product need not repeat the insurer. Generic family labels and wrapped
+    # fragments already contained in the selected full name are not other products.
+    if main:
+        compact_titles = tuple("".join(title.split()) for title in main)
+        for line in lines:
+            base = _title_base(line)
+            if (not base or base.startswith((_TITLE_PREFIX, *_TITLE_FAMILY_PREFIXES))
+                    or not base.endswith(("保險", "壽險", "附約"))
+                    or any(char in line for char in "、，。；：,:;!?！？�")):
+                continue
+            positions = [position for term in _TITLE_WRAP_TERMS if (position := base.find(term)) >= 0]
+            if positions and min(positions) >= 2 and not any("".join(line.split()) in title for title in compact_titles):
+                return ""
+    selected = main or candidates
+    # Repeated headers can differ only in extraction spacing. Keep printed spacing.
+    selected = {"".join(title.split()): title for title in selected}
+    return next(iter(selected.values())) if len(selected) == 1 else ""
 
 
 def _kind_for(heading: str) -> ClauseKind:
@@ -213,6 +247,7 @@ class ClauseIndex(Struct):
     doc_id: str
     title: str
     clauses: dict[str, Clause]
+    document_kind: DocumentKind = DocumentKind.UNKNOWN
 
     def cite(self, clause_id: str) -> Citation:
         """
@@ -227,8 +262,11 @@ class ClauseIndex(Struct):
         Raises:
             KeyError: The id is not in this contract. This is the guard that turns a
                 fabricated citation into a crash instead of a plausible-looking figure.
+            ValueError: The source is not a contract document.
 
         """
+        if self.document_kind is not DocumentKind.CONTRACT:
+            raise ValueError(f"{self.document_kind.value} source is not a contract citation")
         clause = self.clauses[clause_id]
         return Citation(doc_id=self.doc_id, clause_id=clause_id, page=clause.page, verbatim=clause.verbatim)
 
@@ -246,6 +284,51 @@ def _page_of(offset: int, page_ends: list[int]) -> int:
 
     """
     return bisect.bisect_right(page_ends, offset) + 1
+
+
+def _article_marks(full: str) -> list[tuple[int, int, int, str]]:
+    """Read printed article lines without consuming the following body as a heading."""
+    marks = []
+    offset = 0
+    lines = []
+    for raw in full.splitlines(keepends=True):
+        if line := raw.strip():
+            lines.append((offset, offset + len(raw), line))
+        offset += len(raw)
+    numerals = frozenset("一二三四五六七八九十百廿卅0123456789")
+    for position, (start, body_at, line) in enumerate(lines):
+        if line.startswith("第"):
+            written, separator, rest = line[1:].partition("條")
+            digits = "".join(written.split())
+            if separator and digits and set(digits) <= numerals and (not rest or rest[0].isspace()):
+                number = cn_to_int(digits)
+                heading = rest.strip()
+                if not heading:
+                    # Some PDFs extract the left-margin article title after its
+                    # number; summaries print the title before it. Neither format
+                    # permits taking a punctuated body sentence as the heading.
+                    for neighbor in (position + 1, position - 1):
+                        if not 0 <= neighbor < len(lines):
+                            continue
+                        candidate_at, candidate_end, candidate = lines[neighbor]
+                        if len(candidate) > 60 or any(c in candidate for c in "。；：，、"):
+                            continue
+                        heading = candidate
+                        if neighbor < position:
+                            start = candidate_at
+                        else:
+                            body_at = candidate_end
+                        break
+                marks.append((start, body_at, number, heading))
+    return marks
+
+
+def document_kind(first_page: str, *, has_first_article: bool) -> DocumentKind:
+    """Use the printed source label before interpreting its numbered content."""
+    lines = {"".join(line.split()) for line in first_page.splitlines()}
+    if "商品說明書" in lines or "重要條款摘要" in lines:
+        return DocumentKind.BROCHURE
+    return DocumentKind.CONTRACT if has_first_article else DocumentKind.UNKNOWN
 
 
 def build_index(pdf_path: Path) -> ClauseIndex:
@@ -274,18 +357,18 @@ def build_index(pdf_path: Path) -> ClauseIndex:
     full = "\n".join(pages)
 
     doc_id = blake2b(pdf_path.read_bytes(), digest_size=8).hexdigest()
-    title = _title_of(pages[0]) or pdf_path.stem
+    title = _title_of(pages[0]) or UNRESOLVED_PRODUCT_NAME
 
     # Article numbers run 1, 2, 3… once. A match that does not advance the count is a
     # line that merely opens with a cross-reference, or a heading repeated in a running
     # header — either way it is not where the next article begins.
     marks: list[tuple[int, int, int, str]] = []
     highest = 0
-    for m in _ARTICLE.finditer(full):
-        if (number := cn_to_int(m.group(1))) <= highest:
+    for mark in _article_marks(full):
+        if (number := mark[2]) <= highest:
             continue
         highest = number
-        marks.append((m.start(), m.end(), number, m.group(2).strip()))
+        marks.append(mark)
 
     clauses: dict[str, Clause] = {}
 
@@ -335,4 +418,5 @@ def build_index(pdf_path: Path) -> ClauseIndex:
             page=_page_of(wait.start(), page_ends),
         )
 
-    return ClauseIndex(doc_id=doc_id, title=title, clauses=clauses)
+    return ClauseIndex(doc_id=doc_id, title=title, clauses=clauses,
+                       document_kind=document_kind(pages[0], has_first_article="art.1" in clauses))

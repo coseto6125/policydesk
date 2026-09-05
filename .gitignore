@@ -4,6 +4,8 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 .env
+.claude/
+SUPERVISOR-ARCHIVE.md
 
 # Insurer contract PDFs are their copyright, and the corpus is 1.1 GB.
 # Rebuild it with: uv run python -m policydesk.ingest
@@ -12,3 +14,14 @@ data/clauses/*.pdf
 data/*.log
 data/index-report.json
 data/bm25/
+data/vectors/current.json
+data/vectors/*/
+data/evaluations/
+
+# The vector index is a cache, not a source: `policydesk-index` rebuilds it from the
+# corpus in about six minutes, and 51 MB of float32 in every clone buys nothing a
+# rebuild does not. It ships to a deployment host directly rather than through git.
+data/vectors/
+
+# pyci-check writes its cache beside the source it reads.
+.pyci-check-cache/

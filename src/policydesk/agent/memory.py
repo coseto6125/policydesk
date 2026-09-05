@@ -33,7 +33,7 @@ from msgspec import DecodeError, Struct, json
 
 from policydesk.bootloader import logger
 from policydesk.llm.pricing import cost
-from policydesk.llm.provider import Provider, ProviderError
+from policydesk.llm.provider import Phase, Provider, ProviderError
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -383,6 +383,7 @@ async def sweep_once(db: Database, provider: Provider, *, batch: int = 5) -> int
 
         try:
             completion = await provider.complete(
+                phase=Phase.FACTS,
                 instructions=EXTRACT_INSTRUCTIONS,
                 user_input=f"# 已存事實\n{known}\n\n# 先前摘要\n{case['summary'] or '（無）'}\n\n# 對話紀錄\n{body}",
                 schema=EXTRACTION_SCHEMA,
@@ -395,10 +396,10 @@ async def sweep_once(db: Database, provider: Provider, *, batch: int = 5) -> int
         await db.execute(
             """INSERT INTO llm_usage (case_id, phase, provider, model, prompt_tokens, completion_tokens,
                                       cached_tokens, total_tokens, cost_usd, latency_ms, response)
-               VALUES ($1::bigint,'facts',$2::text,$3::text,$4::int,$5::int,$6::int,$7::int,
-                       $8::numeric,$9::int,$10::jsonb)""",
+               VALUES ($1::bigint,$2::text,$3::text,$4::text,$5::int,$6::int,$7::int,$8::int,
+                       $9::numeric,$10::int,$11::jsonb)""",
             [
-                case["case_id"], completion.provider, completion.model,
+                case["case_id"], Phase.FACTS.value, completion.provider, completion.model,
                 completion.prompt_tokens, completion.completion_tokens, completion.cached_tokens,
                 completion.total_tokens, cost(completion), completion.latency_ms,
                 {"text": completion.text[:2000]},
@@ -436,4 +437,3 @@ async def sweep_loop(db: Database, provider: Provider, *, every: float = 30.0) -
             except Exception as exc:
                 logger.warning("facts_sweep_failed", error=str(exc))
         await asyncio.sleep(every)
-

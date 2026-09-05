@@ -9,7 +9,10 @@ services:
       # 5434 keeps this clear of a local Postgres on 5432 and of enoract's on 5433.
       - "5434:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Mounted at the parent, not at data/. The 18+ images store each major version in
+      # its own subdirectory so pg_upgrade --link can run without crossing a mount
+      # boundary, and they refuse to start when they find a volume at the old path.
+      - pgdata:/var/lib/postgresql
       # Postgres runs these once, on an empty data directory only. Recreating the
       # volume is what re-applies a changed migration.
       - ./infra/migrations:/docker-entrypoint-initdb.d:ro

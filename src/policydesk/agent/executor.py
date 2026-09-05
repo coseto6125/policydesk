@@ -22,21 +22,27 @@ which is what makes the trace view a record rather than a diagram.
 import asyncio
 import re
 import time
+from collections import defaultdict
 from datetime import UTC, date, datetime
 from importlib import import_module
-from typing import TYPE_CHECKING, Any
+from itertools import zip_longest
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import etoon
-from msgspec import DecodeError, json
+from msgspec import DecodeError, Struct, json, structs
 
 from policydesk.agent import i18n, memory, statute, tools
 from policydesk.agent import locale as lang
 from policydesk.agent.scenario import (
     ASKED_ALREADY,
-    BY_NAME,
     CATALOGUE,
+    DOCUMENT_PROGRESS,
+    IDENTITY_LOCKED_REPLY,
+    IDENTITY_NEXT_STEP,
+    LOOKUP_SCOPE,
     OPENERS,
+    POLICY_CLARIFICATION,
     PUBLIC_OPENERS,
     ROUTER_INSTRUCTIONS,
     WRITING,
@@ -47,8 +53,8 @@ from policydesk.agent.scenario import (
 from policydesk.bootloader import logger
 from policydesk.llm.pricing import cost
 from policydesk.llm.provider import Completion, Phase, Provider, ProviderError
-from policydesk.skills.calculator import TOOL_SCHEMA, CalculationError, calculate
-from policydesk.validation.validator import Verdict, recheck
+from policydesk.skills.calculator import CalculationError, calculate
+from policydesk.validation.validator import QuotedField, Verdict, recheck
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
@@ -70,6 +76,44 @@ is for.
 _CITATION = re.compile(r"\b(?:art\.\d{1,3}(?:\.carve\d)?|waiting)\b")
 
 
+class _ProvisionQuote(Struct, forbid_unknown_fields=True):
+    field: str
+    text: str
+    kind: Literal["benefit_condition", "exclusion", "waiting_period", "deadline"]
+
+
+class _Answer(Struct, forbid_unknown_fields=True):
+    reply: str
+    citations: list[str]
+    calculations: list[str]
+    quoted_fields: list[_ProvisionQuote] = []
+
+
+def _answer_schema(sources: tuple[tuple[str, str], ...], *, calculator: bool = False) -> dict[str, Any]:
+    definitions = json.schema(_Answer)["$defs"]
+    schema = definitions["_Answer"]
+    schema["required"] = list(schema["properties"])
+    quotes = schema["properties"]["quoted_fields"]
+    quotes.pop("default", None)
+    quotes["items"] = definitions["_ProvisionQuote"]
+    quotes["description"] = (
+        "For claims about benefit conditions, exclusions, waiting periods or deadlines, quote the supporting "
+        "clause text verbatim. Use product_id|clause_id as field and include that key in citations. "
+        "Use an empty list when the reply makes none of these four kinds of claim."
+    )
+    citations = schema["properties"]["citations"]
+    if sources:
+        citations["items"]["enum"] = [f"{product}|{clause}" for product, clause in sources]
+        quotes["items"]["properties"]["field"]["enum"] = citations["items"]["enum"]
+        quotes["items"]["properties"]["text"]["minLength"] = 1
+    else:
+        citations["maxItems"] = 0
+        quotes["maxItems"] = 0
+    if not calculator:
+        schema["properties"]["calculations"]["maxItems"] = 0
+    return schema
+
+
 class Turn:
     """One exchange, and everything it touched."""
 
@@ -80,6 +124,9 @@ class Turn:
         self.reply = ""
         self.scenario: str | None = None
         self.citations: tuple[str, ...] = ()
+        self.clause_sources: tuple[tuple[str, str], ...] = ()
+        self.clause_texts: dict[str, str] = {}
+        self.cited_sources: tuple[tuple[str, str], ...] = ()
         self.faults: tuple[str, ...] = ()
         self.procedure_hint: str = ""
         """What the customer called the procedure, used to look up its multiplier."""
@@ -101,7 +148,9 @@ class Turn:
         customer's message. The prompt names it, and the chips are rendered in it."""
 
 
-async def _record_failure(db: Database, turn: Turn, phase: Phase, scenario: str | None, error: str, latency_ms: int) -> None:
+async def _record_failure(
+    db: Database, turn: Turn, phase: Phase, scenario: str | None, error: str, latency_ms: int, provider: str
+) -> None:
     """
     Record a model call that never returned.
 
@@ -112,6 +161,10 @@ async def _record_failure(db: Database, turn: Turn, phase: Phase, scenario: str 
         scenario: Which scenario was active, if one had been chosen.
         error: What the provider said.
         latency_ms: How long the attempt took before giving up.
+        provider: Which seam was serving. Passed rather than assumed: this column read
+            `"openai"` for every outage whatever answered, so an auditor counting which
+            provider goes silent was reading a constant. `_record` has always written
+            `completion.provider`; a failure has no completion to read it off.
 
     An outage is the entry the trail most needs. Recording only successes leaves an
     auditor unable to distinguish "the desk never tried" from "the desk tried and the
@@ -121,7 +174,7 @@ async def _record_failure(db: Database, turn: Turn, phase: Phase, scenario: str 
     await db.execute(
         """INSERT INTO llm_usage (case_id, turn_id, phase, scenario, provider, model, latency_ms, request, response)
            VALUES ($1::bigint,$2::text,$3::text,$4::text,$5::text,$6::text,$7::int,$8::jsonb,$9::jsonb)""",
-        [turn.case_id, turn.turn_id, phase.value, scenario, "openai", "", latency_ms,
+        [turn.case_id, turn.turn_id, phase.value, scenario, provider, "", latency_ms,
          {"scenario": scenario}, {"error": error[:2000]}],
     )
 
@@ -197,20 +250,28 @@ async def _route(
     budget of 20,000 was matched against health products at 30,000.
 
     """
+    offered = {s.name: s for s in reachable(stage)}
     completion = await provider.complete(
+        phase=Phase.ROUTE,
         # WRITING belongs here too. This call answers directly whenever no scenario fits
         # — `ROUTER_INSTRUCTIONS` says so in as many words — and that answer goes to the
         # customer at `run_turn`'s `scenario is None` branch. It is also the path where the
         # model has the most freedom to write a long unstructured paragraph, since no
         # scenario injection is shaping it.
-        instructions=f"{ROUTER_INSTRUCTIONS}\n\n{WRITING}\n\n{i18n.hint(turn.locale)}",
+        instructions=f"{LOOKUP_SCOPE}{ROUTER_INSTRUCTIONS}\n\n{WRITING}\n\n{i18n.hint(turn.locale)}",
         user_input=f"{past}# This message\n{text}",
-        tools=[tool_schema(s) for s in reachable(stage)],
+        tools=[tool_schema(s) for s in offered.values()],
     )
     await _record(db, turn, Phase.ROUTE, completion, None)
 
     for call in completion.tool_calls:
-        if (scenario := BY_NAME.get(call.get("name", ""))) is not None:
+        # Resolved against what this stage offered, not the whole catalogue. The two
+        # lists differed by one or two scenarios at every stage — verify_identity at
+        # all of them — so a name the router was never shown still dispatched. On the
+        # Anthropic and OpenAI paths the API constrains the name to a declared tool,
+        # but the codex path builds calls from free text, and a guard that holds only
+        # for some providers is not a guard.
+        if (scenario := offered.get(call.get("name", ""))) is not None:
             try:
                 args = json.decode((call.get("arguments") or "{}").encode())
             except DecodeError:
@@ -272,6 +333,37 @@ def _as_budget(raw: str) -> int | None:
         return None
 
 
+def _clause_rows(value: Any) -> dict[tuple[str, str], dict[str, Any]]:
+    """Collect returned clause rows, excluding private metadata."""
+    found: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def visit(item: Any) -> None:
+        if isinstance(item, dict):
+            product, clause = item.get("product_id"), item.get("clause_id")
+            if isinstance(product, str) and isinstance(clause, str):
+                found[product, clause] = item
+            for key, child in item.items():
+                if not key.startswith("_"):
+                    visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return found
+
+
+def _clause_sources(value: Any) -> tuple[tuple[str, str], ...]:
+    """Preserve the document identities returned by permitted database tools."""
+    return tuple(_clause_rows(value))
+
+
+def _clause_subject(value: Any) -> dict[str, str]:
+    """Keep the exact clause text made visible for this turn's answer."""
+    return {f"{product}|{clause}": row["verbatim"]
+            for (product, clause), row in _clause_rows(value).items() if isinstance(row.get("verbatim"), str)}
+
+
 async def _gather(
     db: Database,
     scenario: Scenario,
@@ -323,7 +415,9 @@ async def _gather(
         # Empty rather than absent. A scenario module citing contract clauses returns its
         # own allow-list; one citing statute carries the 〔保險法 第64條第2項〕 syntax,
         # which the `art.NN` checker never sees, so it has nothing here to allow.
-        facts.setdefault("_allowed_clauses", frozenset())
+        facts["_allowed_clauses"] = facts.get("_allowed_clauses", frozenset()) | frozenset(
+            clause for _, clause in _clause_sources(facts)
+        )
         return facts
     # Per tool, exactly as the `tools_module` branch does it. Asking the question per
     # scenario let a scenario whose declared tools are all public — `browse_products`,
@@ -357,6 +451,19 @@ async def _gather(
     else:
         # list_policies first, because everything else needs its product_ids.
         policies = await tools.list_policies(db, turn.member_id, today=today)
+        if any(param.name == "policy" for param in scenario.params):
+            scope = tools._select_policies(policies, params.get("policy", ""))
+            if scope["status"] in {"ambiguous", "not_found"}:
+                return {
+                    "_allowed_clauses": frozenset(),
+                    "policy_scope": {
+                        "status": scope["status"],
+                        "reference": params.get("policy", ""),
+                        "candidates": [{key: row[key] for key in ("policy_number", "product_name")}
+                                       for row in scope["policies"]],
+                    },
+                }
+            policies = scope["policies"]
         product_ids = [p["product_id"] for p in policies]
         facts["list_policies"] = policies
         # The rest depend on product_ids and member_id, not on each other, so they go out
@@ -379,7 +486,9 @@ async def _gather(
     if "benefit_headings" in allowed:
         pending["benefit_headings"] = tools.benefit_headings(db, product_ids)
     if "required_documents" in allowed:
-        pending["required_documents"] = tools.required_documents(db, product_ids)
+        pending["required_documents"] = tools.required_documents(
+            db, product_ids, index=index, topic=params.get("event", ""),
+        )
     if "billing_summary" in allowed:
         pending["billing_summary"] = tools.billing_summary(db, turn.member_id, today=today)
     if "coverage_summary" in allowed:
@@ -426,6 +535,8 @@ async def _gather(
                 occupation_class=member["occupation_class"],
                 budget=budget,
                 line=params.get("line", ""),
+                need=params.get("need", ""),
+                index=index,
             )
             if not facts["suitable_products"]:
                 # Nothing qualified, so find out what would. Six probes, each dropping
@@ -447,6 +558,9 @@ async def _gather(
                 "line": params.get("line", ""),
             }
 
+    facts["_allowed_clauses"] = facts.get("_allowed_clauses", frozenset()) | frozenset(
+        clause for _, clause in _clause_sources(facts)
+    )
     return facts
 
 
@@ -466,9 +580,6 @@ def _render(scenario: Scenario, facts: dict[str, Any]) -> str:
     """
     template = scenario.template
     match scenario.name:
-        case "issue_documents":
-            waiting = facts.get("pending_signatures") or {}
-            return template.format(count=waiting.get("count", 0), names=waiting.get("names", ""))
         case "billing":
             summary = facts.get("billing_summary") or {}
             # A total mixing instalment rows with rate-card estimates says so. Without
@@ -508,10 +619,12 @@ async def run_turn(
     member_id: int,
     text: str,
     confirmed: bool = False,
+    identity_locked: bool = False,
     index: Retriever | None = None,
     today: date | None = None,
     since: int = 0,
     locale: str | None = None,
+    document_event: bool = False,
 ) -> Turn:
     """
     Handle one thing the customer said.
@@ -526,10 +639,14 @@ async def run_turn(
             is about one named person's contracts, so an unconfirmed session reaches no
             tool marked `requires_identity` — the scenario is refused before its tools
             run, not after.
+        identity_locked: Whether this connection has exhausted its verification attempts.
+            This changes the next-step guidance, not the tool authorization decision.
         today: The date to judge currency against.
         since: The message this connection started above.
         locale: The language to reply in, when the caller already resolved it. None
             reads it off the message and the conversation.
+        document_event: Internal socket event, not customer-selected routing. Runs the
+            read-only document scenario through the same identity and answer checks.
 
     Returns:
         The turn, carrying the reply and anything that failed a check.
@@ -582,6 +699,8 @@ async def run_turn(
         # frisking someone at the door. The check belongs to the question that needs it.
         known = (
             "# This session has not passed 資料核對\n"
+            f"# Identity verification state: {'locked' if identity_locked else 'pending'}\n"
+            + IDENTITY_NEXT_STEP +
             "The customer has not verified their identity, so none of their policy data is visible to you.\n"
             "A greeting, or a question about what this desk does, gets a direct answer.\n"
             "A question about insurance itself (the free-look period, what 據實說明 means, how long "
@@ -589,20 +708,27 @@ async def run_turn(
             "scenario tool. Those scenarios read public clauses and statutes and answer an "
             "unverified customer. A number of days or an amount from your own memory has nothing "
             "behind it that can be checked.\n"
-            "Once the customer asks about their own policies, premiums, sums insured, claims or "
-            "a plan to buy, identity comes first: ask for the national ID number then, and not before.\n"
+            "For a request about their own policies, premiums, sums insured, claims or a plan to buy, "
+            "call the matching scenario tool. Its gate withholds personal records until identity is "
+            "verified; its reply follows the connection's identity verification state.\n"
             "Every statement about their policies comes from the material.\n"
             + ASKED_ALREADY + "\n"
         )
-    past = f"{known}{profile}{memory.transcript(messages[:-1])}"
+    history = messages if document_event else messages[:-1]
+    past = f"{known}{memory.transcript(history)}{profile}"
 
     started = time.perf_counter()
+    document_refusal = text if document_event else ""
     try:
-        scenario, params = await _route(provider, db, turn, text, past, stage)
+        if document_event:
+            scenario, params = DOCUMENT_PROGRESS, {}
+            text = "請依本次文件操作結果與本案最新工具紀錄，說明目前進度和下一步。"
+        else:
+            scenario, params = await _route(provider, db, turn, text, past, stage)
     except ProviderError as exc:
         latency = int((time.perf_counter() - started) * 1000)
         logger.warning("turn_unrouted", case_id=case_id, error=str(exc))
-        await _record_failure(db, turn, Phase.ROUTE, None, str(exc), latency)
+        await _record_failure(db, turn, Phase.ROUTE, None, str(exc), latency, provider.name)
         turn.reply = "櫃台的語言服務目前無回應，請稍候再試，或改由專人與您聯繫。"
         return turn
 
@@ -626,7 +752,8 @@ async def run_turn(
         _withhold_promise(turn, case_id, None)
         return turn
 
-    if not confirmed and tools.reads_identity(scenario.tools):
+    scenario_owner = import_module(scenario.tools_module) if scenario.tools_module else None
+    if not confirmed and tools.reads_identity(scenario.tools, owner=scenario_owner):
         # The gate withholds the member queries, not the conversation. Refusing the whole
         # scenario made the desk answer 我想加保 with nothing but a demand for a number;
         # what it should do is say what exists and ask for the number to judge the fit.
@@ -646,6 +773,19 @@ async def run_turn(
     turn.params = params
     facts = await _gather(db, scenario, turn, today=today, params=params, confirmed=confirmed, index=index)
     allowed: frozenset[str] = facts.pop("_allowed_clauses")
+    if document_refusal and confirmed:
+        facts["document_action"] = {"refusal": document_refusal}
+
+    if (scope := facts.get("policy_scope")) and scope["status"] == "ambiguous":
+        # The choice must identify each contract, even if the model omits or merges candidates.
+        (question,) = await i18n.translate(db, turn.locale, (
+            "有多張保單符合您指定的名稱，請提供要查詢的保單號碼：",
+        ))
+        candidates = scope["candidates"]
+        choices = "\n".join(f"- {row['policy_number']}｜{row['product_name']}" for row in candidates)
+        turn.reply = f"{question}\n\n{choices}"
+        turn.quick_replies = tuple(row["policy_number"] for row in candidates)
+        return turn
 
     if facts.get("_identity_required") and scenario.emit is Emit.TEMPLATE:
         # A template fills from rows, and the withheld query has none — so 您名下有效保單
@@ -654,7 +794,7 @@ async def run_turn(
         # docstring names. The model path says the same thing correctly, because it reads
         # `_identity_required`; this path has no model to read it.
         turn.awaiting_identity = True
-        turn.reply = (
+        turn.reply = IDENTITY_LOCKED_REPLY if identity_locked else (
             "查詢您名下的保單資料前，需要先核對您的身分。"
             "請提供您的身分證字號，核對通過後我立刻為您查詢。"
         )
@@ -668,29 +808,59 @@ async def run_turn(
     # states each row's field names once instead of once per row. Measured on a product
     # list here: 41% fewer characters for the same rows, on the prompt the customer is
     # waiting on.
-    material = etoon.dumps({k: _short(v) for k, v in facts.items()})
+    visible_facts = _answer_context(facts)
+    coverage = visible_facts.get("evidence_coverage", {})
+    if coverage.get("context_omitted"):
+        turn.reply = EVIDENCE_LIMITED
+        return turn
+    turn.clause_sources = _clause_sources(visible_facts)
+    turn.clause_texts = _clause_subject(visible_facts)
+    material = etoon.dumps(visible_facts)
+    clarifying_policy = "policy_scope" in facts
+    instructions = POLICY_CLARIFICATION if clarifying_policy else (
+        f"{ROUTER_INSTRUCTIONS}\n\n{WRITING}\n\n{scenario.injection}"
+    )
     answering = time.perf_counter()
     try:
         # The calculator is offered only where the scenario asks for it. Offered
         # everywhere, it made the desk a calculator for a customer who had wandered off
         # topic; a scenario that needs a figure the rows do not carry sets `calculator`.
         completion = await provider.complete(
-            instructions=f"{ROUTER_INSTRUCTIONS}\n\n{scenario.injection}\n\n{WRITING}\n\n{i18n.hint(turn.locale)}",
+            phase=Phase.ANSWER,
+            instructions=f"{instructions}\n\n{i18n.hint(turn.locale)}",
             user_input=f"{past}# This message\n{text}\n\n# Tool results\n{material}",
-            tools=[TOOL_SCHEMA] if scenario.calculator else None,
+            schema=_answer_schema(turn.clause_sources, calculator=scenario.calculator),
         )
     except ProviderError as exc:
         latency = int((time.perf_counter() - answering) * 1000)
         logger.warning("turn_unanswered", case_id=case_id, scenario=scenario.name, error=str(exc))
-        await _record_failure(db, turn, Phase.ANSWER, scenario.name, str(exc), latency)
+        await _record_failure(db, turn, Phase.ANSWER, scenario.name, str(exc), latency, provider.name)
         turn.reply = "櫃台的語言服務目前無回應，本次查詢已記錄，請稍候再試。"
         return turn
 
     await _record(db, turn, Phase.ANSWER, completion, scenario.name)
+    try:
+        answer = json.decode(completion.text, type=_Answer)
+    except DecodeError:
+        turn.reply = WITHHELD
+        turn.faults = ("answer_format",)
+        return turn
+    if answer.calculations and not scenario.calculator:
+        turn.reply = WITHHELD
+        turn.faults = ("unoffered_calculator",)
+        return turn
+    completion = structs.replace(
+        completion, text=answer.reply,
+        tool_calls=tuple({"name": "calculate", "arguments": json.encode({"expression": expression}).decode()}
+                         for expression in answer.calculations),
+    )
     turn.computations = _run_calculations(completion)
 
-    if await _unverifiable(db, turn, completion.text, allowed):
+    if await _unverifiable(
+        db, turn, completion.text, allowed, sources=tuple(answer.citations), quoted_fields=tuple(answer.quoted_fields),
+    ):
         return turn
+    turn.reply = completion.text
     if _withhold_promise(turn, case_id, scenario.name):
         return turn
     if not completion.text.strip():
@@ -699,7 +869,8 @@ async def run_turn(
         logger.warning("answer_empty", case_id=case_id, scenario=scenario.name)
         turn.reply = "本次查詢未能組出完整回覆，已保留紀錄並轉由專人與您聯繫。"
         return turn
-    turn.reply = completion.text
+    if coverage.get("complete") is False:
+        turn.reply = f"{EVIDENCE_LIMITED}\n\n{turn.reply}"
     return turn
 
 
@@ -824,19 +995,24 @@ def _promises(text: str) -> str:
     prompt-based; these two are the exceptions, and both withhold rather than annotate.
 
     """
-    found = _PROMISE.search(text)
-    if found is None:
-        return ""
-    # A denial of a promise is not a promise. 不能據此判定您的外送工作一定會加費、退費或
-    # 影響理賠 is a live reply saying the desk cannot decide, and the pattern reads its
-    # 一定會…理賠 the same way it reads a claim. The clause before the match decides.
-    before = text[:found.start()]
-    # The negator can sit hard against the match — 我不保證會核准 puts 不 one character
-    # before 保證, which no clause-level scan sees because the clause is then just 我不.
-    if before[-1:] in {"不", "沒", "未", "毋"}:
-        return ""
-    clause = before.rsplit("。", 1)[-1].rsplit("\n", 1)[-1]
-    return "" if _DENIAL.search(clause) else found.group(0)
+    # Every match, not the first. A denial of a promise is not a promise, but a denial
+    # followed by a promise is still a promise: 我不保證會核准。不過這件一定會賠。 was
+    # reaching the customer, because the first match was negated and the scan stopped
+    # there. Each match is judged on the clause before it, and the first one that
+    # survives is the offence.
+    for found in _PROMISE.finditer(text):
+        # A denial of a promise is not a promise. 不能據此判定您的外送工作一定會加費、退費或
+        # 影響理賠 is a live reply saying the desk cannot decide, and the pattern reads its
+        # 一定會…理賠 the same way it reads a claim. The clause before the match decides.
+        before = text[:found.start()]
+        # The negator can sit hard against the match — 我不保證會核准 puts 不 one character
+        # before 保證, which no clause-level scan sees because the clause is then just 我不.
+        if before[-1:] in {"不", "沒", "未", "毋"}:
+            continue
+        clause = before.rsplit("。", 1)[-1].rsplit("\n", 1)[-1]
+        if not _DENIAL.search(clause):
+            return found.group(0)
+    return ""
 
 
 def _withhold_promise(turn: Turn, case_id: int, scenario: str | None) -> bool:
@@ -866,7 +1042,10 @@ def _withhold_promise(turn: Turn, case_id: int, scenario: str | None) -> bool:
     return True
 
 
-async def _unverifiable(db: Database, turn: Turn, text: str, allowed: frozenset[str]) -> bool:
+async def _unverifiable(
+    db: Database, turn: Turn, text: str, allowed: frozenset[str], *, sources: tuple[str, ...] | None = None,
+    quoted_fields: tuple[_ProvisionQuote, ...] = (),
+) -> bool:
     """
     Withhold a reply whose citations do not resolve.
 
@@ -875,27 +1054,41 @@ async def _unverifiable(db: Database, turn: Turn, text: str, allowed: frozenset[
         turn: The turn, whose `citations`, `faults` and `reply` this sets.
         text: What the model wrote.
         allowed: The clause ids the tools actually returned for this member.
+        sources: Explicit product-and-clause keys from the answer. None is the router's
+            free-text path, which has no contract evidence and grants no document access.
+        quoted_fields: Exact supporting text for the four provision kinds in the answer schema.
 
     Returns:
         True when the reply was withheld, so the caller stops.
 
-    Two corpora, two syntaxes, one gate. Clause ids are read out of the text and checked
-    against what the tools returned; statute citations are read out in their own bracketed
-    form and checked against `statute_article`. Both are read OUT of the reply rather than
-    intersected with what is allowed — intersecting would only ever find ids that exist,
-    so it would pass every time and prove nothing. The failure being guarded against is a
-    number the model wrote and no document contains.
+    Contract access follows explicit keys selected from this turn's returned evidence.
+    A bare article number in prose cannot select every product sharing that number.
+    Prose tokens are checked additionally, so an undeclared article cannot slip through
+    beside an otherwise valid source list. Statutes retain their existing lookup.
 
     The unverifiable text is withheld, not annotated. Appending a caveat still puts the
     invented number in front of the customer, which is the opposite of the point.
 
     """
-    cited = tuple(dict.fromkeys(_CITATION.findall(text)))
-    checked = recheck(Verdict(passed=True, reason="", cited_clauses=cited), subject={}, allowed_clauses=allowed)
+    source_faults: tuple[str, ...] = ()
+    selected: tuple[tuple[str, str], ...] = ()
+    if sources is not None:
+        available = {f"{product}|{clause}": (product, clause) for product, clause in turn.clause_sources}
+        source_faults = tuple(f"source:{key}" for key in dict.fromkeys(sources) if key not in available)
+        selected = tuple(available[key] for key in dict.fromkeys(sources) if key in available)
+        allowed = frozenset(clause for _, clause in selected)
+    cited = tuple(dict.fromkeys([*(_CITATION.findall(text)), *(clause for _, clause in selected)]))
+    subject = {key: value for key, value in turn.clause_texts.items() if key in (sources or ())}
+    checked = recheck(
+        Verdict(passed=True, reason="", cited_clauses=cited,
+                quoted_fields=tuple(QuotedField(field=quote.field, text=quote.text) for quote in quoted_fields)),
+        subject=subject, allowed_clauses=allowed,
+    )
     fabricated = await statute.unresolved(db, text)
     turn.citations = cited
-    turn.faults = checked.faults + tuple(f"{name}{doc_id}" for name, doc_id in fabricated)
-    if checked.trustworthy and not fabricated:
+    turn.faults = source_faults + checked.faults + tuple(f"{name}{doc_id}" for name, doc_id in fabricated)
+    if not turn.faults:
+        turn.cited_sources = selected
         return False
     logger.warning(
         "citation_unresolved", case_id=turn.case_id, faults=list(checked.faults), statute=list(fabricated)
@@ -933,19 +1126,78 @@ CHARS = 400
 """How much of a string reaches the model. A clause runs to 442,649 characters, so the
 whole tool result is trimmed rather than trusted."""
 
-LONGER: dict[str, int] = {"verbatim": 1200}
+MAX_EVIDENCE_ROWS = 40
+MAX_EVIDENCE_CHARS = 128_000
+"""Per-answer limits, independent of per-product retrieval depth.
+
+The character ceiling includes the entire serialized tool context, not just clause
+bodies. It reserves room for instructions, conversation and output; it is not a
+token count or a bound on those other prompt sections.
+"""
+
+EVIDENCE_LIMITED = (
+    "本次資料量超出單次查詢範圍，尚未完成全部條款核對。"
+    "以下資料不足以確認所有保單的完整適用情形；請縮小保障主題或分批查詢後再確認。"
+)
+
+LONGER: dict[str, int] = {"verbatim": tools.DOCUMENT_CHARS}
 """Keys whose text the reply reads out rather than reads around, with the room they need.
 
-`verbatim` is here because `required_documents` returns the enumeration itself — 一、二、
-三 — and the injection tells the model to list those lines. Clipped at 400 the cut lands
-mid-enumeration and removes items: 8 held clauses run past it, across 12 members, and one
-of them loses the substitute documents the same clause grants a claimant who cannot obtain
-a 重大傷病證明. The tool already slices at this width in SQL; without this the trim here
-put it back to 400 and made that slice dead code.
+`verbatim` carries conditions and exceptions that can fall outside a narrow match.
+Use the same budget as retrieval so an article kept whole there is not clipped here.
 """
 
 
-def _short(value: Any, limit: int = 12, chars: int = CHARS) -> Any:
+def _answer_context(facts: dict[str, Any]) -> dict[str, Any]:
+    """
+    Bound all tool evidence together, sharing capacity across products.
+
+    Preserve rank within each product. Remove the lowest-priority retained row until
+    the actual serialized context fits, including nested structure and coverage metadata.
+    If non-evidence material alone exceeds the limit, withhold the context entirely.
+    Coverage describes returned rows, not recall against every clause in the PDFs.
+    """
+    def collect(value: Any) -> list[dict[str, Any]]:
+        if isinstance(value, dict):
+            own = [value] if isinstance(value.get("product_id"), str) and isinstance(value.get("clause_id"), str) else []
+            return own + [row for child in value.values() for row in collect(child)]
+        if isinstance(value, (list, tuple)):
+            return [row for child in value for row in collect(child)]
+        return []
+
+    total = len(collect(facts))
+    shortened = _short(facts)
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    rows = collect(shortened)
+    for row in rows:
+        groups[row["product_id"]].append(row)
+    ranked = [row for batch in zip_longest(*groups.values()) for row in batch if row is not None]
+    selected = [id(row) for row in ranked[:MAX_EVIDENCE_ROWS]]
+    evidence_ids = {id(row) for row in rows}
+    omitted = object()
+
+    def retain(value: Any, allowed: set[int]) -> Any:
+        if id(value) in evidence_ids and id(value) not in allowed:
+            return omitted
+        if isinstance(value, dict):
+            return {key: kept for key, child in value.items() if (kept := retain(child, allowed)) is not omitted}
+        if isinstance(value, (list, tuple)):
+            return [kept for child in value if (kept := retain(child, allowed)) is not omitted]
+        return value
+
+    while True:
+        context = retain(shortened, set(selected))
+        shown = len(collect(context))
+        if total:
+            context["evidence_coverage"] = {"complete": shown == total, "omitted_rows": total - shown}
+        if len(etoon.dumps(context)) <= MAX_EVIDENCE_CHARS:
+            return context
+        if not selected:
+            return {"evidence_coverage": {"complete": False, "omitted_rows": total, "context_omitted": True}}
+        selected.pop()
+
+
+def _short(value: Any, limit: int = 40, chars: int = CHARS) -> Any:
     """
     Trim a tool result to what fits in a prompt, in types the encoder accepts.
 
@@ -969,10 +1221,27 @@ def _short(value: Any, limit: int = 12, chars: int = CHARS) -> Any:
 
     """
     match value:
-        case list():
-            return [_short(v, limit, chars) for v in value[:limit]]
+        case list() | tuple():
+            # Apply the shared evidence budget in _answer_context, after gathering
+            # all products and tools. This pass only clips individual fields.
+            evidence = all(isinstance(row, dict) and "product_id" in row and "clause_id" in row for row in value)
+            rows = value if evidence else value[:limit]
+            return [_short(v, limit, chars) for v in rows]
         case dict():
-            return {k: _short(v, limit, LONGER.get(k, chars)) for k, v in value.items()}
+            shortened = {k: _short(v, limit, LONGER.get(k, chars)) for k, v in value.items()}
+            clipped = [k for k, v in value.items() if isinstance(v, str) and len(v) > LONGER.get(k, chars)]
+            if clipped:
+                shortened["truncated_fields"] = clipped
+                if "verbatim" in clipped:
+                    # The retrieval path marks its own slices with an ellipsis, so a
+                    # clause cut again here carries the same mark rather than a second
+                    # vocabulary. A boolean beside the text said the same thing to
+                    # nobody: no prompt read it, and the model saw a quote that ended
+                    # mid-sentence with nothing to say it had been cut. The mark
+                    # replaces the last character rather than following it, because the
+                    # limit is what the model's context can hold, not a target to pass.
+                    shortened["verbatim"] = f"{shortened['verbatim'][:-1]}…"
+            return shortened
         case str():
             return value[:chars]
         case datetime() | date():

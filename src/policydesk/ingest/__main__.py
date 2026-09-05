@@ -24,7 +24,7 @@ from policydesk.bootloader import logger
 from policydesk.core.db import Database
 from policydesk.ingest.build_db import build
 from policydesk.ingest.cathay import fetch_all
-from policydesk.ingest.to_postgres import build_catalog, copy_corpus
+from policydesk.ingest.to_postgres import build_catalog, copy_corpus, refresh_document_kinds, refresh_product_names
 from policydesk.retrieval.__main__ import rebuild as index_rebuild
 
 CORPUS = Path("data/cathay")
@@ -64,7 +64,7 @@ async def rebuild(corpus: Path = CORPUS, store: Path = STORE, *, fetch: bool = F
 
 def main() -> None:
     """
-    Entry point for `policydesk-ingest [--fetch] [corpus]`.
+    Entry point for `policydesk-ingest [--fetch | --source-kinds-only | --names-only] [corpus]`.
 
     `--fetch` folds the download in, so the whole pipeline is one command with one entry
     point. It was four stages and the first three had scripts; the download sat in
@@ -72,9 +72,28 @@ def main() -> None:
     YAML block scalar, which is four levels of quoting for the one stage nobody could
     run by name.
     """
-    args = [a for a in sys.argv[1:] if a != "--fetch"]
+    args = [a for a in sys.argv[1:] if a not in {"--fetch", "--source-kinds-only", "--names-only"}]
     corpus = Path(args[0]) if args else CORPUS
     fetch = "--fetch" in sys.argv[1:]
+    if "--names-only" in sys.argv[1:]:
+        async def names() -> None:
+            db = Database()
+            try:
+                report = await refresh_product_names(corpus, db, apply=True)
+                logger.info("product_names_refreshed", **report)
+            finally:
+                await db.close()
+        asyncio.run(names())
+        return
+    if "--source-kinds-only" in sys.argv[1:]:
+        async def refresh() -> None:
+            db = Database()
+            try:
+                await refresh_document_kinds(corpus, db)
+            finally:
+                await db.close()
+        asyncio.run(refresh())
+        return
     if not fetch and not corpus.is_dir():
         logger.error("corpus_absent", path=str(corpus), hint="pass --fetch, or see README")
         raise SystemExit(1)

@@ -6,16 +6,57 @@ the model about tools it cannot be handed as schemas, and what comes back out of
 event stream. The subprocess itself is exercised by running the desk.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from policydesk.llm.provider import (
     CodexCliProvider,
+    OpenAIProvider,
+    Phase,
     ProviderError,
     _read_events,
     _split_envelope,
     _tool_brief,
     build_provider,
 )
+
+
+@pytest.mark.parametrize(("phase", "temperature"), [
+    (Phase.ROUTE, 0.1),
+    (Phase.SCENARIO_TOOLS, 0.1),
+    (Phase.ANSWER, 0.3),
+    (Phase.VALIDATE, 0.1),
+    (Phase.REPAIR, 0.1),
+    (Phase.FACTS, 0.1),
+])
+async def test_complete_http_phase_sets_sampling_temperature(monkeypatch, phase, temperature):
+    provider = OpenAIProvider(api_key="test-key")
+    post = AsyncMock(return_value={"output": []})
+    monkeypatch.setattr(provider, "_post", post)
+    await provider.complete(instructions="rules", user_input="question", phase=phase)
+    assert post.call_args.args[0]["temperature"] == temperature
+    assert temperature >= 0.1
+
+
+async def test_complete_http_without_phase_preserves_provider_default(monkeypatch):
+    provider = OpenAIProvider(api_key="test-key")
+    post = AsyncMock(return_value={"output": []})
+    monkeypatch.setattr(provider, "_post", post)
+    await provider.complete(instructions="rules", user_input="question")
+    assert "temperature" not in post.call_args.args[0]
+
+
+async def test_complete_cli_phase_preserves_existing_invocation(monkeypatch):
+    provider = CodexCliProvider()
+    run = AsyncMock(return_value=(
+        '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n'
+        '{"type":"turn.completed","usage":{}}'
+    ))
+    monkeypatch.setattr(provider, "_run", run)
+    result = await provider.complete(instructions="rules", user_input="question", phase=Phase.ROUTE)
+    assert result.text == "ok"
+    assert run.call_args.args == ("rules\n\n# 本回合\nquestion", None, provider._model)
 
 
 def test_tool_brief_names_every_tool_and_its_parameters():
@@ -99,15 +140,31 @@ def test_calls_are_shaped_like_the_responses_api_returns_them():
     assert calls[0]["name"] == "explain_cover"
 
 
-def test_build_provider_falls_back_to_the_cli_without_a_key(monkeypatch):
+def test_build_provider_falls_back_to_the_cli_with_no_credentials_at_all(monkeypatch, tmp_path):
+    """
+    The CLI is now the last fallback, not the first.
+
+    A machine with `codex` signed in and nothing else still drives the whole desk; a
+    machine that also holds a Claude Code subscription token reaches Anthropic first,
+    which is the path a container can take and this one cannot.
+    """
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("POLICYDESK_PROVIDER", raising=False)
+    monkeypatch.setenv("ANTHROPIC_OAUTH_CREDS_PATH", str(tmp_path / "absent.json"))
     assert build_provider().name == "codex-cli"
 
 
-def test_build_provider_prefers_the_api_when_a_key_is_set(monkeypatch):
+def test_build_provider_prefers_the_api_when_a_key_is_set(monkeypatch, tmp_path):
+    """
+    A key still beats the CLI. It no longer beats the Anthropic subscription token.
+
+    The desk runs on Claude, so a readable credential file is chosen ahead of a key;
+    this test is now about the two providers below that. `POLICYDESK_PROVIDER=openai`
+    is how an operator picks the key over an available subscription.
+    """
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.delenv("POLICYDESK_PROVIDER", raising=False)
+    monkeypatch.setenv("ANTHROPIC_OAUTH_CREDS_PATH", str(tmp_path / "absent.json"))
     assert build_provider().name == "openai"
 
 

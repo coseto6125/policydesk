@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import tools
 from policydesk.agent.scenario_base import Scenario, gather_tools
-from policydesk.agent.tools import requires_identity
+from policydesk.agent.tools import public, requires_identity
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 _HEADINGS = ("契約撤銷權", "附約撤銷權")
 
 
+@public
 async def cooling_off_clause(db: Database, limit: int = 1) -> list[dict[str, Any]]:
     """
     Show a representative 契約撤銷權 clause, for anyone.
@@ -73,7 +74,7 @@ async def cooling_off_clause(db: Database, limit: int = 1) -> list[dict[str, Any
     """
     return await db.fetch(
         """SELECT c.product_id, c.clause_id, c.heading, c.verbatim, c.page, p.name AS product_name
-           FROM clause c JOIN product p USING (product_id) JOIN catalog_entry ce USING (product_id)
+           FROM contract_clause c JOIN product p USING (product_id) JOIN catalog_entry ce USING (product_id)
            WHERE c.heading = '契約撤銷權' AND ce.on_sale
            ORDER BY c.product_id
            LIMIT $1::int""",
@@ -112,7 +113,7 @@ async def member_rescission(db: Database, member_id: int, *, today: date) -> lis
     product_ids = [p["product_id"] for p in policies]
     clauses = await db.fetch(
         """SELECT c.product_id, c.clause_id, c.heading, c.verbatim, c.page, p.name AS product_name
-           FROM clause c JOIN product p USING (product_id)
+           FROM contract_clause c JOIN product p USING (product_id)
            WHERE c.product_id = ANY($1::text[]) AND c.heading = ANY($2::text[])
            ORDER BY p.name""",
         [product_ids, list(_HEADINGS)],
@@ -230,7 +231,7 @@ COOLING_OFF = Scenario(
         "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他自己保單的條款。"
         "此時只用 cooling_off_clause 的一般約定回答期間是幾天、從什麼時候起算，"
         "並說明這是一般約定，要確認他自己這張保單的條款與是否還在期限內，需要先核對身分，"
-        "請他提供身分證字號。不要憑空猜測他的保單內容。"
+        "並依本連線的核對狀態引導下一步。不要憑空猜測他的保單內容。"
     ),
     tools=("cooling_off_clause", "member_rescission"),
     tools_module="policydesk.agent.scenarios.cooling_off",

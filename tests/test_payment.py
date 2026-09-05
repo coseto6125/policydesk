@@ -7,23 +7,44 @@ here must never do is state how long they have left.
 """
 
 from datetime import date, timedelta
+from decimal import Decimal
+from unittest.mock import AsyncMock
 
 import pytest
 
 from policydesk.agent import tools
 from policydesk.agent.scenarios import payment
 from policydesk.agent.scenarios.payment import GRACE_ARTICLE, MODE_LABEL, PAYMENT, grace_rule, payment_state
-from policydesk.core.db import Database
+from policydesk.synthetic import service
 
 
-@pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    return pool
+def test_instalments_month_end_preserves_original_anniversary():
+    dates = service._instalments(date(2024, 1, 31), "monthly", date(2024, 4, 30))
+    assert dates == [date(2024, 1, 31), date(2024, 2, 29), date(2024, 3, 31), date(2024, 4, 30)]
+
+
+@pytest.mark.parametrize("seed", range(20))
+async def test_furnish_recorded_notice_agrees_with_policy_state(seed):
+    today = date(2026, 9, 5)
+    lapse = date(2026, 5, 31)
+    db = AsyncMock()
+    db.fetch.return_value = [
+        {"policy_id": 1, "effective_at": date(2020, 1, 31), "lapsed_at": lapse,
+         "sum_insured": 1000, "unit_premium": Decimal(1200)},
+        {"policy_id": 2, "effective_at": date(2020, 1, 31), "lapsed_at": None,
+         "sum_insured": 1000, "unit_premium": Decimal(1200)},
+    ]
+    await service.furnish(db, 1, today=today, seed=seed)
+    payment_call = next(call for call in db.execute_many.call_args_list if "premium_payment" in call.args[0])
+    for policy_id, due, paid, _amount, notice in payment_call.args[1]:
+        if notice is None:
+            continue
+        assert paid is None
+        assert due <= notice <= today
+        if policy_id == 1:
+            assert notice + timedelta(days=service.GRACE_DAYS) == lapse
+        else:
+            assert notice + timedelta(days=service.GRACE_DAYS) >= today
 
 
 @pytest.fixture(scope="module")
@@ -146,6 +167,15 @@ async def test_an_instalment_is_a_whole_number_of_dollars(db):
         "SELECT amount FROM premium_payment WHERE amount <> round(amount) LIMIT 5"
     )
     assert not fractional, f"a premium is billed in whole dollars: {fractional}"
+
+
+async def test_gather_returned_payment_clauses_are_allowed(db, in_grace):
+    from policydesk.agent.executor import Turn, _gather
+
+    facts = await _gather(db, PAYMENT, Turn(0, in_grace), today=date(2026, 9, 5), params={})
+    returned = facts["mode_change_rule"]
+    assert returned
+    assert {row["clause_id"] for row in returned} <= facts["_allowed_clauses"]
 
 
 # ---------------------------------------------------------------- 改繳別

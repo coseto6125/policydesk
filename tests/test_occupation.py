@@ -30,23 +30,16 @@ from policydesk.agent.scenarios.occupation import (
     occupation_duty,
 )
 from policydesk.agent.tools import permitted, reads_identity
-from policydesk.core.db import Database
 from policydesk.synthetic.person import occupation_catalogue
 
 
 @pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    if not await pool.fetch_val("SELECT count(*) FROM statute_article"):
+async def db(db):
+    if not await db.fetch_val("SELECT count(*) FROM statute_article"):
         from policydesk.agent import statute
 
-        await statute.ingest(pool)
-    yield pool
-    await pool.close()
+        await statute.ingest(db)
+    return db
 
 
 @pytest.fixture(scope="module")

@@ -6,7 +6,7 @@ crashes. The quiet ones are a citation that points at the wrong sentence, and a 
 provision that survives an amendment and stays citable — both produce a desk that answers
 confidently and wrongly, which is the failure this whole project is built against.
 
-The fixture is a live fetch, skipped when the database is not up, because the shapes that
+The fixture requires a live database, because the shapes that
 break the parser are in the government's markup and not in anything anyone would write by
 hand: 之一 articles, 款 numbered in the text, articles whose 項 are split across
 `show-number` divs, and chapters that apply forward.
@@ -16,18 +16,6 @@ import pytest
 
 from policydesk.agent import statute
 from policydesk.agent.statute import Article, _cn_to_int, _doc_id, parse
-from policydesk.core.db import Database
-
-
-@pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    yield pool
-    await pool.close()
 
 
 @pytest.fixture(scope="module")

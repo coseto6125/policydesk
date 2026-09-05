@@ -33,20 +33,13 @@ from policydesk.agent.scenarios.soothe import (
     gather,
     statute_reference,
 )
-from policydesk.core.db import Database
 
 
 @pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    if not await pool.fetch_val("SELECT count(*) FROM statute_article"):
-        await statute.ingest(pool)
-    yield pool
-    await pool.close()
+async def db(db):
+    if not await db.fetch_val("SELECT count(*) FROM statute_article"):
+        await statute.ingest(db)
+    return db
 
 
 def test_cited_reads_article_paragraph_and_item():

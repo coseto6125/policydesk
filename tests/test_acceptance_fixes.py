@@ -6,6 +6,8 @@ reachable from the happy path — which is why they only appeared once someone d
 system in the wrong order and with the wrong values.
 """
 
+from pathlib import Path
+
 import pytest
 from msgspec import DecodeError, json
 
@@ -136,19 +138,69 @@ def test_identity_check_compares_against_the_case_owner():
     assert "member_national_id" in body, "the check must compare against the case's member"
 
 
-def test_calculator_is_offered_to_the_model_not_merely_described():
-    """
-    The scenario text tells the model 金額由計算工具產生; the tool has to be reachable.
+async def test_calculator_structured_answer_reaches_actual_calculator(db, live_case, monkeypatch):
+    from unittest.mock import AsyncMock
 
-    A review found `calculate` had zero callers outside its own tests: the answering
-    call passed no `tools=`, so the model wrote figures into prose from the material it
-    had been handed and nothing checked them. A tool the model cannot reach is a claim.
-    """
-    from pathlib import Path
+    from msgspec import json, structs
 
-    source = Path("src/policydesk/agent/executor.py").read_text()
-    assert "TOOL_SCHEMA" in source
-    assert "tools=[TOOL_SCHEMA]" in source
+    from policydesk.agent import executor
+    from policydesk.agent.scenario import BY_NAME
+    from policydesk.llm.provider import Completion
+
+    scenario = structs.replace(BY_NAME["quote"], calculator=True)
+    monkeypatch.setattr(executor, "_route", AsyncMock(return_value=(scenario, {})))
+    monkeypatch.setattr(executor, "_gather", AsyncMock(return_value={"_allowed_clauses": frozenset()}))
+
+    class RequestsCalculation:
+        name = "stub"
+
+        async def complete(self, **kwargs):
+            assert "maxItems" not in kwargs["schema"]["properties"]["calculations"]
+            return Completion(text=json.encode({"reply": "已提出計算。", "citations": [],
+                                                "calculations": ["2000 * 3"]}).decode(), provider="stub")
+
+    turn = await executor.run_turn(RequestsCalculation(), db, case_id=live_case["case_id"],
+                                   member_id=live_case["member_id"], text="請計算", confirmed=False)
+    assert turn.computations == (("2000 * 3", 6000),)
+    assert turn.faults == ()
+
+
+@pytest.mark.parametrize(("payload", "expected_fault"), [
+    ({"reply": "這件一定會賠。", "citations": [], "calculations": []}, "promise:"),
+    ({"reply": "不能保證會理賠。", "citations": [], "calculations": []}, None),
+    ({"reply": "請查條款。", "citations": ["other|art.6"], "calculations": []}, "source:"),
+    ({"reply": "計算中。", "citations": [], "calculations": ["2 * 3"]}, "unoffered_calculator"),
+    ({"reply": "缺少來源欄位。"}, "answer_format"),
+])
+async def test_run_turn_structured_answer_enforces_guards(db, live_case, monkeypatch, payload, expected_fault):
+    from unittest.mock import AsyncMock
+
+    from msgspec import json
+
+    from policydesk.agent import executor
+    from policydesk.agent.scenario import BY_NAME
+    from policydesk.llm.provider import Completion
+
+    monkeypatch.setattr(executor, "_route", AsyncMock(return_value=(BY_NAME["quote"], {})))
+    monkeypatch.setattr(executor, "_gather", AsyncMock(return_value={"_allowed_clauses": frozenset()}))
+    if expected_fault == "promise:":
+        assert executor._promises(payload["reply"]), "the detector recognizes this phrase"
+
+    class Answers:
+        name = "stub"
+
+        async def complete(self, **kwargs):
+            assert kwargs["schema"]["properties"]["calculations"]["maxItems"] == 0
+            return Completion(text=json.encode(payload).decode(), provider="stub")
+
+    turn = await executor.run_turn(Answers(), db, case_id=live_case["case_id"], member_id=live_case["member_id"],
+                                   text="請說明", confirmed=False)
+    if expected_fault is None:
+        assert turn.reply == payload["reply"]
+        assert turn.faults == ()
+    else:
+        assert any(fault.startswith(expected_fault) for fault in turn.faults)
+        assert turn.reply != payload["reply"]
 
 
 def test_surgery_multipliers_are_reachable_from_a_scenario():
@@ -158,18 +210,6 @@ def test_surgery_multipliers_are_reachable_from_a_scenario():
 
     assert hasattr(tools, "find_multiplier")
     assert "find_multiplier" in CLAIM_CHECKLIST.tools
-
-
-@pytest.fixture(scope="module")
-async def db():
-    from policydesk.core.db import Database
-
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    return pool
 
 
 @pytest.fixture(scope="module")
@@ -306,15 +346,25 @@ def test_no_template_reaches_a_customer_with_a_placeholder_in_it():
 @pytest.mark.asyncio
 async def test_the_document_template_counts_what_is_actually_unsigned(db):
     from policydesk.agent import tools
+    from policydesk.core.commands import ENROLMENT_DOCUMENTS
 
     row = await db.fetch_one(
-        """SELECT case_id, count(*) FILTER (WHERE signed_at IS NULL) AS waiting
+        """SELECT case_id
            FROM case_document GROUP BY case_id ORDER BY count(*) DESC LIMIT 1"""
     )
     if row is None:
         pytest.skip("no case carries documents")
+    documents = await db.fetch("SELECT document_id, kind, sha, signed_at FROM case_document WHERE case_id = $1::bigint", [row["case_id"]])
+    grants = await db.fetch("SELECT stage, scope, document_sha FROM authorization_grant WHERE case_id = $1::bigint", [row["case_id"]])
+    missing = {kind.value for kind in ENROLMENT_DOCUMENTS} - {document["kind"] for document in documents}
+    for document in documents:
+        scopes = {grant["scope"] for grant in grants if grant["stage"] == "signed" and grant["document_sha"] == document["sha"]}
+        required = {f"{party} 簽署文件 {document['document_id']}" for party in ("要保人", "被保險人")}
+        if not document["sha"] or document["signed_at"] is None or not required <= scopes:
+            missing.add(document["kind"])
     got = await tools.pending_signatures(db, row["case_id"])
-    assert got["count"] == row["waiting"]
+    assert got["count"] == len(missing)
+    assert {name.strip() for name in got["names"].splitlines()} == missing
     assert got["names"].count("\n") + 1 == got["count"] or not got["count"]
 
 
@@ -522,6 +572,95 @@ async def test_a_document_clause_reaches_the_model_whole(db):
     sent = _short(rows)
     assert max(len(r["verbatim"]) for r in sent) > 400, "the clip put the SQL slice back"
     assert max(len(r["verbatim"]) for r in sent) <= DOCUMENT_CHARS
+
+
+async def test_required_documents_reingested_article_preserves_current_original(db):
+    from policydesk.agent.executor import _short
+    from policydesk.agent.tools import required_documents
+
+    product_id, clause_id = "66a8307d78fd", "art.23"
+    original = await db.fetch_val(
+        "SELECT verbatim FROM contract_clause WHERE product_id = $1 AND clause_id = $2",
+        [product_id, clause_id],
+    )
+    assert original
+    rows = _short(await required_documents(db, [product_id]))
+    row = next(row for row in rows if row["clause_id"] == clause_id)
+    assert row["verbatim"] == original
+    assert not row.get("excerpt", False)
+
+
+async def test_required_documents_compatibility_heading_returns_document_list(db):
+    from policydesk.agent.tools import required_documents
+
+    rows = await required_documents(db, ["1bbac7be6893"])
+    row = next(row for row in rows if row["clause_id"] == "art.13")
+    assert "四、受益人的身分證明。" in row["verbatim"]
+
+
+async def test_required_documents_retrieval_keeps_each_product_and_rejects_other_scopes(db):
+    from unittest.mock import Mock
+
+    from policydesk.agent.tools import required_documents
+    from policydesk.retrieval.base import CLAUSE, Hit
+
+    products = ["1bbac7be6893", "dec6e9884f02", "3c19273cce6b"]
+    expected = dict(zip(products, ["art.13", "art.17", "art.14"], strict=True))
+    index = Mock()
+
+    def search(query, *, corpus, scope, limit):
+        assert "診斷證明" in query
+        assert corpus == CLAUSE
+        assert len(scope) == 1
+        product = scope[0]
+        return [Hit(CLAUSE, expected[product], product, 1),
+                Hit(CLAUSE, "art.15", "38cfb37f85cf", 0.9),
+                Hit("statute", "art.1", product, 0.8)]
+
+    index.search.side_effect = search
+    rows = await required_documents(db, products + products[:1], index=index, topic="診斷證明")
+    assert index.search.call_count == len(products)
+    assert [(row["product_id"], row["clause_id"]) for row in rows] == list(expected.items())
+
+
+async def test_required_documents_empty_scope_never_searches():
+    from unittest.mock import AsyncMock, Mock
+
+    from policydesk.agent.tools import required_documents
+
+    db, index = AsyncMock(), Mock()
+    assert await required_documents(db, [], index=index) == []
+    index.search.assert_not_called()
+    db.fetch.assert_not_called()
+
+
+@pytest.mark.parametrize("products", [5, 7])
+async def test_required_documents_eight_per_product_survive_prompt_context(monkeypatch, products):
+    from unittest.mock import AsyncMock, Mock
+
+    from policydesk.agent import tools
+    from policydesk.agent.executor import _short
+    from policydesk.retrieval.base import CLAUSE, Hit
+
+    ids = [f"p{number}" for number in range(products)]
+    index = Mock()
+
+    def search(query, *, corpus, scope, limit):
+        assert limit == 8
+        return [Hit(CLAUSE, f"art.{number}", scope[0], 1) for number in range(8)]
+
+    async def rows_for(db, keys):
+        return [{"product_id": product, "clause_id": clause, "verbatim": "申領文件（原文）。"}
+                for product, clause in keys]
+
+    index.search.side_effect = search
+    monkeypatch.setattr(tools, "_clauses_by_id", rows_for)
+    rows = await tools.required_documents(AsyncMock(), ids, index=index)
+    sent = _short(rows)
+    assert len(sent) == products * 8
+    assert {(row["product_id"], row["clause_id"]) for row in sent} == {
+        (product, f"art.{number}") for product in ids for number in range(8)
+    }
 
 
 @pytest.mark.asyncio
@@ -814,3 +953,44 @@ def test_a_reference_is_resolved_inside_its_own_contract():
 
     rows = [{"product_id": "p1", "clause_id": "art.4", "verbatim": "因第三條約定而住院。"}]
     assert _referenced(rows) == [("p1", "art.3")]
+
+
+def test_promises_after_a_denial_still_count_as_promises():
+    """
+    A denial followed by a promise is still a promise.
+
+    `_promises` read only the first match, so 我不保證會核准。不過這件一定會賠。 passed
+    the check that exists to stop that exact sentence: the first match sat behind 不,
+    the scan returned empty, and the promise after it reached the customer. Each match
+    is judged on its own preceding clause.
+    """
+    from policydesk.agent import executor
+
+    assert executor._promises("我不保證會核准。不過這件一定會賠。") == "一定會賠"
+    assert executor._promises("這件一定會賠。") == "一定會賠"
+    assert executor._promises("我不保證會核准。") == ""
+    assert executor._promises("本公司不能保證給付。您這件應該會過。") == ""
+    assert executor._promises("不能據此判定您的外送工作一定會加費、退費或影響理賠。") == ""
+
+
+def test_the_router_dispatches_only_what_the_stage_offered():
+    """
+    A scenario the router was never shown must not be reachable by naming it.
+
+    The tool list came from `reachable(stage)` but the reply resolved against
+    `BY_NAME`, the whole catalogue. The two differed at every stage — verify_identity
+    at all of them, issue_documents at inquiry and issued — so a name the router never
+    saw still dispatched. The Anthropic and OpenAI paths constrain the name to a
+    declared tool, but the codex path builds calls from free text, and a guard that
+    holds for only some providers is not a guard.
+    """
+    from policydesk.agent.executor import reachable
+
+    source = Path("src/policydesk/agent/executor.py").read_text()
+    route = source[source.index("async def _route("):source.index("async def run_turn(")]
+    assert "offered = {s.name: s for s in reachable(stage)}" in route
+    assert "offered.get(call.get(" in route
+    assert "BY_NAME.get(call" not in route, "the catalogue is wider than what the stage offered"
+
+    for stage in ("inquiry", "proposed", "issued"):
+        assert {s.name for s in reachable(stage)}, f"{stage} offers nothing"

@@ -398,7 +398,7 @@ def _transcript_db() -> _RoutedDB:
              "citations": ["art.3"], "created_at": datetime.now(UTC)},
         ],
         "llm_usage": [{"turn_id": "t-1", "scenario": "explain_cover", "latency_ms": 1300, "calls": 2}],
-        "FROM clause": [{"product_id": "P1", "clause_id": "art.3", "heading": "契約撤銷權", "page": 2,
+        "FROM contract_clause": [{"product_id": "P1", "clause_id": "art.3", "heading": "契約撤銷權", "page": 2,
                          "product_name": "某終身醫療"}],
     })
 
@@ -413,6 +413,15 @@ async def test_the_transcript_resolves_a_stored_citation_against_the_book():
     assert agent["citations"][0]["product_id"] == "P1"
     assert agent["citations"][0]["heading"] == "契約撤銷權"
     assert body["messages"][0]["citations"] == []
+
+
+async def test_transcript_qualified_citation_keeps_its_product():
+    db = _transcript_db()
+    db.tables["conversation_message"][1]["citations"] = ["P1|art.3"]
+    db.tables["FROM contract_clause"].append({"product_id": "P2", "clause_id": "art.3", "heading": "另一契約",
+                                     "page": 9, "product_name": "另一商品"})
+    body = _decode(await mod.transcript(_Request({"token": "x", "member": "7"}, db=db)))
+    assert [hit["product_id"] for hit in body["messages"][1]["citations"]] == ["P1"]
 
 
 async def test_the_transcript_names_the_scenario_and_what_it_read_per_turn():

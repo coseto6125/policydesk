@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING
 
 from msgspec import Struct
 
+from policydesk.core.models import DocumentKind
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -129,6 +131,7 @@ class Product(Struct, frozen=True):
     pages: int
     approval: str | None = None
     source_url: str | None = None
+    document_kind: DocumentKind = DocumentKind.UNKNOWN
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -148,4 +151,6 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
     conn.executescript(BENEFIT_SCHEMA)
+    if "document_kind" not in {row[1] for row in conn.execute("PRAGMA table_info(product)")}:
+        conn.execute("ALTER TABLE product ADD COLUMN document_kind TEXT NOT NULL DEFAULT 'unknown'")
     return conn

@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: policydesk-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION: "3.14"
+
+jobs:
+  static:
+    name: "Syntax · Imports · Lint"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+
+      # No project install: these three read source, they do not import it. Keeping
+      # them off the dependency step means a broken lockfile still gets a syntax
+      # answer rather than failing before the check that would have explained it.
+      - name: Syntax
+        run: uvx --from pyci pyci-check syntax src/ tests/
+
+      - name: Imports
+        run: uvx --from pyci pyci-check imports src/
+
+      - name: Lint
+        run: uvx ruff check src/ tests/
+
+      # Reported, never enforced. The one cycle is deliberate — `console` reads
+      # DESK_TOKEN from `server` and defers the read to request time for exactly that
+      # reason — and the dead-code scan cannot tell a public API from an orphan.
+      - name: Cycles and dead code (advisory)
+        continue-on-error: true
+        run: |
+          uvx --from pyci pyci-check cycles src/
+          uvx --from pyci pyci-check deadcode src/
+
+  test:
+    name: "Test"
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: policydesk
+          POSTGRES_USER: policydesk
+          POSTGRES_PASSWORD: policydesk
+        ports: ["5434:5432"]
+        options: >-
+          --health-cmd "pg_isready -U policydesk -d policydesk"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      # A real Postgres rather than a list of which test files avoid one. That list
+      # goes stale the first time a test grows a query, and it goes stale silently:
+      # the file drops out of CI and still reports green.
+      - name: Migrate
+        env:
+          PGPASSWORD: policydesk
+        run: |
+          for f in infra/migrations/*.sql; do
+            psql -h 127.0.0.1 -p 5434 -U policydesk -d policydesk -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      # Corpus-dependent tests skip on an empty database, which is correct here: the
+      # contract PDFs are the insurer's and do not travel with the repository. The
+      # skip count is printed so a run that skips half the suite does not read as a
+      # pass — `-rs` is what makes that visible.
+      - name: Test
+        env:
+          DATABASE_URL: postgres://policydesk:policydesk@127.0.0.1:5434/policydesk
+        run: uv run pytest -q -rs -p no:randomly

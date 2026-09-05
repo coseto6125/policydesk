@@ -23,20 +23,13 @@ from policydesk.agent.scenarios.reinstate import (
     reinstatement_clauses,
     statutory_floor,
 )
-from policydesk.core.db import Database
 
 
 @pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    if not await pool.fetch_val("SELECT count(*) FROM statute_article"):
-        await statute.ingest(pool)
-    yield pool
-    await pool.close()
+async def db(db):
+    if not await db.fetch_val("SELECT count(*) FROM statute_article"):
+        await statute.ingest(db)
+    return db
 
 
 async def test_lapsed_policies_returns_empty_for_a_member_with_none(db):
@@ -120,7 +113,7 @@ async def test_gather_names_all_three_facts(monkeypatch: pytest.MonkeyPatch):
                         "is_main": True,
                     }
                 ]
-            if "FROM clause c JOIN product p" in sql:
+            if "FROM contract_clause c JOIN product p" in sql:
                 return [{"product_id": "P1", "clause_id": "art.7", "heading": "停效及復效", "verbatim": "…", "page": 5, "product_name": "測試附約"}]
             raise AssertionError(sql)
 
@@ -188,7 +181,7 @@ async def test_gather_with_reinstatement_clauses_not_allowed_keeps_lapsed_but_dr
                         "is_main": True,
                     }
                 ]
-            if "FROM clause c JOIN product p" in sql:
+            if "FROM contract_clause c JOIN product p" in sql:
                 raise AssertionError("reinstatement_clauses must not run when it is not in `allowed`")
             raise AssertionError(sql)
 

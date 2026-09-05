@@ -16,9 +16,12 @@ import asyncio
 import re
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
+from unicodedata import normalize
 
 from policydesk.bootloader import logger
-from policydesk.retrieval.base import CLAUSE, Retriever
+from policydesk.core.documents import SIGNING_PARTIES, document_status, signing_documents
+from policydesk.retrieval.base import CLAUSE, Hit, Retriever
+from policydesk.skills.calculator import calculate
 from policydesk.synthetic.person import insurance_age
 
 if TYPE_CHECKING:
@@ -31,14 +34,15 @@ if TYPE_CHECKING:
 _UNIT = re.compile(r"每\s*(?:日\s*)?([\d,]+)\s*(萬|)元")
 """How a `catalog_entry.unit_label` states its unit: 每 100 萬元保額, 每日 1,000 元住院日額."""
 
-DOCUMENTS_PER_PRODUCT = 2
-"""Document clauses kept per product. `_short` allows twelve rows in total, so this fits
-five products — the largest book in the corpus — with every one of them represented."""
+DOCUMENTS_PER_PRODUCT = 8
+"""Per-product retrieval budget; eight covers the observed maximum document clauses."""
 
-DOCUMENT_CHARS = 1200
-"""How much of a document clause reaches the model. Longer than `_short`'s general 400,
-because these are the lines the reply enumerates rather than context around them; the
-longest held one is 794."""
+DOCUMENT_CHARS = 4000
+"""Shared clause budget for retrieval and answer context.
+
+Keep bounded articles whole so a narrow match does not discard their exceptions.
+Over-budget articles remain explicitly marked excerpts, not complete evidence.
+"""
 
 UNITS_PER_LABEL = 1000
 """`policy.sum_insured` counts thousandths of one `unit_label` unit.
@@ -100,6 +104,24 @@ def requires_identity(fn: Callable[..., Any]) -> Callable[..., Any]:
     return fn
 
 
+def public(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """
+    Mark a tool as answering the same thing to everyone.
+
+    Args:
+        fn: The tool.
+
+    Returns:
+        The same function, flagged.
+
+    Explicit False permits public access. Missing or invalid declarations remain
+    unreviewed and cannot run, even after the customer confirms their identity.
+
+    """
+    fn.requires_identity = False
+    return fn
+
+
 def reads_identity(tool_names: Iterable[str], *, owner: Any = None) -> bool:
     """
     Say whether any of these tools reads the customer's own record.
@@ -110,20 +132,16 @@ def reads_identity(tool_names: Iterable[str], *, owner: Any = None) -> bool:
             the scenario has one. None resolves every name against this module.
 
     Returns:
-        True when at least one is marked, and True for a name neither place defines.
+        False only when every tool explicitly declares public access.
 
-    The unknown name is the important half. A tool written in `agent/scenarios/` does
-    not exist in this module's globals, and reading that absence as 「不需核對」 would
-    let a scenario read member data before the customer has proved who they are —
-    silently, with no line of code saying so. Unknown therefore means gated, so the
-    mistake that gets made is the one that asks for an ID it did not need.
+    True is identity-required, False is public, and a missing or invalid declaration
+    is unreviewed. Both private and unreviewed tools make the scenario sensitive;
+    `permitted` additionally excludes unreviewed tools even in a confirmed session.
 
     """
     catalogue: dict[str, Any] = dict(getattr(owner, "TOOLS", {}))
     return any(
-        getattr(known, "requires_identity", False)
-        if (known := catalogue.get(name, globals().get(name))) is not None
-        else True
+        getattr(catalogue.get(name, globals().get(name)), "requires_identity", None) is not False
         for name in tool_names
     )
 
@@ -138,7 +156,7 @@ def permitted(tool_names: Iterable[str], *, owner: Any = None, confirmed: bool) 
         confirmed: Whether this session has passed 資料核對.
 
     Returns:
-        The names that may run. Confirmed, that is all of them.
+        Explicitly public tools, plus identity-required tools in a confirmed session.
 
     Not the same question as `reads_identity`, and the difference is the point. That one
     asks whether a scenario touches member data at all, and answers for the scenario as a
@@ -147,20 +165,16 @@ def permitted(tool_names: Iterable[str], *, owner: Any = None, confirmed: bool) 
     the request for an ID attached to it rather than standing in place of it. Refusing the
     public half too is what makes a desk feel like it is stalling.
 
-    A name that resolves to nothing is excluded, the same way `reads_identity` counts it
-    as gated: an unknown tool is one nobody has checked.
+    Unresolved names and absent or invalid declarations are excluded in both sessions.
+    Confirmation proves the customer's identity, not that someone reviewed a tool.
 
     """
     catalogue: dict[str, Any] = dict(getattr(owner, "TOOLS", {}))
-    # Resolved on both paths. Returning the names unread when `confirmed` was true left
-    # the rule above true only for an unverified customer: `permitted(("no_such_tool",),
-    # confirmed=True)` handed back the name it had not found, which is the opposite of
-    # excluding what nobody has checked.
     return frozenset(
         name
         for name in tool_names
-        if (fn := catalogue.get(name, globals().get(name))) is not None
-        and (confirmed or not getattr(fn, "requires_identity", False))
+        if (declaration := getattr(catalogue.get(name, globals().get(name)), "requires_identity", None)) is False
+        or (confirmed and declaration is True)
     )
 
 
@@ -185,7 +199,7 @@ async def list_policies(db: Database, member_id: int, *, today: date) -> list[di
         """SELECT po.policy_id, po.policy_number, po.sum_insured, ce.unit_label,
                   po.effective_at, po.lapsed_at,
                   main.policy_number AS main_policy_number,
-                  pr.name AS product_name, pr.product_id, pr.attachment,
+                  pr.name AS product_name, pr.product_id, pr.attachment, pr.document_kind,
                   ($1::date - po.effective_at) AS days_in_force,
                   (po.lapsed_at IS NOT NULL AND po.lapsed_at <= $1::date) AS is_lapsed
            FROM policy po
@@ -205,6 +219,31 @@ async def list_policies(db: Database, member_id: int, *, today: date) -> list[di
         # thousandths of a unit named in another table.
         row["insured"] = insured_amount(row.pop("sum_insured", None), row.pop("unit_label", None))
     return rows
+
+
+def _select_policies(policies: list[dict[str, Any]], reference: str) -> dict[str, Any]:
+    """
+    Resolve a choice within holdings already read under the identity gate.
+
+    An omitted choice selects all holdings. Multiple name matches stay ambiguous,
+    even when one name equals the reference. Neither exact nor longest names win.
+    Separate contracts for the same product remain separate choices; policy numbers
+    match exactly. Ambiguous results contain only matching holdings.
+    """
+    wanted = "".join(normalize("NFKC", reference).split()).casefold()
+    if not policies:
+        return {"status": "empty", "policies": []}
+    if not wanted or wanted == "全部":
+        return {"status": "all", "policies": policies}
+    matched = []
+    for policy in policies:
+        number = "".join(normalize("NFKC", policy["policy_number"]).split()).casefold()
+        name = "".join(normalize("NFKC", policy["product_name"]).split()).casefold()
+        if wanted == number or wanted == policy["product_id"] or wanted in name:
+            matched.append(policy)
+    if len(matched) == 1:
+        return {"status": "found", "policies": matched}
+    return {"status": "ambiguous" if matched else "not_found", "policies": matched or policies}
 
 
 async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict[str, Any]]:
@@ -229,7 +268,7 @@ async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict
     products, clauses = [k[0] for k in keys], [k[1] for k in keys]
     rows = await db.fetch(
         """SELECT c.product_id, c.clause_id, c.kind, c.heading, c.verbatim, c.page, p.name AS product_name
-           FROM clause c
+           FROM contract_clause c
            JOIN product p USING (product_id)
            JOIN unnest($1::text[], $2::text[]) AS want(product_id, clause_id)
              ON want.product_id = c.product_id AND want.clause_id = c.clause_id""",
@@ -238,6 +277,22 @@ async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict
     rank = {key: position for position, key in enumerate(keys)}
     rows.sort(key=lambda r: rank.get((r["product_id"], r["clause_id"]), len(rank)))
     return rows
+
+
+def _apply_passages(rows: list[dict[str, Any]], hits: Iterable[Hit]) -> None:
+    """Keep short articles whole; mark a longer one's matched span with an ellipsis where it was cut."""
+    spans = {(hit.scope_id, hit.doc_id): hit for hit in hits if hit.start is not None}
+    for row in rows:
+        if len(row.get("verbatim") or "") <= DOCUMENT_CHARS:
+            continue
+        if hit := spans.get((row["product_id"], row["clause_id"])):
+            full_text = f"{row.get('heading') or ''}\n{row.get('verbatim') or ''}"
+            prefix = "…" if hit.start > 0 else ""
+            suffix = "…" if hit.end < len(full_text) else ""
+            row["verbatim"] = f"{prefix}{full_text[hit.start:hit.end]}{suffix}"
+            row["excerpt_start"] = hit.start
+            row["excerpt_end"] = hit.end
+            row["source_chars"] = len(full_text)
 
 
 _CROSS = re.compile(r"第([一二三四五六七八九十百]+|\d+)條")
@@ -367,8 +422,12 @@ async def find_clause(
     # slots — a distribution production cannot produce. Reranking that pile is a real
     # improvement to a ranking nobody sees. Scoped, at the six clauses this tool returns,
     # the fused order is already right 167 times in 180 and reranking it is right 161.
-    if index is not None and (hits := index.search(topic, corpus=CLAUSE, scope=product_ids, limit=limit)):
+    if index is not None and (hits := await asyncio.to_thread(
+        index.search, topic, corpus=CLAUSE, scope=product_ids, limit=limit,
+    )):
+        hits = [hit for hit in hits if hit.corpus == CLAUSE and hit.scope_id in product_ids]
         found = await _clauses_by_id(db, [(h.scope_id, h.doc_id) for h in hits])
+        _apply_passages(found, hits)
         # Appended after the ranked hits, not mixed into them: a clause is here because
         # another one pointed at it, not because it matched the question.
         if cross := _referenced(found):
@@ -376,7 +435,7 @@ async def find_clause(
         return found
     return await db.fetch(
         """SELECT c.product_id, c.clause_id, c.kind, c.heading, c.verbatim, c.page, p.name AS product_name
-           FROM clause c JOIN product p USING (product_id)
+           FROM contract_clause c JOIN product p USING (product_id)
            WHERE c.product_id = ANY($1::text[])
              AND (c.verbatim ILIKE '%' || $2::text || '%'
                   OR c.heading ILIKE '%' || $2::text || '%'
@@ -395,8 +454,10 @@ LINES: frozenset[str] = frozenset({"health", "life", "accident", "annuity", "inv
 could not classify, so it is never offered."""
 
 
+@public
 async def suitable_products(
-    db: Database, *, insurance_age: int, occupation_class: int, budget: int, line: str, limit: int = 5
+    db: Database, *, insurance_age: int, occupation_class: int, budget: int, line: str, limit: int = 5,
+    need: str = "", index: Retriever | None = None,
 ) -> list[dict[str, Any]]:
     """
     Select products this person could actually be sold.
@@ -412,8 +473,12 @@ async def suitable_products(
         limit: Most products to return.
 
     Returns:
-        Products within the issue-age band, the occupation ceiling and the budget, or
+        Products within the issue-age band, occupation ceiling and unit-rate budget, or
         an empty list when the line is not one this desk sells from.
+
+    Budget calculations use whole pricing units, not underwriting limits or comparable
+    coverage amounts. Rider rates remain visible, but their complete cost needs a main
+    contract. An unknown main-contract cost is not zero affordable units.
 
     The selection is a query, not a judgement. That is deliberate: asked how the desk
     avoids steering a customer to a product that pays it more, the answer is that the
@@ -426,10 +491,11 @@ async def suitable_products(
     if line not in LINES:
         logger.warning("unsellable_line", line=line)
         return []
-    return await db.fetch(
+    candidates = await db.fetch(
         """SELECT p.product_id, p.name, p.attachment, p.line, ce.unit_premium, ce.unit_label,
+                  ce.data_origin, ce.rate_unit_amount,
                   ce.issue_age_min, ce.issue_age_max, ce.max_occupation, ce.requires_main
-           FROM catalog_entry ce JOIN product p USING (product_id)
+           FROM sale_catalog ce JOIN product p USING (product_id)
            WHERE ce.on_sale
              AND p.line = $5::text
              AND $1::int BETWEEN ce.issue_age_min AND ce.issue_age_max
@@ -437,14 +503,69 @@ async def suitable_products(
              AND ce.unit_premium <= $3::numeric
            ORDER BY ce.unit_premium ASC
            LIMIT $4::int""",
-        [insurance_age, occupation_class, Decimal(budget), limit, line],
+        [insurance_age, occupation_class, Decimal(budget), None if need and index is not None else limit, line],
     )
+    if not candidates:
+        return []
+    matches = {}
+    if need and index is not None:
+        # Eligibility is decided by SQL. Retrieval ranks only those eligible products,
+        # by their contract text, rather than letting a cheap unrelated product stand
+        # in for the customer's need merely because it shares a product line.
+        hits = await asyncio.to_thread(
+            index.search, need, corpus=CLAUSE, scope=[row["product_id"] for row in candidates],
+            limit=max(limit, len(candidates) * 4),
+        )
+        by_product = {row["product_id"]: row for row in candidates}
+        chosen = []
+        for hit in hits:
+            if hit.scope_id in by_product and hit.scope_id not in matches:
+                matches[hit.scope_id] = hit
+                chosen.append(by_product[hit.scope_id])
+                if len(chosen) == limit:
+                    break
+        if chosen:
+            candidates = chosen
+    candidates = candidates[:limit]
+    product_ids = [row["product_id"] for row in candidates]
+    clauses = await db.fetch(
+        """SELECT product_id, clause_id, kind, heading, verbatim, page
+           FROM contract_clause WHERE product_id = ANY($1::text[])
+             AND kind = ANY($2::text[])
+           ORDER BY product_id, kind, clause_id""",
+        [product_ids, ["waiting", "exclusion", "carve_back"]],
+    )
+    if matches:
+        matched = await _clauses_by_id(db, [(hit.scope_id, hit.doc_id) for hit in matches.values()])
+        _apply_passages(matched, matches.values())
+        clauses += matched
+    evidence: dict[str, dict[str, dict[str, Any]]] = {}
+    for clause in clauses:
+        evidence.setdefault(clause["product_id"], {})[clause["clause_id"]] = clause
+    for row in candidates:
+        row["selection_basis"] = "eligibility and contract retrieval" if row["product_id"] in matches else "eligibility only"
+        row["contract_evidence"] = list(evidence.get(row["product_id"], {}).values())
+        calculation = {"annual_budget": budget}
+        if row["requires_main"]:
+            calculation["status"] = "main_contract_cost_unknown"
+        elif not row.get("rate_unit_amount") or row["rate_unit_amount"] <= 0 or row["unit_premium"] <= 0:
+            calculation["status"] = "pricing_basis_unavailable"
+        else:
+            units = calculate(f"{budget} // {row['unit_premium']}")
+            premium = calculate(f"{units.amount} * {row['unit_premium']}")
+            calculation.update(
+                status="standalone_rate_only", rate_units=units.amount, annual_premium=premium.amount,
+                units_expression=units.basis, premium_expression=premium.basis,
+            )
+        row["budget_calculation"] = calculation
+    return candidates
 
 
 _RELAXED = """\
 SELECT p.product_id, p.name, p.line, ce.unit_premium, ce.unit_label,
+       ce.data_origin, ce.rate_unit_amount,
        ce.issue_age_min, ce.issue_age_max, ce.max_occupation
-FROM catalog_entry ce JOIN product p USING (product_id)
+FROM sale_catalog ce JOIN product p USING (product_id)
 WHERE ce.on_sale
   AND p.line = $5::text
   AND ($1::int BETWEEN ce.issue_age_min AND ce.issue_age_max OR NOT $6::bool)
@@ -457,11 +578,14 @@ LIMIT $4::int"""
 _CEILINGS = """\
 SELECT max(ce.issue_age_max) AS age_max, min(ce.issue_age_min) AS age_min,
        max(ce.max_occupation) AS occupation_max, min(ce.unit_premium) AS cheapest,
-       count(*) AS on_sale
-FROM catalog_entry ce JOIN product p USING (product_id)
+       count(*) AS on_sale,
+       CASE WHEN count(DISTINCT ce.data_origin) = 1 THEN min(ce.data_origin)
+            ELSE 'unknown' END AS data_origin
+FROM sale_catalog ce JOIN product p USING (product_id)
 WHERE ce.on_sale AND ($1::text = '' OR p.line = $1::text)"""
 
 
+@public
 async def alternatives(
     db: Database, *, insurance_age: int, occupation_class: int, budget: int, line: str, limit: int = 3
 ) -> dict[str, Any]:
@@ -511,15 +635,19 @@ async def alternatives(
     binding: list[dict[str, Any]] = []
     if this_line and this_line["on_sale"]:
         if insurance_age > this_line["age_max"]:
-            binding.append({"條件": "投保年齡", "保戶": insurance_age, "上限": this_line["age_max"], "範圍": line})
+            binding.append({"條件": "投保年齡", "保戶": insurance_age, "上限": this_line["age_max"], "範圍": line,
+                            "data_origin": this_line["data_origin"]})
         elif insurance_age < this_line["age_min"]:
-            binding.append({"條件": "投保年齡", "保戶": insurance_age, "下限": this_line["age_min"], "範圍": line})
+            binding.append({"條件": "投保年齡", "保戶": insurance_age, "下限": this_line["age_min"], "範圍": line,
+                            "data_origin": this_line["data_origin"]})
         if occupation_class > this_line["occupation_max"]:
             scope = "全線" if every_line and occupation_class > every_line["occupation_max"] else line
-            ceiling = (every_line if scope == "全線" else this_line)["occupation_max"]
-            binding.append({"條件": "職業等級", "保戶": occupation_class, "上限": ceiling, "範圍": scope})
+            ceiling = every_line if scope == "全線" else this_line
+            binding.append({"條件": "職業等級", "保戶": occupation_class, "上限": ceiling["occupation_max"], "範圍": scope,
+                            "data_origin": ceiling["data_origin"]})
         if budget < this_line["cheapest"]:
-            binding.append({"條件": "年繳預算", "保戶": budget, "最低": int(this_line["cheapest"]), "範圍": line})
+            binding.append({"條件": "年繳預算", "保戶": budget, "最低": int(this_line["cheapest"]), "範圍": line,
+                            "data_origin": this_line["data_origin"]})
 
     return {
         "binding": binding,
@@ -568,7 +696,7 @@ async def benefit_headings(db: Database, product_ids: list[str], limit: int = 40
         return []
     return await db.fetch(
         r"""SELECT c.product_id, c.clause_id, c.heading, p.name AS product_name
-           FROM clause c JOIN product p USING (product_id)
+           FROM contract_clause c JOIN product p USING (product_id)
            WHERE c.product_id = ANY($1::text[]) AND c.kind = 'grant'
              AND c.heading ~ '保險金|保險範圍|承保範圍'
              AND c.heading !~ '申領|申請|通知|指定|減少|變更|受益人'
@@ -581,6 +709,7 @@ async def benefit_headings(db: Database, product_ids: list[str], limit: int = 40
     )
 
 
+@public
 async def catalogue_sample(db: Database, line: str, limit: int = 5) -> list[dict[str, Any]]:
     """
     List what is on sale in a line, for anyone.
@@ -612,9 +741,10 @@ async def catalogue_sample(db: Database, line: str, limit: int = 5) -> list[dict
         return []
     return await db.fetch(
         """SELECT p.product_id, p.name, p.line, ce.unit_premium, ce.unit_label,
+                  ce.data_origin, ce.rate_unit_amount,
                   ce.issue_age_min, ce.issue_age_max, ce.requires_main,
                   count(*) OVER () AS on_sale_in_line
-           FROM catalog_entry ce JOIN product p USING (product_id)
+           FROM sale_catalog ce JOIN product p USING (product_id)
            WHERE ce.on_sale AND p.line = $1::text
            ORDER BY ce.unit_premium ASC
            LIMIT $2::int""",
@@ -698,12 +828,13 @@ async def standing_brief(db: Database, member_id: int, *, today: date) -> dict[s
             [member_id, today],
         ),
         db.fetch(
-            """SELECT p.line, min(ce.unit_premium)::int AS cheapest, min(ce.unit_label) AS unit
-               FROM catalog_entry ce JOIN product p USING (product_id)
+            """SELECT DISTINCT ON (p.line) p.line, ce.unit_premium::int AS cheapest,
+                      ce.unit_label AS unit, ce.data_origin, ce.rate_unit_amount
+               FROM sale_catalog ce JOIN product p USING (product_id)
                WHERE ce.on_sale AND p.line = ANY($3::text[])
                  AND $1::int BETWEEN ce.issue_age_min AND ce.issue_age_max
                  AND $2::int <= ce.max_occupation
-               GROUP BY p.line ORDER BY p.line""",
+               ORDER BY p.line, ce.unit_premium, p.product_id""",
             [age, member["occupation_class"], sorted(LINES)],
         ),
     )
@@ -730,46 +861,65 @@ async def standing_brief(db: Database, member_id: int, *, today: date) -> dict[s
             }
             for p in policies
         ],
-        "可投保商品線最低年繳保費": [{"線別": f["line"], "最低": f["cheapest"], "單位": f["unit"]} for f in floors],
+        "可投保商品線最低年繳保費": [
+            {"線別": f["line"], "最低": f["cheapest"], "單位": f["unit"],
+             "data_origin": f["data_origin"], "rate_unit_amount": f["rate_unit_amount"]}
+            for f in floors
+        ],
     }
 
 
 @requires_identity
 async def pending_signatures(db: Database, case_id: int) -> dict[str, Any]:
     """
-    List the documents this case still needs signed.
+    Read this case's enrolment document progress, not claim submission requirements.
 
     Args:
         db: The database.
         case_id: Which case.
 
     Returns:
-        `count` and `names` — the two the 交付文件 template asks for.
-
-    The template had asked for them since it was written and nothing supplied them, so
-    `_render` fell through to its default branch and the customer read the literal
-    「已為您備妥應簽署文件共 {count} 份」. A placeholder is a promise the renderer makes on
-    the tool's behalf, and an unmade one reaches the customer looking like a bug in their
-    insurer.
+        Current stage, issued documents and missing kinds, with demo-only intake semantics.
+        `count` and `names` remain available to existing callers.
 
     """
-    rows = await db.fetch(
-        """SELECT title FROM case_document
-           WHERE case_id = $1::bigint AND signed_at IS NULL
-           ORDER BY document_id""",
-        [case_id],
-    )
-    return {"count": len(rows), "names": "\n".join(f"　{r['title']}" for r in rows)}
+    # Uploads lock this same case before writing grants, documents or stage.
+    async with db.transaction() as session:
+        stage = await session.fetch_val(
+            'SELECT stage FROM "case" WHERE case_id = $1::bigint FOR SHARE', [case_id],
+        )
+        identity_verified = await session.fetch_val(
+            "SELECT EXISTS(SELECT 1 FROM identity_check WHERE case_id = $1::bigint AND verified)", [case_id],
+        )
+        documents = await signing_documents(session, case_id)
+    status = document_status(documents)
+    return {
+        **status, "stage": stage, "simulation_only": True,
+        "identity_verified": identity_verified,
+        "submitted_for_review": stage in ("review", "approved", "rejected"),
+        "signing_parties": SIGNING_PARTIES,
+        "count": len(status["missing"]),
+        "names": "\n".join(f"　{title}" for title in status["missing"]),
+        "documents": [
+            {"title": doc["title"], "signed": doc["signed_at"] is not None,
+             "signature_simulated": doc["signature_simulated"]}
+            for doc in documents
+        ],
+    }
 
 
 @requires_identity
-async def required_documents(db: Database, product_ids: list[str]) -> list[dict[str, Any]]:
+async def required_documents(
+    db: Database, product_ids: list[str], *, index: Retriever | None = None, topic: str = "",
+) -> list[dict[str, Any]]:
     """
     List what a claim on these products must be accompanied by.
 
     Args:
         db: The database.
         product_ids: Which contracts.
+        index: The shared lexical/semantic retriever, when available.
+        topic: The claim context supplied by the scenario.
 
     Returns:
         Document requirements with the condition attached to each.
@@ -778,49 +928,47 @@ async def required_documents(db: Database, product_ids: list[str]) -> list[dict[
     diagnosis certificate"; it asks for one that 須列明手術或處置名稱及部位, and a
     certificate without the site named comes back.
 
-    **Read out of the clause corpus, not out of `required_document`.** That table holds
-    four rows across one product out of 660, so this scenario answered 系統尚未回傳本次申請
-    所需文件清單 for every customer — measured on a live turn. The contracts carry the lists
-    themselves, in 1,398 clauses across 394 products, under headings that name the act:
-    ...的申領, 保險金的申請, 檢具. The bodies are the enumeration a claimant needs:
+    Search each contract independently so a member's other policies do not disappear
+    behind the first product's matches. Hits identify candidate evidence, not an
+    exhaustive document checklist. The fallback is a normalized literal heading lookup;
+    it cannot infer requirements absent from those headings.
 
-        受益人申領「特定傷病保險金」時，應檢具下列文件：
-        一、保險單或其謄本。
-        二、診斷證明書及相關檢驗報告。…
-
-    So the clause is the answer, and it arrives with a `clause_id` the reply can cite and
-    the customer can check — which the table's rows never had.
-
-    **Capped per product, not per member.** `_short` trims a tool result to twelve rows
-    before it reaches the model, and this query used to order by product: a member holding
-    five products with 22 matching clauses had two of their policies cut off the end of the
-    list, and the reply then read as a complete answer that silently omitted a contract
-    they hold. Four of 46 members lost at least one product that way, and nothing logged
-    it. Ranking inside each product puts every held contract in the result, and the twelve
-    that survive are spread across them.
-
-    The text is sliced in SQL for the same reason. `_short` clips a string at 400
-    characters, which is right for the corpus at large — a clause runs to 442,649 — but
-    the injection tells the model the document list is in `verbatim`'s 一、二、三 lines,
-    so a clip mid-enumeration removes items rather than trailing context. Eight held
-    clauses exceed 400 characters, across twelve members.
+    Return the full text here. The shared answer-context budget applies once in
+    `_short`, which also marks any clipping so missing document requirements cannot
+    silently appear to be a complete list.
 
     """
     if not product_ids:
         return []
+    product_ids = list(dict.fromkeys(product_ids))
+    if index is not None:
+        query = f"{topic}\n申請保險金時，受益人應檢具哪些文件及證明？".strip()
+        rankings = await asyncio.gather(*(
+            asyncio.to_thread(index.search, query, corpus=CLAUSE, scope=[product], limit=DOCUMENTS_PER_PRODUCT)
+            for product in product_ids
+        ))
+        hits = [hit for product, ranked in zip(product_ids, rankings, strict=True)
+                for hit in ranked if hit.corpus == CLAUSE and hit.scope_id == product]
+        keys = list(dict.fromkeys((hit.scope_id, hit.doc_id) for hit in hits))
+        rows = await _clauses_by_id(db, keys)
+        _apply_passages(rows, hits)
+        return rows
     return await db.fetch(
         """SELECT product_id, clause_id, heading, verbatim, page, product_name
            FROM (
                SELECT c.product_id, c.clause_id, c.heading, c.page, p.name AS product_name,
-                      left(c.verbatim, $2::int) AS verbatim,
+                      c.verbatim,
                       row_number() OVER (PARTITION BY c.product_id ORDER BY c.clause_id) AS rank
-               FROM clause c JOIN product p USING (product_id)
+               FROM contract_clause c JOIN product p USING (product_id)
                WHERE c.product_id = ANY($1::text[])
-                 AND c.heading ~ '申領|保險金的申請|檢具|應檢附'
+                 AND EXISTS (
+                     SELECT 1 FROM unnest($3::text[]) AS term(value)
+                     WHERE strpos(normalize(c.heading, NFKC), term.value) > 0
+                 )
            ) ranked
-           WHERE rank <= $3::int
+           WHERE rank <= $2::int
            ORDER BY product_id, clause_id""",
-        [product_ids, DOCUMENT_CHARS, DOCUMENTS_PER_PRODUCT],
+        [product_ids, DOCUMENTS_PER_PRODUCT, ["申領", "保險金的申請", "檢具", "應檢附"]],
     )
 
 
@@ -839,7 +987,7 @@ async def clause_ids_for(db: Database, product_ids: list[str]) -> frozenset[str]
     """
     if not product_ids:
         return frozenset()
-    rows = await db.fetch("SELECT clause_id FROM clause WHERE product_id = ANY($1::text[])", [product_ids])
+    rows = await db.fetch("SELECT clause_id FROM contract_clause WHERE product_id = ANY($1::text[])", [product_ids])
     return frozenset(r["clause_id"] for r in rows)
 
 

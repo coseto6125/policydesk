@@ -6,10 +6,13 @@ does not contain, must not be able to pass a claim — regardless of how confide
 prose is. Every test here is a way that could happen.
 """
 
+from unittest.mock import AsyncMock
+
+import pytest
 from msgspec import json
 
-from policydesk.llm.provider import ScriptedProvider
-from policydesk.validation.validator import QuotedField, Verdict, recheck, validate
+from policydesk.llm.provider import Completion, ScriptedProvider
+from policydesk.validation.validator import VERDICT_SCHEMA, QuotedField, Verdict, recheck, validate
 
 SUBJECT = {
     "診斷證明書": "病名：急性闌尾炎。手術名稱及部位：腹腔鏡闌尾切除術（右下腹）。住院日期：2026-08-01 至 2026-08-04。",
@@ -71,6 +74,74 @@ def test_recheck_tolerates_whitespace_differences_in_a_quote():
     assert recheck(verdict, subject=subject, allowed_clauses=frozenset()).trustworthy
 
 
+@pytest.mark.parametrize(("source", "quote"), [
+    ("本公司不給付（等待期30日），限住院。", "本公司不給付（等待期30日），限住院。"),
+    ("本公司 不給付（等待期 30 日），限住院。", "本公司不給付（等待期30日），限住院。"),
+    ("本公司 不給付（等待期 30 日），限住院。", "本公司不給付(等待期30日),限住院。"),
+    ("本公司不給付(等待期30日),限住院。", "本公司 不給付（等待期 30 日），限住院。"),
+])
+def test_recheck_quote_width_comparison_preserves_original_inputs(source, quote):
+    subject = {"條款": source}
+    verdict = Verdict(passed=True, reason="核對原文。", quoted_fields=(QuotedField(field="條款", text=quote),))
+    original = json.encode(verdict)
+    checked = recheck(verdict, subject=subject, allowed_clauses=frozenset())
+    assert checked.trustworthy
+    assert checked.faults == ()
+    assert checked.verdict is verdict
+    assert json.encode(verdict) == original
+    assert subject == {"條款": source}
+
+
+@pytest.mark.parametrize(("wide", "narrow"), [
+    ("\uff01", "!"), ("\uff08", "("), ("\uff09", ")"), ("\uff0c", ","),
+    ("\uff0e", "."), ("\uff1a", ":"), ("\uff1b", ";"), ("\uff1f", "?"),
+    ("\uff3b", "["), ("\uff3d", "]"), ("\uff5b", "{"), ("\uff5d", "}"),
+])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_recheck_quote_width_punctuation_matches_symmetrically(wide, narrow, reverse):
+    source, quote = (narrow, wide) if reverse else (wide, narrow)
+    verdict = Verdict(passed=True, reason="核對標點。", quoted_fields=(QuotedField(field="條款", text=f"甲{quote}乙"),))
+    checked = recheck(verdict, subject={"條款": f"甲{source}乙"}, allowed_clauses=frozenset())
+    assert checked.trustworthy
+
+
+@pytest.mark.parametrize("quote", [
+    "本公司不理賠（等待期30日），限住院。",
+    "本公司不給付（等待期3日），限住院。",
+    "本公司給付（等待期30日），限住院。",
+    "本公司不給付等待期30日，限住院。",
+    "本公司不給付（等待期30日）；限住院。",
+    "本公司不給付[等待期30日]，限住院。",
+    "本公司不給付（等待期30日），限住院.",
+    "本公司不給付（等待期\uff13\uff10日），限住院。",
+])
+def test_recheck_quote_content_change_still_rejects(quote):
+    subject = {"條款": "本公司不給付（等待期30日），限住院。"}
+    verdict = Verdict(passed=True, reason="核對原文。", quoted_fields=(QuotedField(field="條款", text=quote),))
+    checked = recheck(verdict, subject=subject, allowed_clauses=frozenset())
+    assert not checked.trustworthy
+    assert checked.faults == ("欄位 條款 中查無所引原文",)
+
+
+@pytest.mark.parametrize(("source", "quote"), [("A", "\uff21"), ("\u884c", "\ufa08")])
+def test_recheck_quote_nonpunctuation_compatibility_change_rejects(source, quote):
+    verdict = Verdict(passed=True, reason="核對原文。", quoted_fields=(QuotedField(field="條款", text=quote),))
+    assert not recheck(verdict, subject={"條款": source}, allowed_clauses=frozenset()).trustworthy
+
+
+@pytest.mark.parametrize("text", ["", " ", "\n\t", "　"])
+def test_recheck_empty_quote_is_not_evidence(text):
+    verdict = Verdict(
+        passed=True,
+        reason="條款支持此結論。",
+        cited_clauses=("art.14",),
+        quoted_fields=(QuotedField(field="條款", text=text),),
+    )
+    checked = recheck(verdict, subject=SUBJECT, allowed_clauses=ALLOWED)
+    assert not checked.trustworthy
+    assert "引文為空" in checked.faults[0]
+
+
 def test_recheck_reports_every_fault_not_only_the_first():
     verdict = Verdict(
         passed=True,
@@ -101,6 +172,28 @@ async def test_validate_returns_a_checked_verdict_from_the_model():
     assert checked.verdict.passed
     assert checked.completion is not None
     assert checked.completion.provider == "scripted"
+
+
+async def test_validate_schema_limits_references_to_supplied_evidence():
+    provider = AsyncMock()
+    provider.complete.return_value = Completion(text=json.encode(Verdict(passed=False, reason="需要核對")).decode())
+    subject = {"answer": "候選答覆", "p1|art.2": "第一份契約", "p2|art.2": "第二份契約"}
+    await validate(provider, rule="核對答覆", subject=subject, allowed_clauses=frozenset({"p1|art.2", "p2|art.2"}))
+    schema = provider.complete.call_args.kwargs["schema"]
+    assert schema["properties"]["cited_clauses"]["items"]["enum"] == ["p1|art.2", "p2|art.2"]
+    fields = schema["properties"]["quoted_fields"]["items"]["properties"]
+    assert fields["field"]["enum"] == list(subject)
+    assert fields["text"]["minLength"] == 1
+    assert "enum" not in VERDICT_SCHEMA["properties"]["cited_clauses"]["items"]
+
+
+async def test_validate_schema_empty_evidence_has_no_reference_choices():
+    provider = AsyncMock()
+    provider.complete.return_value = Completion(text=json.encode(Verdict(passed=False, reason="資料不足")).decode())
+    await validate(provider, rule="核對答覆", subject={})
+    schema = provider.complete.call_args.kwargs["schema"]
+    assert schema["properties"]["cited_clauses"]["maxItems"] == 0
+    assert schema["properties"]["quoted_fields"]["maxItems"] == 0
 
 
 async def test_validate_routes_an_unreachable_model_to_human_review():
