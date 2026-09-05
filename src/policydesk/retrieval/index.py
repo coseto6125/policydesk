@@ -73,8 +73,9 @@ emits it — so `[^⁣]+` partitions on it with nothing else to filter."""
 
 
 TERMS_FILE = "terms.txt"
-"""Written beside the index. Both sides must cut with the same dictionary, so the
-dictionary travels with the index rather than being rebuilt from a query-time guess."""
+"""Written beside the index, one term per line, longest first. Both sides must cut with
+the same dictionary, so the dictionary travels with the index rather than being rebuilt
+from a query-time guess."""
 
 _MIN_TERM = 2
 _MAX_TERM = 12
@@ -180,13 +181,34 @@ def load_terms(path: Path = INDEX_DIR) -> int:
     Returns:
         How many terms were loaded, zero when the file is absent.
 
+    Every frequency is worked out first, then every term is added. `add_word` with no
+    frequency calls `suggest_freq`, which cuts the word against the dictionary, and each
+    cut after an add rebuilds jieba-next's prefix dict of half a million entries: 35 ms a
+    term, 92.8 s for the 2,594 terms this corpus carries, at every desk start and every
+    test module. With the frequencies settled before the first add, nothing cuts between
+    adds and the dict is rebuilt once, on the first real cut. Measured: 0.33 s, and the
+    cuts over 800 headings and clause openings are identical to the term-by-term path.
+
+    Consistency between the two sides comes from construction, not from equivalence with
+    the old term-by-term path: `build` calls this same function before it cuts the first
+    document, so the documents and the queries are cut by one dictionary. The old path is
+    not identical in general — jieba's running total grows with every add and feeds the
+    next suggestion, and a contrived pair of terms can cut differently — which is why an
+    index built before this should be rebuilt once (`policydesk-index bm25`, four
+    seconds). On this corpus the measured drift is 26 English procedure names moving from
+    frequency 2 to 1 and no change in the cuts of 800 headings and clause openings.
+
+    A line may carry a tab-separated frequency from an index built by an earlier revision
+    of this branch; only the term before the tab is read.
+
     """
     file = path / TERMS_FILE
     if not file.is_file():
         return 0
-    terms = [line.strip() for line in file.read_text(encoding="utf-8").splitlines() if line.strip()]
-    for term in terms:
-        jieba.add_word(term)
+    terms = [term for line in file.read_text(encoding="utf-8").splitlines() if (term := line.split("\t", 1)[0].strip())]
+    settled = [(term, jieba.suggest_freq(term, False)) for term in terms]
+    for term, freq in settled:
+        jieba.add_word(term, freq)
     return len(terms)
 
 
