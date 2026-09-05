@@ -32,6 +32,7 @@ not that Protocol or its per-worker embedding cache.
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import os
 import time
 from collections import deque
@@ -369,7 +370,18 @@ class CloudflareEncoder:
     def encode(self, texts: Sequence[str], *, progress: int = 0) -> NDArray:
         if not texts:
             return np.zeros((0, DIM), dtype=np.float32)
-        return asyncio.run(self._encode(list(texts), progress))
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self._encode(list(texts), progress))
+        # A loop is already turning on this thread. `asyncio.run` raises there, and the
+        # desk never reaches this branch because `search` is called through
+        # `asyncio.to_thread`, which has no loop of its own. A caller that skips the
+        # thread — a test, or a future synchronous path — would otherwise fail on a
+        # RuntimeError naming asyncio rather than anything in this file, so the work
+        # moves to a thread of its own and this one waits for it.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, self._encode(list(texts), progress)).result()
 
     async def _encode(self, texts: list[str], progress: int) -> NDArray:
         client = CloudflareClient()
