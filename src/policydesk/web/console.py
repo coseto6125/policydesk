@@ -52,7 +52,7 @@ console = Blueprint("console", url_prefix="/api/console")
 # The turn as the executor runs it. `response` is not an `llm_usage` phase — it is where
 # a turn has got to once no further call is coming — so the pipeline diagram carries it
 # as the terminal node and the phase columns never mention it.
-PIPELINE: tuple[str, ...] = ("route", "scenario_tools", "answer", "validate", "repair", "response")
+PIPELINE: tuple[str, ...] = ("route", "scenario_tools", "answer", "validate", "response")
 
 LIVE_IDLE_S = 60
 """How long after its last call a turn stops counting as in flight. A turn is only

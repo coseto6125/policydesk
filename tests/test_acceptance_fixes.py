@@ -1069,10 +1069,17 @@ async def test_the_fence_rule_is_the_last_rule_the_router_reads(db, live_case):
     assert seen[0].index("## The record for this turn") > guard
 
 
-async def test_rebuilt_history_carries_no_fence_tag(db, live_case):
+async def test_rebuilt_history_carries_no_earlier_fence_tag(db, live_case):
     """
     The fence lives for one call. A tag in the transcript is a tag the customer has read.
+
+    The earlier turns are fenced too, with the tag minted for the current call, so the
+    second prompt names one tag and never the first call's. `run_turn` writes no message
+    rows itself, so this test sees no transcript; the fenced-history shape is checked with
+    a stubbed transcript in test_answer_guards.
     """
+    import re
+
     from policydesk.agent import executor
     from policydesk.llm.provider import Completion
 
@@ -1090,8 +1097,10 @@ async def test_rebuilt_history_carries_no_fence_tag(db, live_case):
     await executor.run_turn(Captures(), db, case_id=live_case["case_id"],
                             member_id=live_case["member_id"], text="第二則訊息", confirmed=False)
 
-    history = seen[1].split("<untrusted-")[0]
-    assert "untrusted-" not in history
+    (first,) = set(re.findall(r"untrusted-[0-9a-f]{12}", seen[0]))
+    (second,) = set(re.findall(r"untrusted-[0-9a-f]{12}", seen[1]))
+    assert first != second
+    assert first not in seen[1], "a tag from an earlier call is one the customer may have read"
 
 
 async def test_router_must_call_a_tool_and_off_subject_lands_on_out_of_scope(db, live_case):

@@ -67,7 +67,6 @@
     --ph-scenario_tools: color-mix(in oklab, var(--accent) 50%, var(--flag));
     --ph-answer: var(--accent);
     --ph-validate: var(--flag);
-    --ph-repair: var(--bad);
     --ph-embedding: color-mix(in oklab, var(--ink-3) 50%, var(--accent));
     --ph-facts: color-mix(in oklab, var(--flag) 50%, var(--bad));
     --ph-response: var(--good);
@@ -2307,7 +2306,7 @@ const TABS = [
 /** Every phase `llm_usage` can hold, plus the terminal node the pipeline adds. */
 const PHASE_NAMES = {
   route: "路由", scenario_tools: "情境工具", answer: "作答", validate: "查核",
-  repair: "修補", embedding: "向量", facts: "記憶抽取", response: "已回覆",
+  embedding: "向量", facts: "記憶抽取", response: "已回覆",
 };
 
 const LIVE_POLL_MS = 2000;

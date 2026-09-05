@@ -44,7 +44,7 @@ class Phase(StrEnum):
     """
     Where in a turn a model call sits.
 
-    Names the seven phases allowed by the memory migration's `llm_usage` constraint.
+    Names the six phases allowed by the `llm_usage` constraint.
     An allowed phase does not imply that its runtime path writes usage records.
     """
 
@@ -52,7 +52,6 @@ class Phase(StrEnum):
     SCENARIO_TOOLS = "scenario_tools"
     ANSWER = "answer"
     VALIDATE = "validate"
-    REPAIR = "repair"
     EMBEDDING = "embedding"
     FACTS = "facts"
 

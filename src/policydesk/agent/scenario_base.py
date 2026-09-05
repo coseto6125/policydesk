@@ -117,6 +117,15 @@ class Scenario(Struct, frozen=True):
 
     A material gap is not a prompt problem. The model fills what the rows leave out.
     """
+    dates: bool = False
+    """Whether the answering call is offered the date tool.
+
+    Off by default, for the calculator's reason. A scenario that states a deadline sets
+    it, and its injection says which date the expression starts from: the day after
+    delivery for a rescission, the lapse date for a reinstatement. Elsewhere the schema
+    pins `date_calculations` empty, so a model that works out a date in prose on a
+    scenario that offered no tool is withheld, not trusted.
+    """
     calculator: bool = False
     """Whether the answering call is offered the calculator tool.
 

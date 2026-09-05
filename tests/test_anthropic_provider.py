@@ -111,7 +111,7 @@ def test_the_citation_enum_survives_the_rewrite():
     assert rewritten["properties"]["citations"]["items"]["enum"] == ["p1|art.6", "p2|art.7"]
     assert rewritten["properties"]["quoted_fields"]["items"]["properties"]["field"]["enum"] == ["p1|art.6", "p2|art.7"]
     assert rewritten["additionalProperties"] is False
-    assert set(rewritten["required"]) == {"reply", "citations", "calculations", "quoted_fields"}
+    assert set(rewritten["required"]) == {"reply", "citations", "calculations", "quoted_fields", "date_calculations"}
 
 
 def test_a_scenario_with_no_sources_still_forbids_every_citation():
