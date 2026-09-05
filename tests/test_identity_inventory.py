@@ -154,13 +154,18 @@ async def test_gather_unmarked_member_reader_is_not_called_even_after_confirmati
     from datetime import date
     from unittest.mock import AsyncMock
 
+    from msgspec import structs
+
     from policydesk.agent.executor import Turn, _gather
+    from policydesk.agent.scenario import BY_NAME
 
     async def unreviewed(*args, **kwargs):
         raise AssertionError("unmarked member reader executed")
 
     monkeypatch.setattr(tools, "list_policies", unreviewed)
-    scenario = SimpleNamespace(tools=("list_policies",), tools_module=None, params=())
+    # A real Scenario, not a stand-in. `_gather` reads fields off it, and a namespace
+    # carrying only the three this test cared about breaks the moment one is added.
+    scenario = structs.replace(BY_NAME["policy_overview"], tools=("list_policies",), tools_module="", params=())
     await _gather(AsyncMock(), scenario, Turn(case_id=1, member_id=1),
                   today=date(2026, 9, 6), params={}, confirmed=confirmed)
 

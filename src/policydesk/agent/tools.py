@@ -421,6 +421,7 @@ async def coverage_clauses(db: Database, product_ids: list[str]) -> list[dict[st
     )
 
 
+@requires_identity
 async def find_clause(
     db: Database, product_ids: list[str], topic: str, limit: int = 6, index: Retriever | None = None
 ) -> list[dict[str, Any]]:
