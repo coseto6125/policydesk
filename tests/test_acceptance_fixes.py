@@ -344,15 +344,25 @@ def test_no_template_reaches_a_customer_with_a_placeholder_in_it():
 @pytest.mark.asyncio
 async def test_the_document_template_counts_what_is_actually_unsigned(db):
     from policydesk.agent import tools
+    from policydesk.core.commands import ENROLMENT_DOCUMENTS
 
     row = await db.fetch_one(
-        """SELECT case_id, count(*) FILTER (WHERE signed_at IS NULL) AS waiting
+        """SELECT case_id
            FROM case_document GROUP BY case_id ORDER BY count(*) DESC LIMIT 1"""
     )
     if row is None:
         pytest.skip("no case carries documents")
+    documents = await db.fetch("SELECT document_id, kind, sha, signed_at FROM case_document WHERE case_id = $1::bigint", [row["case_id"]])
+    grants = await db.fetch("SELECT stage, scope, document_sha FROM authorization_grant WHERE case_id = $1::bigint", [row["case_id"]])
+    missing = {kind.value for kind in ENROLMENT_DOCUMENTS} - {document["kind"] for document in documents}
+    for document in documents:
+        scopes = {grant["scope"] for grant in grants if grant["stage"] == "signed" and grant["document_sha"] == document["sha"]}
+        required = {f"{party} 簽署文件 {document['document_id']}" for party in ("要保人", "被保險人")}
+        if not document["sha"] or document["signed_at"] is None or not required <= scopes:
+            missing.add(document["kind"])
     got = await tools.pending_signatures(db, row["case_id"])
-    assert got["count"] == row["waiting"]
+    assert got["count"] == len(missing)
+    assert {name.strip() for name in got["names"].splitlines()} == missing
     assert got["names"].count("\n") + 1 == got["count"] or not got["count"]
 
 

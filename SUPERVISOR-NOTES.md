@@ -1,5 +1,39 @@
 # Supervisor notes
 
+## Document status progress and remaining upload failure — 2026-09-05, 18:10
+
+The document stash was restored without changing the corpus or rebuilding the container.
+Current-version grants now determine the displayed signing state, pending files and review completeness.
+Required but absent forms remain explicit in `document_status`; no fake document IDs are created.
+The board, document table, modal and pending count read that shared status.
+The public `commands.DocumentKind` import has a regression test; an explicit module alias survives Ruff's import cleanup.
+
+Document, acceptance, UI, identity-gate and identity-inventory checks: 243 passed, two known upload tests deselected.
+The two deselections are failures, not unavailable infrastructure or passing coverage; see below.
+The new status assertions first produced 11 failures. The UI initially produced two failures and one pass.
+UI tests execute the page's original render functions with Node and a minimal DOM adapter.
+They require Node.js on PATH and do not establish browser layout or network behavior.
+A process-local mutation removing grant-to-current-SHA matching made the changed-version review test fail.
+The mutation advanced stale evidence to REVIEW, so the guard is exercised. No source mutation persisted.
+
+Two actual customer-handler tests remain red at `test_customer_socket_upload_illegal_stage_reports_refusal_without_writes`.
+After real identity confirmation, upload at PROPOSED or VERIFIED changes `uploaded_name` despite refusing the signature.
+The handler writes before validation and hides refusals that have no `missing` list.
+These tests remain in the working tree for the next fix; do not call the whole document file green.
+
+The next change needs one transaction-bound query session and a core upload command for metadata plus both roles.
+The proposed lock order is case row, then that case's document rows in document-ID order.
+All competing stage writers must read their preconditions under the same case lock, not only signing and submission.
+Transaction tests must cover partial-signature commit, mid-write rollback, cancellation and controlled two-connection races.
+A partial signature currently returns Refusal with missing forms but intentionally persists; it must not roll back as a true refusal.
+File bytes and cryptographic signatures are still not verified by this filename-only demo.
+The transaction design is source-reviewed, not implemented or empirically verified.
+
+At 18:06 the read-only vector audit reported 11724 source documents and 23588 vectors.
+Missing, stale and uncovered were zero; source_matches, matrix_valid and complete were true.
+The encoder remains llama-server 8090, bge-m3-Q5_K_M.gguf; generation and source hash match the 17:29 record below.
+This establishes coverage of DB sources, not correct extraction of every PDF attachment.
+
 ## PostgreSQL after reboot — corrected 2026-09-05
 
 `policydesk-pg` runs under `/usr/bin/podman`, not Docker Desktop.
