@@ -198,6 +198,7 @@ async def _route(
 
     """
     completion = await provider.complete(
+        phase=Phase.ROUTE,
         # WRITING belongs here too. This call answers directly whenever no scenario fits
         # — `ROUTER_INSTRUCTIONS` says so in as many words — and that answer goes to the
         # customer at `run_turn`'s `scenario is None` branch. It is also the path where the
@@ -675,6 +676,7 @@ async def run_turn(
         # everywhere, it made the desk a calculator for a customer who had wandered off
         # topic; a scenario that needs a figure the rows do not carry sets `calculator`.
         completion = await provider.complete(
+            phase=Phase.ANSWER,
             instructions=f"{ROUTER_INSTRUCTIONS}\n\n{scenario.injection}\n\n{WRITING}\n\n{i18n.hint(turn.locale)}",
             user_input=f"{past}# This message\n{text}\n\n# Tool results\n{material}",
             tools=[TOOL_SCHEMA] if scenario.calculator else None,

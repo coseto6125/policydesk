@@ -8,6 +8,7 @@ was answering each message as if it were the first.
 """
 
 from datetime import date
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -15,6 +16,26 @@ from policydesk.agent.executor import _as_budget
 from policydesk.agent.memory import transcript
 from policydesk.agent.tools import LINES
 from policydesk.synthetic.person import insurance_age
+
+
+async def test_sweep_once_passes_facts_phase_to_provider_and_usage(monkeypatch):
+    from policydesk.agent import memory
+    from policydesk.llm.provider import Completion, Phase
+
+    monkeypatch.setattr(memory, "_claim", AsyncMock(return_value=[
+        {"case_id": 1, "member_id": 2, "summary": ""},
+    ]))
+    monkeypatch.setattr(memory, "_write", AsyncMock())
+    db = AsyncMock()
+    db.fetch.side_effect = [[{"message_id": 3, "speaker": "customer", "text": "謝謝"}], []]
+    provider = AsyncMock()
+    provider.complete.return_value = Completion(text='{"facts":[],"summary":""}', model="test")
+    assert await memory.sweep_once(db, provider) == 1
+    assert provider.complete.call_args.kwargs["phase"] is Phase.FACTS
+    sql, params = db.execute.call_args.args
+    assert "INSERT INTO llm_usage" in sql
+    assert "'facts'" not in sql
+    assert params[1] == Phase.FACTS.value
 
 
 def test_transcript_is_empty_before_anything_is_said():

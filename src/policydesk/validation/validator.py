@@ -168,6 +168,7 @@ async def validate(
 
     try:
         completion = await provider.complete(
+            phase=Phase.VALIDATE,
             instructions=INSTRUCTIONS,
             user_input=user_input,
             schema=VERDICT_SCHEMA,

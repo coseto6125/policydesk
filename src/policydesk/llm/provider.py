@@ -39,9 +39,8 @@ class Phase(StrEnum):
     """
     Where in a turn a model call sits.
 
-    Matches the `llm_usage.phase` check constraint. `VALIDATE` is this project's
-    addition to the enoract set: a prompt-based check is itself a traced call, which
-    is how a non-deterministic verdict still leaves an auditable record.
+    Names the seven phases allowed by the memory migration's `llm_usage` constraint.
+    An allowed phase does not imply that its runtime path writes usage records.
     """
 
     ROUTE = "route"
@@ -50,6 +49,12 @@ class Phase(StrEnum):
     VALIDATE = "validate"
     REPAIR = "repair"
     EMBEDDING = "embedding"
+    FACTS = "facts"
+
+    @property
+    def temperature(self) -> float:
+        """HTTP sampling only; the CLI does not expose temperature."""
+        return 0.3 if self is Phase.ANSWER else 0.1
 
 
 class Completion(Struct, frozen=True):
@@ -80,6 +85,7 @@ class Provider(Protocol):
         tools: list[dict[str, Any]] | None = None,
         schema: dict[str, Any] | None = None,
         model: str | None = None,
+        phase: Phase | None = None,
     ) -> Completion:
         """
         Ask the model once.
@@ -90,6 +96,7 @@ class Provider(Protocol):
             tools: Tool schemas the model may call.
             schema: A JSON Schema the reply must satisfy, for a structured verdict.
             model: Overrides the configured model.
+            phase: Selects HTTP sampling; providers without temperature ignore it.
 
         Returns:
             The completion and its usage.
@@ -139,6 +146,7 @@ class OpenAIProvider:
         tools: list[dict[str, Any]] | None = None,
         schema: dict[str, Any] | None = None,
         model: str | None = None,
+        phase: Phase | None = None,
     ) -> Completion:
         """
         Ask the model once over HTTP.
@@ -149,6 +157,7 @@ class OpenAIProvider:
             tools: Tool schemas the model may call.
             schema: A JSON Schema the reply must satisfy.
             model: Overrides the configured model.
+            phase: Selects the HTTP sampling temperature when supplied.
 
         Returns:
             The completion and its usage.
@@ -168,6 +177,8 @@ class OpenAIProvider:
         }
         if tools:
             body["tools"] = tools
+        if phase is not None:
+            body["temperature"] = phase.temperature
         if schema:
             body["text"] = {"format": {"type": "json_schema", "name": "verdict", "strict": True, "schema": schema}}
 
@@ -238,6 +249,7 @@ class ScriptedProvider:
         tools: list[dict[str, Any]] | None = None,  # noqa: ARG002  - Protocol shape; a script has no tools to offer
         schema: dict[str, Any] | None = None,  # noqa: ARG002  - Protocol shape; a script cannot be constrained
         model: str | None = None,
+        phase: Phase | None = None,  # noqa: ARG002 - Scripted answers do not sample.
     ) -> Completion:
         """
         Return the scripted answer for this input.
@@ -248,6 +260,7 @@ class ScriptedProvider:
             tools: Ignored.
             schema: Ignored.
             model: Recorded as the model name.
+            phase: Ignored.
 
         Returns:
             The scripted completion.
@@ -417,6 +430,7 @@ class CodexCliProvider:
         tools: list[dict[str, Any]] | None = None,
         schema: dict[str, Any] | None = None,
         model: str | None = None,
+        phase: Phase | None = None,  # noqa: ARG002 - Codex CLI has no temperature control.
     ) -> Completion:
         """
         Ask the model once, through the CLI.
@@ -427,6 +441,7 @@ class CodexCliProvider:
             tools: Tool schemas the model may call, described into the prompt.
             schema: A JSON Schema the reply must satisfy.
             model: Overrides the configured model.
+            phase: Ignored; the CLI uses its existing reasoning effort and schema.
 
         Returns:
             The completion and its usage.
