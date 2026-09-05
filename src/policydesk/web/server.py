@@ -277,9 +277,19 @@ async def _broadcast_desk(application: Sanic, payload: dict[str, Any]) -> None:
     A caseworker watching a case must see it move as the customer moves it. Polling
     would show them a version behind, which is exactly the drift that makes two panes
     into two stories.
+
+    Only the panes scoped to this case's member receive it. The socket's `?member=`
+    was read at connect and then dropped, so every pane received every snapshot — and
+    a snapshot carries `national_id`, `display_name`, `occupation` and the member's
+    whole policy book, which the browser renders without a check of its own. Two
+    visitors with the demo open at once was enough: one confirming their identity
+    pushed their record into the other's pane. The `open` branch twenty lines below
+    already compared `member_id` against the viewer; this exit did not, and two halves
+    of one handler drifting apart is how it stayed invisible.
     """
+    owner = payload.get("member_id")
     body = json.encode(payload).decode()
-    sockets = list(application.ctx.desk_sockets)
+    sockets = [ws for ws, viewer in application.ctx.desk_sockets if viewer == owner]
     if not sockets:
         return
 
@@ -288,9 +298,8 @@ async def _broadcast_desk(application: Sanic, payload: dict[str, Any]) -> None:
     # and the customer's own turn — the except clause anticipated dead sockets, not
     # slow ones.
     results = await asyncio.gather(*(socket.send(body) for socket in sockets), return_exceptions=True)
-    application.ctx.desk_sockets -= {
-        socket for socket, outcome in zip(sockets, results, strict=True) if isinstance(outcome, BaseException)
-    }
+    dead = {socket for socket, outcome in zip(sockets, results, strict=True) if isinstance(outcome, BaseException)}
+    application.ctx.desk_sockets -= {entry for entry in application.ctx.desk_sockets if entry[0] in dead}
 
 
 async def _next_serial(db: Database) -> int:
@@ -767,7 +776,8 @@ async def desk_socket(request: Request, ws: Websocket) -> None:
         await ws.close()
         return
 
-    request.app.ctx.desk_sockets.add(ws)
+    entry = (ws, viewer)
+    request.app.ctx.desk_sockets.add(entry)
     try:
         await ws.send(json.encode({"type": "queue", "cases": _jsonable(await _queue(db, viewer))}).decode())
         async for raw in ws:
@@ -775,6 +785,17 @@ async def desk_socket(request: Request, ws: Websocket) -> None:
                 continue
             match message.get("type"):
                 case "decide":
+                    # Same check the `open` branch makes below, and for a stronger
+                    # reason: this one writes. `cmd.decide` reads the stage and nothing
+                    # about who owns the case, so a pane scoped to one member could
+                    # reject another member's case by naming its id — bigserial, so
+                    # counting up from 1 finds them — and the broadcast then returned
+                    # that case's snapshot, national ID included, to the caller.
+                    scoped = await cmd.snapshot(db, int(message["case_id"]))
+                    if scoped is None or scoped["member_id"] != viewer:
+                        logger.warning("decide_out_of_scope", case_id=message.get("case_id"), viewer=viewer)
+                        await ws.send(json.encode({"type": "notice", "text": "查無此案", "level": "warn"}).decode())
+                        continue
                     outcome = await cmd.decide(
                         db, int(message["case_id"]),
                         approved=bool(message.get("approved")),
@@ -799,7 +820,7 @@ async def desk_socket(request: Request, ws: Websocket) -> None:
     except (ConnectionError, asyncio.CancelledError):
         pass
     finally:
-        request.app.ctx.desk_sockets.discard(ws)
+        request.app.ctx.desk_sockets.discard(entry)
 
 
 async def _queue(db: Database, member_id: int) -> list[dict[str, Any]]:

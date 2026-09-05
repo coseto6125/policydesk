@@ -250,6 +250,7 @@ async def _route(
     budget of 20,000 was matched against health products at 30,000.
 
     """
+    offered = {s.name: s for s in reachable(stage)}
     completion = await provider.complete(
         phase=Phase.ROUTE,
         # WRITING belongs here too. This call answers directly whenever no scenario fits
@@ -259,12 +260,18 @@ async def _route(
         # scenario injection is shaping it.
         instructions=f"{LOOKUP_SCOPE}{ROUTER_INSTRUCTIONS}\n\n{WRITING}\n\n{i18n.hint(turn.locale)}",
         user_input=f"{past}# This message\n{text}",
-        tools=[tool_schema(s) for s in reachable(stage)],
+        tools=[tool_schema(s) for s in offered.values()],
     )
     await _record(db, turn, Phase.ROUTE, completion, None)
 
     for call in completion.tool_calls:
-        if (scenario := BY_NAME.get(call.get("name", ""))) is not None:
+        # Resolved against what this stage offered, not the whole catalogue. The two
+        # lists differed by one or two scenarios at every stage — verify_identity at
+        # all of them — so a name the router was never shown still dispatched. On the
+        # Anthropic and OpenAI paths the API constrains the name to a declared tool,
+        # but the codex path builds calls from free text, and a guard that holds only
+        # for some providers is not a guard.
+        if (scenario := offered.get(call.get("name", ""))) is not None:
             try:
                 args = json.decode((call.get("arguments") or "{}").encode())
             except DecodeError:
@@ -980,19 +987,24 @@ def _promises(text: str) -> str:
     prompt-based; these two are the exceptions, and both withhold rather than annotate.
 
     """
-    found = _PROMISE.search(text)
-    if found is None:
-        return ""
-    # A denial of a promise is not a promise. 不能據此判定您的外送工作一定會加費、退費或
-    # 影響理賠 is a live reply saying the desk cannot decide, and the pattern reads its
-    # 一定會…理賠 the same way it reads a claim. The clause before the match decides.
-    before = text[:found.start()]
-    # The negator can sit hard against the match — 我不保證會核准 puts 不 one character
-    # before 保證, which no clause-level scan sees because the clause is then just 我不.
-    if before[-1:] in {"不", "沒", "未", "毋"}:
-        return ""
-    clause = before.rsplit("。", 1)[-1].rsplit("\n", 1)[-1]
-    return "" if _DENIAL.search(clause) else found.group(0)
+    # Every match, not the first. A denial of a promise is not a promise, but a denial
+    # followed by a promise is still a promise: 我不保證會核准。不過這件一定會賠。 was
+    # reaching the customer, because the first match was negated and the scan stopped
+    # there. Each match is judged on the clause before it, and the first one that
+    # survives is the offence.
+    for found in _PROMISE.finditer(text):
+        # A denial of a promise is not a promise. 不能據此判定您的外送工作一定會加費、退費或
+        # 影響理賠 is a live reply saying the desk cannot decide, and the pattern reads its
+        # 一定會…理賠 the same way it reads a claim. The clause before the match decides.
+        before = text[:found.start()]
+        # The negator can sit hard against the match — 我不保證會核准 puts 不 one character
+        # before 保證, which no clause-level scan sees because the clause is then just 我不.
+        if before[-1:] in {"不", "沒", "未", "毋"}:
+            continue
+        clause = before.rsplit("。", 1)[-1].rsplit("\n", 1)[-1]
+        if not _DENIAL.search(clause):
+            return found.group(0)
+    return ""
 
 
 def _withhold_promise(turn: Turn, case_id: int, scenario: str | None) -> bool:
@@ -1213,7 +1225,14 @@ def _short(value: Any, limit: int = 40, chars: int = CHARS) -> Any:
             if clipped:
                 shortened["truncated_fields"] = clipped
                 if "verbatim" in clipped:
-                    shortened["excerpt"] = True
+                    # The retrieval path marks its own slices with an ellipsis, so a
+                    # clause cut again here carries the same mark rather than a second
+                    # vocabulary. A boolean beside the text said the same thing to
+                    # nobody: no prompt read it, and the model saw a quote that ended
+                    # mid-sentence with nothing to say it had been cut. The mark
+                    # replaces the last character rather than following it, because the
+                    # limit is what the model's context can hold, not a target to pass.
+                    shortened["verbatim"] = f"{shortened['verbatim'][:-1]}…"
             return shortened
         case str():
             return value[:chars]
