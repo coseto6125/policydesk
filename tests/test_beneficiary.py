@@ -27,22 +27,15 @@ from policydesk.agent.scenarios.beneficiary import (
     undesignated_fallback,
 )
 from policydesk.agent.tools import list_policies, permitted, reads_identity
-from policydesk.core.db import Database
 
 
 @pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    if not await pool.fetch_val("SELECT count(*) FROM statute_article"):
+async def db(db):
+    if not await db.fetch_val("SELECT count(*) FROM statute_article"):
         from policydesk.agent import statute
 
-        await statute.ingest(pool)
-    yield pool
-    await pool.close()
+        await statute.ingest(db)
+    return db
 
 
 # A member whose beneficiary_relation is really 'legal_heir' (queried against the live

@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from policydesk.core.db import Database
 from policydesk.retrieval.base import CLAUSE, Hit
 
 
@@ -95,17 +94,6 @@ async def test_gather_personal_policy_scope_limits_retrieval(monkeypatch, params
     assert clause_ids.call_args.args[1] == expected
     for lookup in lookups.values():
         assert lookup.call_args.args[1] == expected
-
-
-@pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    yield pool
-    await pool.close()
 
 
 @pytest.mark.parametrize("product", ["38cfb37f85cf", "新實全心意PLUS住院醫療健康保險附約", "新實全心意ＰＬＵＳ 住院醫療健康保險附約（外溢型）"])
