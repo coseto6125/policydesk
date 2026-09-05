@@ -30,7 +30,7 @@ from sanic import Request, Sanic, Websocket, html, response
 from policydesk.agent import i18n, memory
 from policydesk.agent import locale as lang
 from policydesk.agent.executor import Turn, run_turn
-from policydesk.agent.scenario import OPENERS
+from policydesk.agent.scenario import IDENTITY_LOCKED_REPLY, OPENERS
 from policydesk.bootloader import logger
 from policydesk.core import commands as cmd
 from policydesk.core.db import Database
@@ -493,7 +493,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         # at all — even with a refusal that varies — is the oracle.
                         await ws.send(json.encode({
                             "type": "reply",
-                            "text": "本次線上核對已暫停，請改由專人與您確認身分。",
+                            "text": IDENTITY_LOCKED_REPLY,
                             "scenario": None, "citations": [], "faults": [], "params": {}, "quick": [],
                         }).decode())
                         continue
@@ -561,13 +561,19 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
 
                     # Answer what they actually asked, before the check interrupted them.
                     text, pending_question = pending_question, None
-                    await _answer(request, ws, db, case_id=case_id, text=text, confirmed=True, floor=floor)
+                    await _answer(
+                        request, ws, db, case_id=case_id, text=text,
+                        confirmed=True, floor=floor, identity_locked=locked,
+                    )
 
                 case "say" if case_id is not None:
                     text = (message.get("text") or "").strip()
                     if not text:
                         continue
-                    await _answer(request, ws, db, case_id=case_id, text=text, confirmed=confirmed, floor=floor)
+                    await _answer(
+                        request, ws, db, case_id=case_id, text=text,
+                        confirmed=confirmed, floor=floor, identity_locked=locked,
+                    )
                     if not confirmed:
                         # The latest question, not the first. Keeping the first replayed
                         # 嗨 after the check passed; the thing worth coming back to is
@@ -577,7 +583,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
 
                 case "upload" | "verify" if case_id is not None and not confirmed:
                     await ws.send(json.encode({
-                        "type": "notice", "text": "請先完成身分核對。", "level": "warn",
+                        "type": "notice", "text": IDENTITY_LOCKED_REPLY if locked else "請先完成身分核對。", "level": "warn",
                     }).decode())
 
                 case "upload" if case_id is not None and confirmed:
@@ -674,7 +680,7 @@ async def _last_message(db: Database, case_id: int) -> int:
 
 async def _answer(
     request: Request, ws: Websocket, db: Database, *, case_id: int, text: str,
-    confirmed: bool, floor: int = 0,
+    confirmed: bool, floor: int = 0, identity_locked: bool = False,
 ) -> Turn:
     """
     Run one turn and send it, recording both halves of the exchange.
@@ -687,6 +693,7 @@ async def _answer(
         text: What the customer said.
         confirmed: Whether this session has passed 資料核對.
         floor: The message this connection started above. 0 reads the whole case.
+        identity_locked: Whether this connection has exhausted its verification attempts.
 
     Returns:
         The turn, so the caller can read whether the identity gate stopped it.
@@ -710,6 +717,7 @@ async def _answer(
     turn = await run_turn(
         request.app.ctx.provider, db,
         case_id=case_id, member_id=member_id, text=text, confirmed=confirmed,
+        identity_locked=identity_locked,
         index=request.app.ctx.clauses, since=floor, locale=spoken,
     )
     # The clause ids go in with the reply, so the console's transcript can show a

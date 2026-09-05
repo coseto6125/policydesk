@@ -183,7 +183,7 @@ CLAIM_STATUS = Scenario(
         "寫錯的金額或條號比不寫更傷害保戶。\n\n"
         "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，material 裡沒有他的 member_claims，"
         "但 complaint_channel 一定還在——申訴管道是公開的規定，不用核對身分也能先講。"
-        "此時先告訴他查詢自己的理賠進度需要先核對身分，請他提供身分證字號，"
+        "此時先告訴他查詢自己的理賠進度需要先核對身分，並依本連線的核對狀態引導下一步。"
         "不要憑空講任何關於他理賠案件的內容，也不要假裝已經查過。"
     ),
     tools=("member_claims", "complaint_channel"),

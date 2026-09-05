@@ -38,6 +38,8 @@ from policydesk.agent.scenario import (
     ASKED_ALREADY,
     BY_NAME,
     CATALOGUE,
+    IDENTITY_LOCKED_REPLY,
+    IDENTITY_NEXT_STEP,
     LOOKUP_SCOPE,
     OPENERS,
     POLICY_CLARIFICATION,
@@ -607,6 +609,7 @@ async def run_turn(
     member_id: int,
     text: str,
     confirmed: bool = False,
+    identity_locked: bool = False,
     index: Retriever | None = None,
     today: date | None = None,
     since: int = 0,
@@ -625,6 +628,8 @@ async def run_turn(
             is about one named person's contracts, so an unconfirmed session reaches no
             tool marked `requires_identity` — the scenario is refused before its tools
             run, not after.
+        identity_locked: Whether this connection has exhausted its verification attempts.
+            This changes the next-step guidance, not the tool authorization decision.
         today: The date to judge currency against.
         since: The message this connection started above.
         locale: The language to reply in, when the caller already resolved it. None
@@ -681,6 +686,8 @@ async def run_turn(
         # frisking someone at the door. The check belongs to the question that needs it.
         known = (
             "# This session has not passed 資料核對\n"
+            f"# Identity verification state: {'locked' if identity_locked else 'pending'}\n"
+            + IDENTITY_NEXT_STEP +
             "The customer has not verified their identity, so none of their policy data is visible to you.\n"
             "A greeting, or a question about what this desk does, gets a direct answer.\n"
             "A question about insurance itself (the free-look period, what 據實說明 means, how long "
@@ -690,7 +697,7 @@ async def run_turn(
             "behind it that can be checked.\n"
             "For a request about their own policies, premiums, sums insured, claims or a plan to buy, "
             "call the matching scenario tool. Its gate withholds personal records until identity is "
-            "verified, and its reply asks for verification when needed.\n"
+            "verified; its reply follows the connection's identity verification state.\n"
             "Every statement about their policies comes from the material.\n"
             + ASKED_ALREADY + "\n"
         )
@@ -766,7 +773,7 @@ async def run_turn(
         # docstring names. The model path says the same thing correctly, because it reads
         # `_identity_required`; this path has no model to read it.
         turn.awaiting_identity = True
-        turn.reply = (
+        turn.reply = IDENTITY_LOCKED_REPLY if identity_locked else (
             "查詢您名下的保單資料前，需要先核對您的身分。"
             "請提供您的身分證字號，核對通過後我立刻為您查詢。"
         )

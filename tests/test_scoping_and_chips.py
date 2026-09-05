@@ -6,8 +6,13 @@ other is an expression of intent the customer never made.
 """
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
+
+from policydesk.agent import executor
+from policydesk.agent.scenario import ASKED_ALREADY, IDENTITY_NEXT_STEP
+from policydesk.llm.provider import Completion, Phase
 
 
 @pytest.fixture(scope="module")
@@ -233,22 +238,48 @@ def test_a_chip_row_that_would_empty_keeps_its_chips():
     assert _fresh(PUBLIC_OPENERS, list(PUBLIC_OPENERS)) == PUBLIC_OPENERS
 
 
-def test_both_refusal_paths_say_not_to_repeat_the_same_request():
-    """
-    A customer who repeats a question is saying the last answer did not land.
-
-    The desk answered 那我適合哪一張 with 請提供您的身分證字號, and answered it again with
-    the same request in fewer words. The rule reaches both paths that can refuse: the
-    scenario one through `IDENTITY_PENDING`, and the router's free answer, which is where
-    the third of those three turns was written.
-    """
-    import inspect
-
-    from policydesk.agent import executor
-    from policydesk.agent.scenario import ASKED_ALREADY, IDENTITY_PENDING
-
-    assert ASKED_ALREADY in IDENTITY_PENDING
-    assert "ASKED_ALREADY" in inspect.getsource(executor.run_turn)
+@pytest.mark.parametrize("identity_locked", [False, True], ids=["pending", "locked"])
+@pytest.mark.parametrize("scenario_name", [None, "policy_overview"], ids=["router_reply", "scenario_reply"])
+async def test_run_turn_repeated_request_sends_state_aware_guidance_to_each_answering_phase(
+    monkeypatch, identity_locked, scenario_name,
+):
+    """Assert provider input, not the constant or source location that assembles it."""
+    question = "那我適合哪一張？"
+    previous_reply = "請提供您的身分證字號。"
+    monkeypatch.setattr(executor.memory, "recent", AsyncMock(return_value=[
+        {"speaker": "customer", "text": question},
+        {"speaker": "agent", "text": previous_reply},
+        {"speaker": "customer", "text": question},
+    ]))
+    monkeypatch.setattr(executor.statute, "unresolved", AsyncMock(return_value=[]))
+    provider, db = AsyncMock(), AsyncMock()
+    db.fetch_val.return_value = "inquiry"
+    provider.complete.side_effect = [
+        Completion(
+            text="可以先說明公開資訊。", provider="test",
+            tool_calls=({"name": scenario_name, "arguments": "{}"},) if scenario_name else (),
+        ),
+        Completion(
+            text='{"reply":"可以先說明公開資訊。","citations":[],"calculations":[]}', provider="test",
+        ),
+    ]
+    turn = await executor.run_turn(
+        provider, db, case_id=1, member_id=1, text=question,
+        confirmed=False, identity_locked=identity_locked, locale="zh-TW",
+    )
+    assert turn.scenario == scenario_name
+    expected_phases = [Phase.ROUTE, Phase.ANSWER] if scenario_name else [Phase.ROUTE]
+    calls = provider.complete.call_args_list
+    assert [call.kwargs["phase"] for call in calls] == expected_phases
+    state = "locked" if identity_locked else "pending"
+    for call in calls:
+        payload = f"{call.kwargs['instructions']}\n{call.kwargs['user_input']}"
+        assert payload.count(ASKED_ALREADY) == 1
+        assert payload.count(IDENTITY_NEXT_STEP) == 1
+        assert f"# Identity verification state: {state}" in payload
+        assert previous_reply in call.kwargs["user_input"]
+        assert question in call.kwargs["user_input"]
+    db.fetch.assert_not_awaited()
 
 
 def test_no_quick_reply_anywhere_commits_the_customer():

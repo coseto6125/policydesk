@@ -231,7 +231,7 @@ COOLING_OFF = Scenario(
         "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他自己保單的條款。"
         "此時只用 cooling_off_clause 的一般約定回答期間是幾天、從什麼時候起算，"
         "並說明這是一般約定，要確認他自己這張保單的條款與是否還在期限內，需要先核對身分，"
-        "請他提供身分證字號。不要憑空猜測他的保單內容。"
+        "並依本連線的核對狀態引導下一步。不要憑空猜測他的保單內容。"
     ),
     tools=("cooling_off_clause", "member_rescission"),
     tools_module="policydesk.agent.scenarios.cooling_off",
