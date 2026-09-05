@@ -526,6 +526,184 @@ def test_server_embedder_invalid_rows_rejects_response(monkeypatch):
         ServerEmbedder("http://localhost:8090").encode(["一筆輸入"])
 
 
+def _write_vector_generation(root, *, generation: str, encoder: dict) -> None:
+    """Shared fixture: one manifest, one one-row matrix, matching `EmbeddingRetriever`'s layout."""
+    import numpy as np
+    from msgspec import json
+
+    from policydesk.retrieval import vectors
+
+    gen_dir = root / generation
+    gen_dir.mkdir()
+    np.save(gen_dir / "vectors.npy", np.zeros((1, vectors.DIM), dtype=np.float32))
+    np.save(gen_dir / "keys.npy", np.array(["clause|p|art.1"]))
+    np.save(gen_dir / "spans.npy", np.array([(0, 3)]))
+    manifest = {"generation": generation, "encoder": encoder, "documents": 1, "passages": 1,
+                "source_sha256": "x", "tokens": 512, "overlap": 64}
+    (root / "current.json").write_bytes(json.encode(manifest))
+
+
+def test_cf_backend_dispatches_to_cloudflare_encoder(tmp_path, monkeypatch):
+    """A manifest built by `cf-workers-ai` must open with `CloudflareEncoder`, not ONNX."""
+    import numpy as np
+
+    from policydesk.retrieval import vectors
+
+    _write_vector_generation(tmp_path, generation="gen1", encoder={"backend": "cf-workers-ai", "model": vectors.CF_MODEL})
+
+    class FakeCFEncoder:
+        def __init__(self, model):
+            self.model = model
+
+        def encode(self, texts, *, progress=0):
+            return np.zeros((len(texts), vectors.DIM), dtype=np.float32)
+
+    monkeypatch.setattr(vectors, "CloudflareEncoder", FakeCFEncoder)
+    retriever = vectors.EmbeddingRetriever(tmp_path)
+    assert isinstance(retriever._embedder, FakeCFEncoder)
+    assert retriever._embedder.model == vectors.CF_MODEL
+
+
+def test_cf_backend_model_mismatch_fails_loudly(tmp_path, monkeypatch):
+    """
+    llama-server and Workers AI serve different weights of bge-m3 (quantized vs not) —
+    a query encoded on one against an index built by the other is a silent regression,
+    never an error. `POLICYDESK_CF_MODEL` disagreeing with the manifest must raise before
+    a single vector is compared, not degrade the ranking quietly.
+    """
+    from policydesk.retrieval import vectors
+
+    _write_vector_generation(tmp_path, generation="gen1", encoder={"backend": "cf-workers-ai", "model": vectors.CF_MODEL})
+    monkeypatch.setenv("POLICYDESK_CF_MODEL", "@cf/some-other-model")
+    with pytest.raises(ValueError, match="differs from the indexed model"):
+        vectors.EmbeddingRetriever(tmp_path)
+
+
+async def test_build_selects_cf_workers_ai_when_no_server_url_but_creds_present(tmp_path, monkeypatch):
+    """
+    `build` follows the same presence-based dispatch as the llama-server branch: a
+    server URL wins, cf-workers-ai is next when configured, ONNX is the fallback.
+    """
+    from unittest.mock import AsyncMock
+
+    import numpy as np
+    from msgspec import json
+    from tokenizers import Tokenizer, models
+
+    from policydesk.retrieval import vectors
+
+    tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))  # noqa: S106
+    tokenizer.save(str(tmp_path / "tokenizer.json"))
+    monkeypatch.setattr(vectors, "documents", AsyncMock(return_value=[{"key": "clause|p|a", "text": "合約"}]))
+    monkeypatch.delenv("POLICYDESK_EMBED_URL", raising=False)
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("CLOUDFLARE_AUTH_TOKEN", "token")
+
+    class FakeCFEncoder:
+        def __init__(self, model):
+            self.model = model
+
+        def encode(self, texts, *, progress=0):
+            return np.zeros((len(texts), vectors.DIM), dtype=np.float32)
+
+    monkeypatch.setattr(vectors, "CloudflareEncoder", FakeCFEncoder)
+    await vectors.build(AsyncMock(), path=tmp_path, model_dir=tmp_path)
+    manifest = json.decode((tmp_path / "current.json").read_bytes())
+    assert manifest["encoder"] == {"backend": "cf-workers-ai", "model": vectors.CF_MODEL}
+
+
+def test_parse_cf_credentials_requires_matching_counts(monkeypatch):
+    from policydesk.retrieval.vectors import parse_cf_credentials
+
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_AUTH_TOKEN", raising=False)
+    assert parse_cf_credentials(None, None) == []
+    assert parse_cf_credentials("a,b", "t1,t2") == [("a", "t1"), ("b", "t2")]
+    with pytest.raises(ValueError, match="counts must match"):
+        parse_cf_credentials("a,b", "t1")
+
+
+async def test_cloudflare_embed_halves_batch_on_400_with_more_than_one_item(monkeypatch):
+    """
+    The measured split: a 400 on a multi-item batch means "this batch, not this text" —
+    halve and retry rather than fail the whole request. A single-item 400 has nowhere
+    left to halve to, so it propagates.
+    """
+    import aiohttp
+
+    from policydesk.retrieval.vectors import DIM, CloudflareClient
+
+    calls: list[int] = []
+
+    async def fake_run(self, model, payload):
+        texts = payload["text"]
+        calls.append(len(texts))
+        if len(texts) > 1:
+            raise aiohttp.ClientResponseError(request_info=None, history=(), status=400)
+        return {"result": {"data": [[0.0] * DIM]}}
+
+    monkeypatch.setattr(CloudflareClient, "run", fake_run)
+    client = object.__new__(CloudflareClient)
+    rows = await client.embed("model", ["a", "b", "c", "d"], max_batch=4)
+    assert len(rows) == 4
+    assert calls[0] == 4, "the whole batch is tried first"
+    assert calls.count(1) == 4, "it must bottom out at one item per call, not fail early"
+
+
+async def test_cloudflare_embed_retries_5xx_and_propagates_other_4xx(monkeypatch):
+    import aiohttp
+
+    from policydesk.retrieval.vectors import DIM, CloudflareClient
+
+    client = object.__new__(CloudflareClient)
+
+    attempts = {"n": 0}
+
+    async def flaky_5xx(self, model, payload):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise aiohttp.ClientResponseError(request_info=None, history=(), status=503)
+        return {"result": {"data": [[0.0] * DIM]}}
+
+    monkeypatch.setattr(CloudflareClient, "run", flaky_5xx)
+    rows = await client.embed("model", ["a"], max_batch=4)
+    assert len(rows) == 1
+    assert attempts["n"] == 2, "a transient 5xx must be retried, not fatal"
+
+    async def permanent_403(self, model, payload):
+        raise aiohttp.ClientResponseError(request_info=None, history=(), status=403)
+
+    monkeypatch.setattr(CloudflareClient, "run", permanent_403)
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.embed("model", ["a"], max_batch=4)
+
+
+async def test_cloudflare_encoder_embeds_real_clause_text_at_1024_dims(db):
+    """
+    Acceptance: real clause text, through the live Workers AI endpoint, asserting
+    dimension and row count — not a mock of the response shape.
+    """
+    import asyncio
+    import os
+
+    import numpy as np
+
+    if not os.environ.get("CLOUDFLARE_ACCOUNT_ID") or not os.environ.get("CLOUDFLARE_AUTH_TOKEN"):
+        pytest.skip("CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_AUTH_TOKEN not set in this environment")
+
+    from policydesk.retrieval.vectors import DIM, CloudflareEncoder
+
+    rows = await db.fetch("SELECT verbatim FROM contract_clause WHERE verbatim IS NOT NULL LIMIT $1", [5])
+    texts = [row["verbatim"] for row in rows]
+    assert texts, "contract_clause has no verbatim text in this database"
+
+    vectors_out = await asyncio.to_thread(CloudflareEncoder().encode, texts)
+
+    assert vectors_out.shape == (len(texts), DIM)
+    assert np.isfinite(vectors_out).all()
+    assert np.allclose(np.linalg.norm(vectors_out, axis=1), 1, atol=1e-4)
+
+
 async def test_suitable_products_retrieves_only_sql_eligible_contracts():
     from unittest.mock import AsyncMock
 

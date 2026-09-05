@@ -7,9 +7,16 @@ measured on this corpus, the lexical channel returns 保險範圍 instead. The s
 scores 0.56 under bge-m3 against 0.46 for an unrelated clause, which is the whole reason
 this channel exists.
 
-**The model is local.** `bge-m3`, int8 ONNX, on disk, no key and no network. It costs
-about 18 ms for a handful of short queries on CPU, which is nothing beside the six
-seconds a turn already spends in the language model.
+**The model can be local, or not.** Three encoders share one shape (`encode(texts) ->
+NDArray`, dispatched through `manifest["encoder"]["backend"]`): `onnx` runs `bge-m3`
+int8 on disk, no key and no network, costing about 18 ms for a handful of short queries
+on CPU — nothing beside the six seconds a turn already spends in the language model, but
+on a small ARM core it is the slow path: enoract measured its int8 ONNX bge-m3 at ~9.4
+chunks/s on a 4-OCPU OCI Ampere box against Workers AI's ~121 chunks/s over the same
+network, because Cloudflare runs bge-m3 on dedicated hardware and the ARM core pays only
+the round trip. `llama-server` reaches an operator-run server on the LAN. `cf-workers-ai`
+reaches Cloudflare's hosted bge-m3, which is why a cloud host with no LAN llama-server
+and no local model directory still has a semantic channel.
 
 **The vectors are mmap'd, not loaded.** `np.lib.format.open_memmap(..., mode="r")` maps
 `vectors.npy` into the address space and lets the page cache own it, so N workers share
@@ -18,19 +25,25 @@ because numpy has no fp16 GEMM kernel — a fp16 matmul falls off BLAS onto an
 object-ufunc path around twenty times slower, and halving a 48 MB file is not worth that.
 
 Ported from enoract's `chat/retrieval/vector.py` and `shared/client/embedder.py`, cut to
-one corpus and one process.
+one corpus and one process. `CloudflareClient` below is a further, later port of
+enoract's `shared/client/cloudflare.py` — the raw HTTP layer `CloudflareEmbedder` in
+`embedder.py` wraps; this file keeps only what building and querying one matrix need,
+not that Protocol or its per-worker embedding cache.
 """
 
 import asyncio
 import os
+import time
+from collections import deque
 from functools import partial
 from hashlib import sha256
 from operator import itemgetter
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+import aiohttp
 import numpy as np
 from msgspec import json
 from tokenizers import Tokenizer
@@ -165,6 +178,222 @@ class ServerEmbedder:
         return np.vstack(batches)
 
 
+CF_MODEL = "@cf/baai/bge-m3"
+"""Unquantized bge-m3 on Workers AI's own hardware. Not the same weights as llama-server's
+Q5_K_M.gguf — a manifest built on one backend and queried on the other is a silent
+retrieval regression, which is why `EmbeddingRetriever` refuses the mix (see below)."""
+
+CF_MAX_BATCH = 32
+"""Sized so a CJK batch stays under Workers AI's 60000-token-per-request cap: 32 chunks
+at the chunker's ~1500-char max size is ~48000 tokens (CJK runs close to 1 token/char),
+clearing in one request. `max_batch=100` measured 4-7x higher neuron spend on CJK text,
+because it leans on the halve-and-retry safety net below for every batch instead of
+letting the common case clear in one request. Ported from enoract's
+`shared/client/cloudflare.py`, which carries the measurement — do not raise without it."""
+
+_CF_QUOTA_EXHAUSTED_CODE = 4006
+"""Cloudflare's error code for "used up your daily free allocation of N neurons". Only
+this 429 rotates accounts; a plain 429 (short-window rate limit) propagates so the
+caller's own backoff handles it instead of burning a fresh account's daily quota."""
+_CF_SECONDS_PER_DAY = 86400
+_CF_SOCK_READ_S = 8.0
+"""Per-socket read timeout, distinct from the request `total`. Workers AI occasionally
+accepts the connection then never sends a first byte; this fails that fast instead of
+blocking the full `total` on one wedged call."""
+_CF_TIMEOUT_RETRIES = 2
+_CF_BASE_URL = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
+
+
+class _CFAccount(NamedTuple):
+    """One Cloudflare credential pair and its own session (the token lives in headers)."""
+
+    account_id: str
+    session: aiohttp.ClientSession
+
+
+def _cf_next_utc_midnight(now: float) -> float:
+    """Epoch seconds of the next UTC midnight, when the daily neuron quota resets."""
+    return (int(now) // _CF_SECONDS_PER_DAY + 1) * _CF_SECONDS_PER_DAY
+
+
+def parse_cf_credentials(account_id: str | None = None, auth_token: str | None = None) -> list[tuple[str, str]]:
+    """
+    Resolve ``CLOUDFLARE_ACCOUNT_ID`` / ``CLOUDFLARE_AUTH_TOKEN`` into ``(id, token)`` pairs.
+
+    Both vars accept a single value or a comma-separated list of equal length, so a big
+    build can rotate past one account's daily free-neuron allocation. Empty when either
+    var is unset.
+    """
+    ids = [s.strip() for s in (account_id or os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")).split(",") if s.strip()]
+    tokens = [s.strip() for s in (auth_token or os.environ.get("CLOUDFLARE_AUTH_TOKEN", "")).split(",") if s.strip()]
+    if not ids or not tokens:
+        return []
+    if len(ids) != len(tokens):
+        raise ValueError(f"cloudflare creds: {len(ids)} account id(s) but {len(tokens)} auth token(s) — counts must match")
+    return list(zip(ids, tokens, strict=True))
+
+
+class CloudflareClient:
+    """
+    Raw Workers AI HTTP client over one or more accounts.
+
+    Ported from enoract's `shared/client/cloudflare.py`, production-proven there. Each
+    account gets its own aiohttp session (the auth token sits in the session header). On
+    a quota-exhausted 429 the active account is parked until the next UTC midnight and
+    the next live account takes over, transparent to `embed`.
+    """
+
+    __slots__ = ("_accounts", "_active", "_exhausted_until")
+
+    def __init__(self, *, account_id: str | None = None, auth_token: str | None = None, timeout_s: float = 30.0) -> None:
+        creds = parse_cf_credentials(account_id, auth_token)
+        if not creds:
+            raise ValueError("CloudflareClient: missing CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_AUTH_TOKEN env")
+        timeout = aiohttp.ClientTimeout(total=timeout_s, sock_read=_CF_SOCK_READ_S)
+        self._accounts = [
+            _CFAccount(account_id=aid, session=aiohttp.ClientSession(timeout=timeout, headers={"Authorization": f"Bearer {tok}"}))
+            for aid, tok in creds
+        ]
+        self._active = 0
+        # account index -> epoch seconds it becomes usable again (quota reset).
+        self._exhausted_until: dict[int, float] = {}
+
+    async def aclose(self) -> None:
+        for acct in self._accounts:
+            if not acct.session.closed:
+                await acct.session.close()
+
+    def _pick_live(self) -> int | None:
+        """Active account if usable, else the next non-exhausted one. None if all exhausted."""
+        now = time.time()
+        for offset in range(len(self._accounts)):
+            idx = (self._active + offset) % len(self._accounts)
+            until = self._exhausted_until.get(idx)
+            if until is None or now >= until:
+                self._exhausted_until.pop(idx, None)
+                self._active = idx
+                return idx
+        return None
+
+    async def run(self, model: str, payload: dict) -> dict:
+        """POST to `/ai/run/{model}` on a live account; rotate past quota-exhausted ones."""
+        while (idx := self._pick_live()) is not None:
+            acct = self._accounts[idx]
+            url = _CF_BASE_URL.format(account_id=acct.account_id, model=model)
+            async with acct.session.post(url, json=payload) as resp:
+                if resp.status == 200:
+                    return json.decode(await resp.read())
+                body = await resp.text()
+                if resp.status == 429 and self._is_quota_exhausted(body) and len(self._accounts) > 1:
+                    self._exhausted_until[idx] = _cf_next_utc_midnight(time.time())
+                    logger.warning("cloudflare_quota_exhausted", account=idx,
+                                   parked=len(self._exhausted_until), total=len(self._accounts))
+                    continue
+                logger.warning("cloudflare_api_error", model=model, status=resp.status, body=body[:300])
+                resp.raise_for_status()
+        raise RuntimeError(f"cloudflare: all {len(self._accounts)} account(s) quota-exhausted for today")
+
+    @staticmethod
+    def _is_quota_exhausted(body: str) -> bool:
+        """Return True when a 429 body carries Cloudflare's daily-allocation-used error code."""
+        try:
+            errors = json.decode(body.encode()).get("errors") or []
+        except Exception:
+            return False
+        return any(e.get("code") == _CF_QUOTA_EXHAUSTED_CODE for e in errors)
+
+    async def embed(self, model: str, texts: Sequence[str], *, max_batch: int = CF_MAX_BATCH) -> list[list[float]]:
+        """Auto-chunk to `max_batch` per call; concatenate raw vector rows. See `CF_MAX_BATCH`."""
+        rows: list[list[float]] = []
+        pending: deque[tuple[int, int]] = deque((s, min(s + max_batch, len(texts))) for s in range(0, len(texts), max_batch))
+        attempts: dict[tuple[int, int], int] = {}
+        while pending:
+            start, stop = pending.popleft()
+            batch = list(texts[start:stop])
+            span = (start, stop)
+
+            def _retry_transient(exc: BaseException, span: tuple[int, int] = span) -> bool:
+                """Re-queue the batch up to `_CF_TIMEOUT_RETRIES` times; False once the budget is spent."""
+                attempts[span] = attempts.get(span, 0) + 1
+                if attempts[span] > _CF_TIMEOUT_RETRIES:
+                    return False
+                logger.warning("cloudflare_embed_retry", span=span, error=type(exc).__name__, attempt=attempts[span])
+                pending.appendleft(span)
+                return True
+
+            try:
+                data = await self.run(model, {"text": batch})
+            except aiohttp.ClientResponseError as e:
+                if e.status == 400 and stop - start > 1:
+                    # A batch too large for this text can still fit in two. Split and
+                    # retry rather than propagating — the operator sized max_batch for
+                    # the common case, not the worst one.
+                    mid = (start + stop) // 2
+                    pending.appendleft((mid, stop))
+                    pending.appendleft((start, mid))
+                    continue
+                # A transient 5xx is retryable like a socket wedge (ClientResponseError
+                # is a ClientError subclass, so it must be handled HERE — the broad
+                # except below never sees it). Other 4xx (auth, bad request) is
+                # permanent: propagate.
+                if e.status >= 500 and _retry_transient(e):
+                    continue
+                raise
+            except (TimeoutError, aiohttp.ClientError) as e:
+                if _retry_transient(e):
+                    continue
+                raise
+            chunk_rows = (data.get("result") or {}).get("data") or []
+            if not chunk_rows:
+                raise RuntimeError(f"cloudflare embed empty response: {str(data)[:300]!r}")
+            rows.extend(chunk_rows)
+        return rows
+
+
+class CloudflareEncoder:
+    """
+    Workers AI bge-m3, over HTTP — the encoder a cloud host runs when there is no
+    llama-server on the LAN and no local ONNX export on disk.
+
+    `encode` blocks its caller for the length of the HTTP round trip. That is the same
+    contract `Embedder` and `ServerEmbedder` already make (both run synchronously off a
+    worker thread via `asyncio.to_thread`), so this opens and closes one event loop per
+    call rather than asking every caller to become async.
+    """
+
+    def __init__(self, model: str = CF_MODEL) -> None:
+        if not parse_cf_credentials():
+            raise ValueError("CloudflareEncoder: missing CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_AUTH_TOKEN env")
+        self.model = model
+
+    def encode(self, texts: Sequence[str], *, progress: int = 0) -> NDArray:
+        if not texts:
+            return np.zeros((0, DIM), dtype=np.float32)
+        return asyncio.run(self._encode(list(texts), progress))
+
+    async def _encode(self, texts: list[str], progress: int) -> NDArray:
+        client = CloudflareClient()
+        try:
+            rows: list[list[float]] = []
+            for start in range(0, len(texts), CF_MAX_BATCH):
+                if progress and start and not start % progress:
+                    logger.info("vectors_encoding", done=start, total=len(texts))
+                chunk = [t or " " for t in texts[start : start + CF_MAX_BATCH]]
+                rows.extend(await client.embed(self.model, chunk, max_batch=CF_MAX_BATCH))
+        finally:
+            await client.aclose()
+        matrix = np.asarray(rows, dtype=np.float32)
+        if matrix.shape != (len(texts), DIM) or not np.isfinite(matrix).all():
+            raise ValueError("cloudflare embedding response has invalid dimensions or non-finite values")
+        # Normalised explicitly rather than trusted from the API, matching
+        # `ServerEmbedder` — the index's own integrity check (`audit`) requires unit
+        # rows, and a provider's "dense" output is not contractually guaranteed to be one.
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        if (norms == 0).any():
+            raise ValueError("cloudflare embedding response contains a zero vector")
+        return matrix / norms
+
+
 def passages(text: str, tokenizer: Tokenizer, *, tokens: int = MAX_TOKENS, overlap: int = OVERLAP) -> list[tuple[int, int]]:
     """Return overlapping character spans covering the entire original text."""
     if not 0 <= overlap < tokens - 2:
@@ -257,7 +486,7 @@ async def audit(db: Database, *, path: Path = VECTOR_DIR) -> dict:
 
 async def build(
     db: Database, *, path: Path = VECTOR_DIR, model_dir: Path = MODEL_DIR,
-    server_url: str | None = None, tokens: int = MAX_TOKENS, overlap: int = OVERLAP,
+    server_url: str | None = None, cf_model: str | None = None, tokens: int = MAX_TOKENS, overlap: int = OVERLAP,
 ) -> int:
     """
     Embed every document and write the matrix.
@@ -294,9 +523,14 @@ async def build(
         if number % PROGRESS_EVERY == 0:
             logger.info("vectors_splitting", documents=number, total=len(source), passages=len(texts))
     url = server_url or os.environ.get("POLICYDESK_EMBED_URL")
+    model = cf_model or os.environ.get("POLICYDESK_CF_MODEL")
     if url:
         embedder = await asyncio.to_thread(ServerEmbedder, url)
         encoder = {"backend": "llama-server", "url": url, "model": embedder.model}
+    elif model or parse_cf_credentials():
+        model = model or CF_MODEL
+        embedder = await asyncio.to_thread(CloudflareEncoder, model)
+        encoder = {"backend": "cf-workers-ai", "model": model}
     else:
         if tokens > MAX_TOKENS:
             raise ValueError(f"ONNX encoder supports passages up to {MAX_TOKENS} tokens")
@@ -346,6 +580,15 @@ class EmbeddingRetriever:
             self._embedder = ServerEmbedder(os.environ.get("POLICYDESK_EMBED_URL") or encoder["url"])
             if self._embedder.model != encoder["model"]:
                 raise ValueError("query encoder differs from the indexed model; rebuild the vectors")
+        elif encoder["backend"] == "cf-workers-ai":
+            # Workers AI has no live "what model is this" endpoint the way llama-server's
+            # /v1/models is; the manifest's recorded model is the only source of truth,
+            # so an override that disagrees with it must fail here rather than at query
+            # time with a quietly wrong score.
+            model = os.environ.get("POLICYDESK_CF_MODEL") or encoder["model"]
+            if model != encoder["model"]:
+                raise ValueError("query encoder differs from the indexed model; rebuild the vectors")
+            self._embedder = CloudflareEncoder(model)
         else:
             self._embedder = Embedder(model_dir)
         # Row lookup by corpus, built once. A boolean mask per query would be a scan of
