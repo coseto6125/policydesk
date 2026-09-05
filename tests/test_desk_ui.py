@@ -305,7 +305,7 @@ def test_document_demo_click_uses_current_stage_and_only_sends_mode(mode, stage,
     node = shutil.which("node")
     assert node is not None, "UI renderer tests require Node.js on PATH"
     functions = []
-    for name in ("renderModalDocs", "updateDocumentDemoControls", "waiting", "connectCustomer"):
+    for name in ("renderModalDocs", "updateDocumentDemoControls", "waiting", "wsUrl", "connectCustomer"):
         start = PAGE.index(f"function {name}(")
         end = PAGE.index("\n}\n", start) + len("\n}\n")
         functions.append(PAGE[start:end])
@@ -400,3 +400,56 @@ def test_a_reply_with_another_one_coming_keeps_the_customer_waiting():
         "the stage read must precede the first answer"
     )
     assert "pending_reply=documents_follow," in handler
+
+
+@pytest.mark.parametrize(("protocol", "scheme"), [("https:", "wss"), ("http:", "ws")])
+def test_both_sockets_follow_the_page_scheme(protocol, scheme):
+    """
+    A `ws://` literal is a mixed-content socket on an https page, and the browser
+    refuses it silently. Behind the demo tunnel both panes stayed at 尚未連線 and the
+    composer kept 請先完成建檔, while http://localhost:8100 was fine — so the defect
+    lived only where the QR code sends people.
+
+    Run, not read. Asserting the source text says the literal is gone and nothing about
+    what the page builds at either address.
+    """
+    node = shutil.which("node")
+    assert node is not None, "UI renderer tests require Node.js on PATH"
+
+    functions = []
+    for name in ("wsUrl", "connectCustomer", "connectDesk"):
+        start = PAGE.index(f"function {name}(")
+        end = PAGE.index("\n}\n", start) + len("\n}\n")
+        functions.append(PAGE[start:end])
+
+    harness = r"""
+const fs = require('node:fs');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const opened = [];
+const location = {protocol: input.protocol, host: 'desk.example'};
+const DESK_TOKEN = 'tok en';
+let customerWs = null, deskWs = null, memberId = 7;
+class WebSocket {
+  constructor(url) {opened.push(url);}
+  set onopen(_) {}
+  set onmessage(_) {}
+  set onclose(_) {}
+  send() {}
+}
+const setLink = () => {}, waiting = () => {}, bubble = () => {};
+eval(input.functions.join('\n') + `
+connectCustomer('demo');
+connectDesk();
+`);
+process.stdout.write(JSON.stringify(opened));
+"""
+    payload = json.dumps({"functions": functions, "protocol": protocol})
+    done = subprocess.run(  # noqa: S603 (only local source and the two fixed protocols reach Node)
+        [node, "-e", harness], input=payload, capture_output=True, text=True, check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    customer, desk = json.loads(done.stdout)
+
+    assert customer == f"{scheme}://desk.example/ws/customer"
+    assert desk.startswith(f"{scheme}://desk.example/ws/desk?token=tok%20en&member=7")
+    assert "ws://${location.host}" not in PAGE, "no socket rebuilds the URL by hand"
