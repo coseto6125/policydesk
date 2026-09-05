@@ -599,7 +599,7 @@ async def test_customer_socket_upload_illegal_stage_reports_refusal_without_writ
         async def close(self):
             pass
 
-    request = SimpleNamespace(app=SimpleNamespace(ctx=SimpleNamespace(db=db, registry=Registry(), desk_sockets=set())))
+    request = SimpleNamespace(app=SimpleNamespace(ctx=SimpleNamespace(db=db, registry=Registry(), desk_sockets=set(), clause_grants={})))
     await server.customer_socket(request, Socket())
     assert any(frame["type"] == "confirmed" for frame in frames)
     assert before, "the upload must follow actual identity confirmation"

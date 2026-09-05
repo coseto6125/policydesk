@@ -66,7 +66,7 @@ def customer_handler(monkeypatch):
     monkeypatch.setattr(server.cmd, "snapshot", snapshot)
     answer = AsyncMock()
     monkeypatch.setattr(server, "_answer", answer)
-    request = SimpleNamespace(app=SimpleNamespace(ctx=SimpleNamespace(db=db, registry=Registry(), desk_sockets=set())))
+    request = SimpleNamespace(app=SimpleNamespace(ctx=SimpleNamespace(db=db, registry=Registry(), desk_sockets=set(), clause_grants={})))
     return server, request, members, answer
 
 
@@ -117,8 +117,9 @@ async def test_customer_socket_correct_identity_releases_profile_and_replays_que
     # with no documents to report, so nothing follows and the pane is free to reopen.
     assert replay.kwargs == {
         "case_id": 1, "text": "查我的保單", "confirmed": True, "floor": 0,
-        "identity_locked": False, "pending_reply": False,
+        "identity_locked": False, "pending_reply": False, "grant": replay.kwargs["grant"],
     }
+    assert replay.kwargs["grant"], "every turn carries the token its clause links use"
 
 
 @pytest.mark.parametrize("next_name", ["fixture-owner", "fixture-other"])
@@ -235,6 +236,7 @@ async def test_customer_socket_document_demo_uses_confirmed_case_and_guides_once
     assert answer.call_args.kwargs == {
         "case_id": 1, "text": "；".join((outcome.reason, *outcome.missing)) if mode != "complete" else "",
         "confirmed": True, "floor": 0, "document_event": True,
+        "grant": answer.call_args.kwargs["grant"],
     }
     notices = [frame for frame in socket.sent if frame["type"] == "notice"]
     assert len(notices) == (mode != "complete")
@@ -538,7 +540,7 @@ async def test_customer_socket_verified_queries_return_only_owners_records(owner
 
     provider = SimpleNamespace(complete=AsyncMock(side_effect=complete))
     request = SimpleNamespace(app=SimpleNamespace(ctx=SimpleNamespace(
-        db=db, registry=Registry(), desk_sockets=set(), provider=provider, clauses=None,
+        db=db, registry=Registry(), desk_sockets=set(), clause_grants={}, provider=provider, clauses=None,
     )))
     gather = executor._gather
 
@@ -1066,3 +1068,51 @@ async def test_a_case_push_refreshes_the_queue_beside_it():
     owner.received.clear()
     await _broadcast_queue(application, db, None)
     assert owner.received == [], "no member means no list, never an unscoped one"
+
+
+@pytest.mark.asyncio
+async def test_a_clause_grant_opens_only_what_this_conversation_was_shown():
+    """
+    A visitor asking about a public product holds no membership, so the member-scoped arm
+    of the clause query cannot speak for them: the reply printed 引用條款 2 條 and every
+    link answered 403 需指定保戶. The reply promised a page and the link refused it.
+
+    The grant is narrower than the member arm, not a way around it — it lists exactly what
+    this desk cited to this connection.
+    """
+    from unittest.mock import AsyncMock
+
+    from policydesk.web import server
+
+    grants = {"tok": {"prod-a|art.4"}}
+    request = SimpleNamespace(
+        args={"grant": "tok", "token": server.DESK_TOKEN},
+        app=SimpleNamespace(ctx=SimpleNamespace(clause_grants=grants, db=AsyncMock())),
+        path="/clause", ip="127.0.0.1",
+    )
+    request.app.ctx.db.fetch_one = AsyncMock(return_value=None)
+
+    # Shown: the query runs, with viewer 0 standing for "granted, not a member".
+    await server.clause_page(request, "prod-a", "art.4")
+    assert request.app.ctx.db.fetch_one.await_args.args[1][2] == 0
+
+    # Not shown: refused before any read, exactly as an unidentified viewer is.
+    refusal = await server.clause_page(request, "prod-a", "art.99")
+    assert refusal.status == 403
+    assert request.app.ctx.db.fetch_one.await_count == 1, "a clause never cited is not read"
+
+
+@pytest.mark.asyncio
+async def test_a_grant_from_another_conversation_opens_nothing():
+    """The token is the scope. One visitor's citations are not another's."""
+    from unittest.mock import AsyncMock
+
+    from policydesk.web import server
+
+    request = SimpleNamespace(
+        args={"grant": "someone-elses", "token": server.DESK_TOKEN},
+        app=SimpleNamespace(ctx=SimpleNamespace(clause_grants={"tok": {"prod-a|art.4"}}, db=AsyncMock())),
+        path="/clause", ip="127.0.0.1",
+    )
+    refusal = await server.clause_page(request, "prod-a", "art.4")
+    assert refusal.status == 403
