@@ -18,6 +18,7 @@ import base64
 import contextlib
 import os
 import re
+import secrets
 from datetime import UTC, date, datetime
 from html import escape
 from pathlib import Path
@@ -95,6 +96,17 @@ here so a figure quoted in the chat can be checked against the page it came from
 app = Sanic("policydesk")
 app.ctx.registry = Registry()
 app.ctx.desk_sockets = set()
+
+# What each open customer conversation has been shown, keyed by a token minted for that
+# connection. It is the authority for `/clause` when the viewer holds no membership: a
+# visitor asking about a public product has no member id and no case, so the member-scoped
+# arm of that query cannot answer for them, and the citation the desk just printed opened
+# a 403 — the reply promised a page and the link refused it.
+#
+# The set holds exactly the clauses this desk cited to this connection, so it is narrower
+# than the member arm rather than a way around it. It lives in memory and dies with the
+# socket, because that is the whole extent of what it authorises.
+app.ctx.clause_grants: dict[str, set[str]] = {}
 # The back office's seven tabs, read-only, under /api/console. Registered here rather
 # than imported at the top of `console` because that module reads DESK_TOKEN from this
 # one, and the read is deferred to request time for the same reason.
@@ -353,6 +365,10 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
     """
     db: Database = request.app.ctx.db
     registry: Registry = request.app.ctx.registry
+    # Unguessable, and scoped to this socket. The clause link carries it when there is no
+    # member to carry instead.
+    grant = secrets.token_urlsafe(16)
+    request.app.ctx.clause_grants[grant] = set()
     name: str | None = None
     previous_name: str = ""
     session = None
@@ -591,6 +607,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                             await _answer(
                                 request, ws, db, case_id=case_id, text="", confirmed=True,
                                 floor=floor, document_event=True,
+                                grant=grant,
                             )
                             continue
                         await ws.send(json.encode({
@@ -614,6 +631,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         request, ws, db, case_id=case_id, text=text,
                         confirmed=True, floor=floor, identity_locked=locked,
                         pending_reply=documents_follow,
+                        grant=grant,
                     )
                     # The scenario is only known after the answer, so a turn that already
                     # spoke about documents releases the pane with an empty notice rather
@@ -625,6 +643,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         await _answer(
                             request, ws, db, case_id=case_id, text="", confirmed=True,
                             floor=floor, document_event=True,
+                            grant=grant,
                         )
 
                 case "say" if case_id is not None:
@@ -634,6 +653,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     await _answer(
                         request, ws, db, case_id=case_id, text=text,
                         confirmed=confirmed, floor=floor, identity_locked=locked,
+                        grant=grant,
                     )
                     if not confirmed:
                         # The latest question, not the first. Keeping the first replayed
@@ -661,6 +681,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         request, ws, db, case_id=case_id,
                         text="；".join((outcome.reason, *outcome.missing)) if refusal else "",
                         confirmed=True, floor=floor, document_event=True,
+                        grant=grant,
                     )
 
                 case "upload" if case_id is not None and confirmed:
@@ -684,6 +705,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         text="；".join((outcome.reason, *outcome.missing)) if isinstance(outcome, cmd.Refusal) else "",
                         confirmed=True,
                         floor=floor, document_event=True,
+                        grant=grant,
                     )
 
                 case "verify" if case_id is not None and confirmed:
@@ -702,11 +724,13 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         await _answer(
                             request, ws, db, case_id=case_id, text="", confirmed=True,
                             floor=floor, document_event=True,
+                            grant=grant,
                         )
 
     except (ConnectionError, asyncio.CancelledError):
         logger.info("customer_socket_closed", name=name)
     finally:
+        request.app.ctx.clause_grants.pop(grant, None)
         if name and session is not None:
             registry.release(name, session)
 
@@ -761,7 +785,7 @@ async def _last_message(db: Database, case_id: int) -> int:
 async def _answer(
     request: Request, ws: Websocket, db: Database, *, case_id: int, text: str,
     confirmed: bool, floor: int = 0, identity_locked: bool = False,
-    document_event: bool = False, pending_reply: bool = False,
+    document_event: bool = False, pending_reply: bool = False, grant: str = "",
 ) -> Turn:
     """
     Run one turn and send it, recording both halves of the exchange.
@@ -828,8 +852,12 @@ async def _answer(
             "dates": [list(pair) for pair in turn.dates],
         }],
     )
+    # Recorded before the frame goes out, so the link in it already resolves.
+    if grant and (granted := request.app.ctx.clause_grants.get(grant)) is not None:
+        granted.update(citation_keys)
     await ws.send(json.encode({
         "type": "reply",
+        "grant": grant,
         "text": turn.reply,
         "scenario": turn.scenario,
         "params": turn.params,
@@ -975,17 +1003,25 @@ async def clause_page(request: Request, product_id: str, clause_id: str):
     """
     if refusal := _unauthorised(request, "contract", product_id=product_id):
         return refusal
-    try:
-        viewer = int(request.args.get("member", ""))
-    except (TypeError, ValueError):
-        return response.text("需指定保戶", status=403)
+    # A visitor asking about a public product has no membership, so the member arm below
+    # cannot speak for them. Their grant can: it lists what this desk cited to this
+    # connection and nothing else, which is narrower than any member's book.
+    granted = request.app.ctx.clause_grants.get(request.args.get("grant", ""), frozenset())
+    if f"{product_id}|{clause_id}" in granted:
+        viewer = 0
+    else:
+        try:
+            viewer = int(request.args.get("member", ""))
+        except (TypeError, ValueError):
+            return response.text("需指定保戶", status=403)
 
     row = await request.app.ctx.db.fetch_one(
         """SELECT c.heading, c.verbatim, c.page, c.kind, p.name AS product_name, p.doc_sha
            FROM contract_clause c JOIN product p USING (product_id)
            WHERE c.product_id = $1::text AND c.clause_id = $2::text
-             AND (EXISTS (SELECT 1 FROM policy po
-                          WHERE po.product_id = c.product_id AND po.member_id = $3::bigint)
+             AND ($3::bigint = 0
+                  OR EXISTS (SELECT 1 FROM policy po
+                             WHERE po.product_id = c.product_id AND po.member_id = $3::bigint)
                   OR EXISTS (
                       SELECT 1 FROM conversation_message cm JOIN "case" ca USING (case_id)
                       WHERE ca.member_id = $3::bigint AND cm.speaker = 'agent'

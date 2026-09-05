@@ -1470,6 +1470,10 @@ const STAGES = [
 const STAGE_NAMES = Object.fromEntries(STAGES.concat([["approved","已核准"],["rejected","已退件"]]));
 const DESK_TOKEN = "__DESK_TOKEN__";
 let caseId = null, customerWs = null, deskWs = null, pending = null, memberId = null, setupCard = null;
+// What the desk has shown this connection. A visitor asking about a public product
+// holds no membership, so the clause link carries this instead and the server checks
+// it against exactly the clauses it cited here.
+let clauseGrant = "";
 let lastStage = null, lastSnapshot = "";
 let documentDemoAvailable = false, documentDemoRetry = false, documentDemoBusy = false;
 
@@ -1902,7 +1906,7 @@ function renderCitations(cited) {
   box.innerHTML = `<button class="cites-toggle" aria-expanded="false">${icon("book")}引用條款 ${cited.length} 條${icon("chevron").replace("<svg", '<svg class="chev"')}</button>
     <div class="cites-list" hidden>` + cited.map((c, i) => `
     <a class="cite" target="_blank" style="--i:${i}"
-       href="/clause/${encodeURIComponent(c.product_id)}/${encodeURIComponent(c.clause_id)}?member=${memberId}&token=${encodeURIComponent(DESK_TOKEN)}"
+       href="/clause/${encodeURIComponent(c.product_id)}/${encodeURIComponent(c.clause_id)}?${memberId === null ? `grant=${encodeURIComponent(clauseGrant)}` : `member=${memberId}`}&token=${encodeURIComponent(DESK_TOKEN)}"
        title="${esc(c.product_name)} 第 ${c.page} 頁">
       <code>${esc(c.clause_id)}</code><span>${esc(c.heading)}</span>
     </a>`).join("") + `</div>`;
@@ -2113,6 +2117,7 @@ function connectCustomer(name) {
         // after the first let a question typed in that gap be answered ahead of the
         // guidance still on its way.
         if (!m.pending_reply) waiting(false);
+        if (m.grant) clauseGrant = m.grant;
         bubble("them", namedClauses(m.text, m.citations));
         renderChips(m.quick);
         if (m.scenario) {
