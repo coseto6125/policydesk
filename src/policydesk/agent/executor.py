@@ -22,8 +22,10 @@ which is what makes the trace view a record rather than a diagram.
 import asyncio
 import re
 import time
+from collections import defaultdict
 from datetime import UTC, date, datetime
 from importlib import import_module
+from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
@@ -767,7 +769,11 @@ async def run_turn(
     # states each row's field names once instead of once per row. Measured on a product
     # list here: 41% fewer characters for the same rows, on the prompt the customer is
     # waiting on.
-    visible_facts = {k: _short(v) for k, v in facts.items()}
+    visible_facts = _answer_context(facts)
+    coverage = visible_facts.get("evidence_coverage", {})
+    if coverage.get("context_omitted"):
+        turn.reply = EVIDENCE_LIMITED
+        return turn
     turn.clause_sources = _clause_sources(visible_facts)
     turn.clause_texts = _clause_subject(visible_facts)
     material = etoon.dumps(visible_facts)
@@ -824,6 +830,8 @@ async def run_turn(
         logger.warning("answer_empty", case_id=case_id, scenario=scenario.name)
         turn.reply = "本次查詢未能組出完整回覆，已保留紀錄並轉由專人與您聯繫。"
         return turn
+    if coverage.get("complete") is False:
+        turn.reply = f"{EVIDENCE_LIMITED}\n\n{turn.reply}"
     return turn
 
 
@@ -1074,19 +1082,78 @@ CHARS = 400
 """How much of a string reaches the model. A clause runs to 442,649 characters, so the
 whole tool result is trimmed rather than trusted."""
 
+MAX_EVIDENCE_ROWS = 40
+MAX_EVIDENCE_CHARS = 128_000
+"""Per-answer limits, independent of per-product retrieval depth.
+
+The character ceiling includes the entire serialized tool context, not just clause
+bodies. It reserves room for instructions, conversation and output; it is not a
+token count or a bound on those other prompt sections.
+"""
+
+EVIDENCE_LIMITED = (
+    "本次資料量超出單次查詢範圍，尚未完成全部條款核對。"
+    "以下資料不足以確認所有保單的完整適用情形；請縮小保障主題或分批查詢後再確認。"
+)
+
 LONGER: dict[str, int] = {"verbatim": tools.DOCUMENT_CHARS}
 """Keys whose text the reply reads out rather than reads around, with the room they need.
 
-`verbatim` is here because `required_documents` returns the enumeration itself — 一、二、
-三 — and the injection tells the model to list those lines. Clipped at 400 the cut lands
-mid-enumeration and removes items: 8 held clauses run past it, across 12 members, and one
-of them loses the substitute documents the same clause grants a claimant who cannot obtain
-a 重大傷病證明. The tool already slices at this width in SQL; without this the trim here
-put it back to 400 and made that slice dead code.
+`verbatim` carries conditions and exceptions that can fall outside a narrow match.
+Use the same budget as retrieval so an article kept whole there is not clipped here.
 """
 
 
-def _short(value: Any, limit: int = 12, chars: int = CHARS) -> Any:
+def _answer_context(facts: dict[str, Any]) -> dict[str, Any]:
+    """
+    Bound all tool evidence together, sharing capacity across products.
+
+    Preserve rank within each product. Remove the lowest-priority retained row until
+    the actual serialized context fits, including nested structure and coverage metadata.
+    If non-evidence material alone exceeds the limit, withhold the context entirely.
+    Coverage describes returned rows, not recall against every clause in the PDFs.
+    """
+    def collect(value: Any) -> list[dict[str, Any]]:
+        if isinstance(value, dict):
+            own = [value] if isinstance(value.get("product_id"), str) and isinstance(value.get("clause_id"), str) else []
+            return own + [row for child in value.values() for row in collect(child)]
+        if isinstance(value, (list, tuple)):
+            return [row for child in value for row in collect(child)]
+        return []
+
+    total = len(collect(facts))
+    shortened = _short(facts)
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    rows = collect(shortened)
+    for row in rows:
+        groups[row["product_id"]].append(row)
+    ranked = [row for batch in zip_longest(*groups.values()) for row in batch if row is not None]
+    selected = [id(row) for row in ranked[:MAX_EVIDENCE_ROWS]]
+    evidence_ids = {id(row) for row in rows}
+    omitted = object()
+
+    def retain(value: Any, allowed: set[int]) -> Any:
+        if id(value) in evidence_ids and id(value) not in allowed:
+            return omitted
+        if isinstance(value, dict):
+            return {key: kept for key, child in value.items() if (kept := retain(child, allowed)) is not omitted}
+        if isinstance(value, (list, tuple)):
+            return [kept for child in value if (kept := retain(child, allowed)) is not omitted]
+        return value
+
+    while True:
+        context = retain(shortened, set(selected))
+        shown = len(collect(context))
+        if total:
+            context["evidence_coverage"] = {"complete": shown == total, "omitted_rows": total - shown}
+        if len(etoon.dumps(context)) <= MAX_EVIDENCE_CHARS:
+            return context
+        if not selected:
+            return {"evidence_coverage": {"complete": False, "omitted_rows": total, "context_omitted": True}}
+        selected.pop()
+
+
+def _short(value: Any, limit: int = 40, chars: int = CHARS) -> Any:
     """
     Trim a tool result to what fits in a prompt, in types the encoder accepts.
 
@@ -1110,8 +1177,12 @@ def _short(value: Any, limit: int = 12, chars: int = CHARS) -> Any:
 
     """
     match value:
-        case list():
-            return [_short(v, limit, chars) for v in value[:limit]]
+        case list() | tuple():
+            # Apply the shared evidence budget in _answer_context, after gathering
+            # all products and tools. This pass only clips individual fields.
+            evidence = all(isinstance(row, dict) and "product_id" in row and "clause_id" in row for row in value)
+            rows = value if evidence else value[:limit]
+            return [_short(v, limit, chars) for v in rows]
         case dict():
             shortened = {k: _short(v, limit, LONGER.get(k, chars)) for k, v in value.items()}
             clipped = [k for k, v in value.items() if isinstance(v, str) and len(v) > LONGER.get(k, chars)]
