@@ -116,8 +116,9 @@ async def _open_db(application: Sanic, _loop) -> None:
     """Open the pool once, before the first request."""
     application.ctx.db = Database()
     # One seam, and which implementation sits behind it is a deployment choice: the
-    # HTTP API when a key is set, the locally signed-in codex CLI otherwise. Neither
-    # one answers when it cannot reach a model — a desk that invents an answer about
+    # OpenAI HTTP API when a key is set, the Anthropic subscription token when its
+    # credential file is readable, the locally signed-in codex CLI otherwise. None of
+    # them answers when it cannot reach a model — a desk that invents an answer about
     # someone's policy is worse than one that admits it is down.
     application.ctx.provider = build_provider()
     logger.info("provider_ready", provider=application.ctx.provider.name)

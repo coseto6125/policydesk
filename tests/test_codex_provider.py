@@ -140,15 +140,31 @@ def test_calls_are_shaped_like_the_responses_api_returns_them():
     assert calls[0]["name"] == "explain_cover"
 
 
-def test_build_provider_falls_back_to_the_cli_without_a_key(monkeypatch):
+def test_build_provider_falls_back_to_the_cli_with_no_credentials_at_all(monkeypatch, tmp_path):
+    """
+    The CLI is now the last fallback, not the first.
+
+    A machine with `codex` signed in and nothing else still drives the whole desk; a
+    machine that also holds a Claude Code subscription token reaches Anthropic first,
+    which is the path a container can take and this one cannot.
+    """
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("POLICYDESK_PROVIDER", raising=False)
+    monkeypatch.setenv("ANTHROPIC_OAUTH_CREDS_PATH", str(tmp_path / "absent.json"))
     assert build_provider().name == "codex-cli"
 
 
-def test_build_provider_prefers_the_api_when_a_key_is_set(monkeypatch):
+def test_build_provider_prefers_the_api_when_a_key_is_set(monkeypatch, tmp_path):
+    """
+    A key still beats the CLI. It no longer beats the Anthropic subscription token.
+
+    The desk runs on Claude, so a readable credential file is chosen ahead of a key;
+    this test is now about the two providers below that. `POLICYDESK_PROVIDER=openai`
+    is how an operator picks the key over an available subscription.
+    """
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.delenv("POLICYDESK_PROVIDER", raising=False)
+    monkeypatch.setenv("ANTHROPIC_OAUTH_CREDS_PATH", str(tmp_path / "absent.json"))
     assert build_provider().name == "openai"
 
 
