@@ -305,7 +305,7 @@ def test_document_demo_click_uses_current_stage_and_only_sends_mode(mode, stage,
     node = shutil.which("node")
     assert node is not None, "UI renderer tests require Node.js on PATH"
     functions = []
-    for name in ("renderModalDocs", "updateDocumentDemoControls", "waiting", "wsUrl", "connectCustomer"):
+    for name in ("renderModalDocs", "updateDocumentDemoControls", "waiting", "wsUrl", "namedClauses", "connectCustomer"):
         start = PAGE.index(f"function {name}(")
         end = PAGE.index("\n}\n", start) + len("\n}\n")
         functions.append(PAGE[start:end])
@@ -453,3 +453,38 @@ process.stdout.write(JSON.stringify(opened));
     assert customer == f"{scheme}://desk.example/ws/customer"
     assert desk.startswith(f"{scheme}://desk.example/ws/desk?token=tok%20en&member=7")
     assert "ws://${location.host}" not in PAGE, "no socket rebuilds the URL by hand"
+
+
+@pytest.mark.parametrize(("clause_id", "heading", "expected"), [
+    ("waiting", "等待期 30 日（載於「疾病」定義，非獨立條文）", "[等待期 30 日]"),
+    ("art.12", "疾病定義", "[art.12]"),
+    ("waiting", "", "[waiting]"),
+])
+def test_a_word_clause_id_reads_as_its_heading_in_the_bubble(clause_id, heading, expected):
+    """
+    `[art.12]` reads as a reference. `[waiting]` reads as a token the page failed to
+    render, and it reached a customer that way. The citation list already carries a
+    heading for every id; this puts it where the sentence is.
+    """
+    node = shutil.which("node")
+    assert node is not None, "UI renderer tests require Node.js on PATH"
+
+    start = PAGE.index("function namedClauses(")
+    end = PAGE.index("\n}\n", start) + len("\n}\n")
+
+    harness = r"""
+const fs = require('node:fs');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+eval(input.source);
+process.stdout.write(namedClauses(input.text, input.cited));
+"""
+    payload = json.dumps({
+        "source": PAGE[start:end],
+        "text": f"依 [{clause_id}]，疾病的等待期自契約生效日起算。",
+        "cited": [{"clause_id": clause_id, "heading": heading}],
+    })
+    done = subprocess.run(  # noqa: S603 (only local source and fixed clause fixtures reach Node)
+        [node, "-e", harness], input=payload, capture_output=True, text=True, check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == f"依 {expected}，疾病的等待期自契約生效日起算。"
