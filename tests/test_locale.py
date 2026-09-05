@@ -84,7 +84,8 @@ async def test_a_chip_without_a_row_keeps_its_english_then_its_own_text(db):
 
 def test_the_calculator_is_a_scenario_choice_and_not_a_desk_fixture():
     """1+1=2 went out to a customer because every answer call carried the calculator."""
-    assert "if scenario.calculator else None" in inspect.getsource(executor)
+    assert executor._answer_schema(())["properties"]["calculations"]["maxItems"] == 0
+    assert "maxItems" not in executor._answer_schema((), calculator=True)["properties"]["calculations"]
     from policydesk.agent.scenario import CATALOGUE
 
     assert not [s.name for s in CATALOGUE if s.calculator], "no scenario asks the model to compute today"

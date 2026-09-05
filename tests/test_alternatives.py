@@ -87,15 +87,36 @@ def test_an_empty_openings_list_is_not_filled_in_by_the_model():
     assert "不要自己想辦法" in RECOMMEND.injection
 
 
-def test_tool_results_reach_the_model_as_toon():
-    """
-    Tool results are tabular, so TOON states each row's field names once, not per row.
+async def test_tool_results_reach_model_as_toon_and_only_visible_sources_are_selectable(monkeypatch):
+    from unittest.mock import AsyncMock
 
-    Measured on a product list: 41% fewer characters than JSON for the same rows, on the
-    prompt the customer is waiting on.
-    """
-    assert "etoon.dumps({k: _short(v) for k, v in facts.items()})" in EXECUTOR
-    assert "json.encode({k: _short(v)" not in EXECUTOR
+    import etoon
+
+    from policydesk.agent import executor
+    from policydesk.agent.scenario import RECOMMEND
+    from policydesk.llm.provider import Completion
+
+    facts = {"clauses": [{"product_id": f"p{number}", "clause_id": "art.6", "verbatim": "條款原文"}
+                         for number in range(15)], "_allowed_clauses": frozenset({"art.6"})}
+    monkeypatch.setattr(executor, "_route", AsyncMock(return_value=(RECOMMEND, {})))
+    monkeypatch.setattr(executor, "_gather", AsyncMock(return_value=facts))
+    monkeypatch.setattr(executor.memory, "recent", AsyncMock(return_value=[]))
+    monkeypatch.setattr(executor.statute, "unresolved", AsyncMock(return_value=[]))
+
+    class ReadsMaterial:
+        name = "stub"
+
+        async def complete(self, **kwargs):
+            material = kwargs["user_input"].split("# Tool results\n", 1)[1]
+            assert material == etoon.dumps({"clauses": facts["clauses"][:12]})
+            assert "p14|art.6" not in kwargs["schema"]["properties"]["citations"]["items"]["enum"]
+            return Completion(text='{"reply":"依條款說明。","citations":["p0|art.6"],"calculations":[]}', provider="stub")
+
+    db = AsyncMock()
+    db.fetch_val.return_value = "inquiry"
+    turn = await executor.run_turn(ReadsMaterial(), db, case_id=1, member_id=1, text="比較條款", locale="zh-TW")
+    assert turn.cited_sources == (("p0", "art.6"),)
+    assert turn.faults == ()
 
 
 def test_toon_encodes_the_shapes_the_tools_return():
@@ -144,7 +165,7 @@ def test_short_still_clips_long_text_inside_rows():
     """
     from policydesk.agent.executor import CHARS, LONGER, _short
 
-    quoted = _short([{"verbatim": "條" * 2000}])[0]
+    quoted = _short([{"verbatim": "條" * (LONGER["verbatim"] + 1)}])[0]
     assert len(quoted["verbatim"]) == LONGER["verbatim"]
 
     other = _short([{"note": "條" * 2000}])[0]

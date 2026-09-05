@@ -415,6 +415,15 @@ async def test_the_transcript_resolves_a_stored_citation_against_the_book():
     assert body["messages"][0]["citations"] == []
 
 
+async def test_transcript_qualified_citation_keeps_its_product():
+    db = _transcript_db()
+    db.tables["conversation_message"][1]["citations"] = ["P1|art.3"]
+    db.tables["FROM contract_clause"].append({"product_id": "P2", "clause_id": "art.3", "heading": "另一契約",
+                                     "page": 9, "product_name": "另一商品"})
+    body = _decode(await mod.transcript(_Request({"token": "x", "member": "7"}, db=db)))
+    assert [hit["product_id"] for hit in body["messages"][1]["citations"]] == ["P1"]
+
+
 async def test_the_transcript_names_the_scenario_and_what_it_read_per_turn():
     """The trace panel speaks the scenario's own name and lists what it queried."""
     body = _decode(await mod.transcript(_Request({"token": "x", "member": "7"}, db=_transcript_db())))
