@@ -871,3 +871,34 @@ def test_a_confirmed_turn_still_gets_every_tool_that_does_resolve():
     from policydesk.agent.scenarios import payment
 
     assert tools.permitted(payment.PAYMENT.tools, owner=payment, confirmed=True) == frozenset(payment.PAYMENT.tools)
+
+
+async def test_a_desk_pane_receives_only_its_own_members_snapshots():
+    """
+    A case snapshot reaches the pane scoped to that member and no other.
+
+    `desk_socket` read `?member=` at connect and then stored the bare socket, so
+    `_broadcast_desk` sent every snapshot to every pane. A snapshot carries
+    `national_id`, `display_name`, `occupation` and the member's whole policy book,
+    and the browser renders it with no check of its own — two visitors with the demo
+    open at once was enough for one confirming their identity to push their record
+    into the other's pane. The `open` branch in the same handler already compared
+    `member_id` against the viewer; this exit did not.
+    """
+    from types import SimpleNamespace
+
+    from policydesk.web.server import _broadcast_desk
+
+    class Pane:
+        def __init__(self) -> None:
+            self.received: list[str] = []
+
+        async def send(self, body: str) -> None:
+            self.received.append(body)
+
+    owner, stranger = Pane(), Pane()
+    application = SimpleNamespace(ctx=SimpleNamespace(desk_sockets={(owner, 101), (stranger, 202)}))
+    await _broadcast_desk(application, {"type": "case", "member_id": 101, "national_id": "A123456789"})
+
+    assert len(owner.received) == 1
+    assert stranger.received == [], "a snapshot reached a pane scoped to a different member"

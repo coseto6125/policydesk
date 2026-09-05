@@ -371,8 +371,7 @@ async def test_find_clause_semantic_tail_reaches_tool_output():
             return [Hit(corpus=CLAUSE, scope_id="p", doc_id="art.1", score=1, start=start, end=len(full_text))]
 
     result = await find_clause(db, ["p"], "尾端條件", index=TailRetriever())
-    assert result[0]["verbatim"] == "尾端給付條件。"
-    assert result[0]["excerpt"] is True
+    assert result[0]["verbatim"] == "…尾端給付條件。"
 
 
 async def test_find_clause_short_article_preserves_proviso_outside_match():
@@ -417,7 +416,7 @@ async def test_find_clause_bounded_article_preserves_tail_exception(size):
 
     result = _short(await find_clause(db, ["p"], "除外責任", index=NarrowRetriever()))
     assert result[0]["verbatim"] == body
-    assert not result[0].get("excerpt", False)
+    assert not result[0]["verbatim"].endswith("…"), "a whole article carries no cut mark"
 
 
 def test_short_long_clause_marks_text_truncation():
@@ -425,7 +424,7 @@ def test_short_long_clause_marks_text_truncation():
     from policydesk.agent.tools import DOCUMENT_CHARS
 
     result = _short({"verbatim": "條件" * DOCUMENT_CHARS, "heading": "保障範圍"})
-    assert result["excerpt"] is True
+    assert result["verbatim"].endswith("…"), "a quote cut here carries the same mark the retrieval path uses"
     assert result["truncated_fields"] == ["verbatim"]
     assert len(result["verbatim"]) == DOCUMENT_CHARS
 
@@ -735,5 +734,4 @@ async def test_suitable_products_retrieves_only_sql_eligible_contracts():
     assert rows[0]["selection_basis"] == "eligibility and contract retrieval"
     assert {row["clause_id"] for row in rows[0]["contract_evidence"]} == {"art.9", "waiting"}
     matched = next(row for row in rows[0]["contract_evidence"] if row["clause_id"] == "art.9")
-    assert matched["verbatim"] == "契約原文"
-    assert matched["excerpt"] is True
+    assert matched["verbatim"] == "…契約原文"

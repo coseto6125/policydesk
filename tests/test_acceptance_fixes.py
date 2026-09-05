@@ -6,6 +6,7 @@ reachable from the happy path — which is why they only appeared once someone d
 system in the wrong order and with the wrong values.
 """
 
+from pathlib import Path
 import pytest
 from msgspec import DecodeError, json
 
@@ -951,3 +952,44 @@ def test_a_reference_is_resolved_inside_its_own_contract():
 
     rows = [{"product_id": "p1", "clause_id": "art.4", "verbatim": "因第三條約定而住院。"}]
     assert _referenced(rows) == [("p1", "art.3")]
+
+
+def test_promises_after_a_denial_still_count_as_promises():
+    """
+    A denial followed by a promise is still a promise.
+
+    `_promises` read only the first match, so 我不保證會核准。不過這件一定會賠。 passed
+    the check that exists to stop that exact sentence: the first match sat behind 不,
+    the scan returned empty, and the promise after it reached the customer. Each match
+    is judged on its own preceding clause.
+    """
+    from policydesk.agent import executor
+
+    assert executor._promises("我不保證會核准。不過這件一定會賠。") == "一定會賠"
+    assert executor._promises("這件一定會賠。") == "一定會賠"
+    assert executor._promises("我不保證會核准。") == ""
+    assert executor._promises("本公司不能保證給付。您這件應該會過。") == ""
+    assert executor._promises("不能據此判定您的外送工作一定會加費、退費或影響理賠。") == ""
+
+
+def test_the_router_dispatches_only_what_the_stage_offered():
+    """
+    A scenario the router was never shown must not be reachable by naming it.
+
+    The tool list came from `reachable(stage)` but the reply resolved against
+    `BY_NAME`, the whole catalogue. The two differed at every stage — verify_identity
+    at all of them, issue_documents at inquiry and issued — so a name the router never
+    saw still dispatched. The Anthropic and OpenAI paths constrain the name to a
+    declared tool, but the codex path builds calls from free text, and a guard that
+    holds for only some providers is not a guard.
+    """
+    from policydesk.agent.executor import reachable
+
+    source = Path("src/policydesk/agent/executor.py").read_text()
+    route = source[source.index("async def _route("):source.index("async def run_turn(")]
+    assert "offered = {s.name: s for s in reachable(stage)}" in route
+    assert "offered.get(call.get(" in route
+    assert "BY_NAME.get(call" not in route, "the catalogue is wider than what the stage offered"
+
+    for stage in ("inquiry", "proposed", "issued"):
+        assert {s.name for s in reachable(stage)}, f"{stage} offers nothing"
