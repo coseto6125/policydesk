@@ -1,5 +1,6 @@
 """Shared database lifecycle for integration tests."""
 
+import os
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
@@ -56,6 +57,12 @@ async def connected_database() -> AsyncIterator[Database]:
         except Exception:
             connected = False
         if not connected:
+            # Skipping only where the absence is declared. A developer whose database
+            # is down wants to be told, not handed a green run with half the suite
+            # quietly missing — that is the failure the message below exists for. CI
+            # runs offline on purpose and sets the variable to say so.
+            if os.environ.get("POLICYDESK_TEST_NO_DB"):
+                pytest.skip("POLICYDESK_TEST_NO_DB is set; this test needs a database")
             pytest.fail(
                 "policydesk-pg is not reachable. Check DATABASE_URL and start the existing service with "
                 "`podman start policydesk-pg` or `systemctl --user start policydesk-pg`.",

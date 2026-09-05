@@ -41,6 +41,9 @@ async def test_mock_database_transaction_shares_queries_and_propagates_errors(bo
 
 
 async def test_connected_database_connection_failure_fails_and_closes(monkeypatch):
+    # The fail branch is the subject, so this test says which branch it is in rather
+    # than reading whatever the runner set. CI declares no database and gets a skip.
+    monkeypatch.delenv("POLICYDESK_TEST_NO_DB", raising=False)
     pool = AsyncMock()
     pool.fetch_val.side_effect = ConnectionError("postgres://private-user:private-secret@unit.invalid/database")
     monkeypatch.setattr(conftest, "Database", Mock(return_value=pool))
@@ -60,6 +63,7 @@ async def test_connected_database_connection_failure_fails_and_closes(monkeypatc
 
 
 async def test_connected_database_constructor_failure_fails_without_dsn(monkeypatch):
+    monkeypatch.delenv("POLICYDESK_TEST_NO_DB", raising=False)
     monkeypatch.setattr(conftest, "Database", Mock(side_effect=ValueError("private-secret")))
     with pytest.raises((pytest.fail.Exception, pytest.skip.Exception)) as caught:
         async with conftest.connected_database():
@@ -217,3 +221,23 @@ def test_database_retry_hook_preserves_unrelated_details_lifecycle_and_imports()
             assert observer.call_args.args[0] is unrelated
     finally:
         set_on_retry_hooks(original_hooks)
+
+
+async def test_a_declared_absence_skips_where_a_broken_database_fails(monkeypatch):
+    """
+    Two ways to have no database, and they must not read alike.
+
+    A developer whose database is down needs the message telling them to start it. CI
+    runs without one on purpose and needs the suite to go on. A green run with half the
+    suite quietly missing is what the fail branch exists to prevent, so the skip branch
+    is taken only where the absence is declared.
+    """
+    monkeypatch.setenv("POLICYDESK_TEST_NO_DB", "1")
+    monkeypatch.setattr(conftest, "Database", Mock(side_effect=ValueError("private-secret")))
+
+    with pytest.raises(pytest.skip.Exception) as caught:
+        async with conftest.connected_database():
+            pytest.fail("a pool was yielded with no database")
+
+    assert "POLICYDESK_TEST_NO_DB" in str(caught.value)
+    assert "private-secret" not in "".join(format_exception(caught.value))

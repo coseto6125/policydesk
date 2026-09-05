@@ -20,9 +20,16 @@ from policydesk.agent.statute import Article, _cn_to_int, _doc_id, parse
 
 @pytest.fixture(scope="module")
 async def loaded(db):
-    """Ingest the statute corpus once for the module."""
+    """
+    Hand back a database that already holds the statute corpus.
+
+    Ingesting it here fetched 全國法規資料庫 over the network, so a suite meant to run
+    offline reached out on every fresh database, and a run with no network reported the
+    law as unresolvable rather than as absent. The corpus is loaded by
+    `statute.ingest`, which is a deliberate step, not a test fixture's side effect.
+    """
     if not await db.fetch_val("SELECT count(*) FROM statute_article WHERE statute_id = 'insurance_act'"):
-        await statute.ingest(db, ["insurance_act"])
+        pytest.skip("statute corpus not loaded; run `statute.ingest` to fetch it")
     return db
 
 
