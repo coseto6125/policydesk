@@ -114,11 +114,8 @@ def public(fn: Callable[..., Any]) -> Callable[..., Any]:
     Returns:
         The same function, flagged.
 
-    The counterpart to `requires_identity`, and it exists so that no flag at all becomes a
-    third state the desk can notice. Without it, an undecorated tool means both 「someone
-    decided this is public」 and 「nobody looked」, and `tests/test_identity_inventory.py`
-    cannot tell a decision from an omission. The runtime gate is unaffected: it already
-    reads `requires_identity`, which this sets to False explicitly rather than by absence.
+    Explicit False permits public access. Missing or invalid declarations remain
+    unreviewed and cannot run, even after the customer confirms their identity.
 
     """
     fn.requires_identity = False
@@ -135,20 +132,16 @@ def reads_identity(tool_names: Iterable[str], *, owner: Any = None) -> bool:
             the scenario has one. None resolves every name against this module.
 
     Returns:
-        True when at least one is marked, and True for a name neither place defines.
+        False only when every tool explicitly declares public access.
 
-    The unknown name is the important half. A tool written in `agent/scenarios/` does
-    not exist in this module's globals, and reading that absence as 「不需核對」 would
-    let a scenario read member data before the customer has proved who they are —
-    silently, with no line of code saying so. Unknown therefore means gated, so the
-    mistake that gets made is the one that asks for an ID it did not need.
+    True is identity-required, False is public, and a missing or invalid declaration
+    is unreviewed. Both private and unreviewed tools make the scenario sensitive;
+    `permitted` additionally excludes unreviewed tools even in a confirmed session.
 
     """
     catalogue: dict[str, Any] = dict(getattr(owner, "TOOLS", {}))
     return any(
-        getattr(known, "requires_identity", False)
-        if (known := catalogue.get(name, globals().get(name))) is not None
-        else True
+        getattr(catalogue.get(name, globals().get(name)), "requires_identity", None) is not False
         for name in tool_names
     )
 
@@ -163,7 +156,7 @@ def permitted(tool_names: Iterable[str], *, owner: Any = None, confirmed: bool) 
         confirmed: Whether this session has passed 資料核對.
 
     Returns:
-        The names that may run. Confirmed, that is all of them.
+        Explicitly public tools, plus identity-required tools in a confirmed session.
 
     Not the same question as `reads_identity`, and the difference is the point. That one
     asks whether a scenario touches member data at all, and answers for the scenario as a
@@ -172,20 +165,16 @@ def permitted(tool_names: Iterable[str], *, owner: Any = None, confirmed: bool) 
     the request for an ID attached to it rather than standing in place of it. Refusing the
     public half too is what makes a desk feel like it is stalling.
 
-    A name that resolves to nothing is excluded, the same way `reads_identity` counts it
-    as gated: an unknown tool is one nobody has checked.
+    Unresolved names and absent or invalid declarations are excluded in both sessions.
+    Confirmation proves the customer's identity, not that someone reviewed a tool.
 
     """
     catalogue: dict[str, Any] = dict(getattr(owner, "TOOLS", {}))
-    # Resolved on both paths. Returning the names unread when `confirmed` was true left
-    # the rule above true only for an unverified customer: `permitted(("no_such_tool",),
-    # confirmed=True)` handed back the name it had not found, which is the opposite of
-    # excluding what nobody has checked.
     return frozenset(
         name
         for name in tool_names
-        if (fn := catalogue.get(name, globals().get(name))) is not None
-        and (confirmed or not getattr(fn, "requires_identity", False))
+        if (declaration := getattr(catalogue.get(name, globals().get(name)), "requires_identity", None)) is False
+        or (confirmed and declaration is True)
     )
 
 
@@ -596,6 +585,7 @@ FROM sale_catalog ce JOIN product p USING (product_id)
 WHERE ce.on_sale AND ($1::text = '' OR p.line = $1::text)"""
 
 
+@public
 async def alternatives(
     db: Database, *, insurance_age: int, occupation_class: int, budget: int, line: str, limit: int = 3
 ) -> dict[str, Any]:

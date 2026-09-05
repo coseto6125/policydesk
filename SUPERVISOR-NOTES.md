@@ -1,5 +1,49 @@
 # Supervisor notes
 
+## Security findings 04 and 06 — 2026-09-06, 00:24
+
+04 is fixed in the runtime dispatch gate, not only in inventory tests.
+An explicit False declaration is public; explicit True requires identity confirmation.
+Missing or invalid declarations are unreviewed and excluded even after confirmation.
+Both shared-module and scenario-owned tools follow this rule, including name overrides.
+`alternatives` now explicitly declares public catalogue access. No tool schema changed.
+The imported signing helper and the private clause helper were not promoted to public tools.
+The new gather regression first proved an unmarked member reader actually executed in
+a confirmed session, then passed after the fix. Gate matrices cover absent declarations,
+None, zero, one, string flags, public access and confirmed private access.
+
+06 is assessed but not fixed. It needs deterministic socket/core checks, not LLM recheck.
+Existing guards cover confirmed session, session case ID, document ownership, stage,
+filename length and a single transaction with case/document locks.
+Actual handler probes show string IDs and list filenames raise uncaught exceptions;
+bool and fractional IDs become integer 1; an oversized integer reaches the core;
+client-supplied old document SHA is ignored. The framework frame limit is 1048576 bytes.
+The upload command reads the current SHA itself, so its signature comparison does not
+prove that the customer saw that version. A mock-DB probe of the actual signature writer
+requests four grant inserts across two uploads while nine other documents remain pending.
+Neither partial upload requests an audit insert. This is not a live DB row-count claim.
+
+Recommended order: validate upload message types/ranges; bind the client's viewed SHA
+under the existing lock; define repeat-upload behavior and audit each partial success.
+Formal intake is a separate scope: the UI sends only a filename, the core records both
+roles automatically, and issued SHA values are demo identifiers rather than content digests.
+Before real intake, isolate that mock signing action and establish authenticated actors,
+role-specific consent, persistent rate limits and actual file/storage/signature verification.
+OCI edge controls and browser network behavior were not tested. No real file bytes are
+accepted today, so a suspicious filename alone is not evidence of filesystem traversal.
+FU-2026-09-06-ced541697419 remains open pending the demo-versus-real-intake scope decision.
+
+Actual probe scripts, outputs and test commands:
+`data/evaluations/security-04-06-20260906.md` (local audit artifact).
+Corrected regression baseline: 13 failed, 81 passed, zero skips, in 0.52 seconds.
+Final command: `.venv/bin/python -m pytest tests/test_identity_inventory.py tests/test_identity_gate.py tests/test_document_flow.py tests/test_acceptance_fixes.py -q -ra --tb=short`.
+Result: 274 passed, 0 skipped, 0 deselected, in 10.56 seconds; Ruff passed.
+This includes existing DB upload ownership, illegal-stage and rollback tests; it does
+not turn the uncovered 06 probe findings into passing coverage.
+The service was active, TCP 5434 connected and SELECT 1 succeeded before DB tests.
+After cleanup: policy=288, clause=11775, contract_clause=10512, doc-prefixed fixture members=0.
+No full suite or corpus-loader tests ran. User fixes 02/05b and other workers' diffs were not edited.
+
 ## Rejected names and duplicate documents — 2026-09-06, 00:06
 
 The second pass separates unresolved labels from real same-name documents.
