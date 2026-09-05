@@ -23,20 +23,13 @@ from policydesk.agent.scenarios.reinstate import (
     reinstatement_clauses,
     statutory_floor,
 )
-from policydesk.core.db import Database
 
 
 @pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    if not await pool.fetch_val("SELECT count(*) FROM statute_article"):
-        await statute.ingest(pool)
-    yield pool
-    await pool.close()
+async def db(db):
+    if not await db.fetch_val("SELECT count(*) FROM statute_article"):
+        await statute.ingest(db)
+    return db
 
 
 async def test_lapsed_policies_returns_empty_for_a_member_with_none(db):

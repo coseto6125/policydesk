@@ -54,13 +54,10 @@ async def test_build_catalog_health_sum_insured_does_not_invent_daily_benefit():
     assert entry[9] == 1000
 
 
-async def test_build_catalog_declared_source_is_not_overwritten_by_demo():
+async def test_build_catalog_declared_source_is_not_overwritten_by_demo(db):
     from decimal import Decimal
     from uuid import uuid4
 
-    from policydesk.core.db import Database
-
-    db = Database()
     product_id = f"catalog-source-test-{uuid4().hex}"
     try:
         await db.execute(
@@ -85,17 +82,13 @@ async def test_build_catalog_declared_source_is_not_overwritten_by_demo():
         assert await db.fetch_one("SELECT * FROM catalog_entry WHERE product_id=$1::text", [product_id]) == before
     finally:
         await db.execute("DELETE FROM product WHERE product_id=$1::text", [product_id])
-        await db.close()
 
 
-async def test_source_views_brochure_and_unknown_never_become_contract_evidence():
+async def test_source_views_brochure_and_unknown_never_become_contract_evidence(db):
     from decimal import Decimal
     from uuid import uuid4
 
     from policydesk.agent.tools import _clauses_by_id, suitable_products
-    from policydesk.core.db import Database
-
-    db = Database()
     prefix = f"source-test-{uuid4().hex}"
     ids = [f"{prefix}-{kind}" for kind in ("contract", "brochure", "unknown")]
     try:
@@ -126,7 +119,6 @@ async def test_source_views_brochure_and_unknown_never_become_contract_evidence(
         assert await db.fetch_val("SELECT count(*) FROM clause WHERE product_id=ANY($1::text[])", [ids]) == 3
     finally:
         await db.execute("DELETE FROM product WHERE product_id=ANY($1::text[])", [ids])
-        await db.close()
 
 
 def test_connect_legacy_corpus_adds_unknown_source_kind_without_losing_product(tmp_path):
@@ -204,7 +196,7 @@ def test_every_upsert_states_which_of_the_three_it_is():
     )
 
 
-async def test_a_clause_the_parser_stopped_emitting_is_withdrawn(tmp_path):
+async def test_a_clause_the_parser_stopped_emitting_is_withdrawn(tmp_path, db):
     """
     An upsert cannot retract, and the citation check validates against this table.
 
@@ -222,14 +214,7 @@ async def test_a_clause_the_parser_stopped_emitting_is_withdrawn(tmp_path):
     """
     import sqlite3
 
-    from policydesk.core.db import Database
     from policydesk.ingest.to_postgres import copy_corpus
-
-    db = Database()
-    try:
-        await db.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
 
     product_id = await db.fetch_val("SELECT product_id FROM clause GROUP BY product_id ORDER BY count(*) DESC LIMIT 1")
     if product_id is None:

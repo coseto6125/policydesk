@@ -211,18 +211,6 @@ def test_surgery_multipliers_are_reachable_from_a_scenario():
 
 
 @pytest.fixture(scope="module")
-async def db():
-    from policydesk.core.db import Database
-
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    return pool
-
-
-@pytest.fixture(scope="module")
 async def live_case(db):
     row = await db.fetch_one('SELECT case_id, member_id FROM "case" ORDER BY case_id DESC LIMIT 1')
     if row is None:

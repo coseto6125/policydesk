@@ -26,18 +26,6 @@ from policydesk.agent.scenarios.review import (
     gather,
     held_categories,
 )
-from policydesk.core.db import Database
-
-
-@pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    yield pool
-    await pool.close()
 
 
 def _policy(**over: object) -> dict[str, object]:

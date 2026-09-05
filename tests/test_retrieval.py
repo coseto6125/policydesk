@@ -19,7 +19,7 @@ STATUTE = "statute"
 
 
 @pytest.fixture(scope="module")
-def index():
+async def index(db):
     """
     Open the real index, once for the module.
 
@@ -31,14 +31,11 @@ def index():
     a filler word deciding the order, and a question of nothing but filler answering with
     silence — are both invisible to a string search.
     """
-    import asyncio
-
-    from policydesk.core.db import Database
     from policydesk.retrieval.index import INDEX_DIR, open_index
 
     if not (INDEX_DIR / "meta.json").is_file():
         pytest.skip("no index built; run policydesk-index")
-    opened = asyncio.run(open_index(Database()))
+    opened = await open_index(db)
     if opened is None:
         pytest.skip("the index would not open")
     return opened
@@ -293,16 +290,13 @@ def test_a_confident_channel_is_not_diluted_by_a_confident_mistake():
     assert [h.doc_id for h in weighted] == ["art.18", "art.6"], "the halved channel still ranks, it does not vanish"
 
 
-def test_the_weighted_hybrid_reaches_what_only_one_channel_can(index):
+async def test_the_weighted_hybrid_reaches_what_only_one_channel_can(index, db):
     # The query this whole second channel exists for. 換工作 and 職業變更 share no
     # character, so the lexical side has nothing to rank on.
-    import asyncio
-
-    from policydesk.core.db import Database
     from policydesk.retrieval.base import CLAUSE, HybridRetriever
     from policydesk.retrieval.vectors import open_vectors
 
-    semantic = asyncio.run(open_vectors(Database()))
+    semantic = await open_vectors(db)
     if semantic is None:
         pytest.skip("no vectors built")
     hits = HybridRetriever([index, semantic]).search("換工作會不會影響保險", corpus=CLAUSE, scope=(), limit=3)

@@ -10,8 +10,6 @@ unit is a wrong number, not merely an unlabelled one.
 
 from decimal import Decimal
 
-import pytest
-
 from policydesk.agent import tools
 from policydesk.agent.scenarios import claim_status
 from policydesk.agent.scenarios.claim_status import (
@@ -22,18 +20,6 @@ from policydesk.agent.scenarios.claim_status import (
     member_claims,
 )
 from policydesk.agent.scenarios.soothe import complaint_channel
-from policydesk.core.db import Database
-
-
-@pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    yield pool
-    await pool.close()
 
 
 def test_paid_display_renders_a_decimal_with_a_unit():

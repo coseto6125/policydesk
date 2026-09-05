@@ -265,18 +265,6 @@ def test_scenarios_touching_the_customer_book_derive_the_gate(scenario):
     assert tools.reads_identity(scenario.tools), f"{scenario.name} reaches member data ungated"
 
 
-@pytest.fixture(scope="module")
-async def db():
-    from policydesk.core.db import Database
-
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    return pool
-
-
 class _RefusingDB:
     """
     A database that raises the moment a query names a member table.
@@ -496,7 +484,7 @@ def test_the_public_catalogue_reaches_an_unverified_visitor():
 
 
 @pytest.mark.asyncio
-async def test_no_scenario_returns_a_value_out_of_the_members_own_row():
+async def test_no_scenario_returns_a_value_out_of_the_members_own_row(db):
     """
     The sentinel form of the gate, over the whole catalogue at once.
 
@@ -510,14 +498,6 @@ async def test_no_scenario_returns_a_value_out_of_the_members_own_row():
     import json
 
     from policydesk.agent.executor import Turn, _gather
-    from policydesk.core.db import Database
-
-    db = Database()
-    try:
-        await db.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-
     row = await db.fetch_one(
         """SELECT m.member_id, m.national_id, m.birth_date, m.beneficiary_relation,
                   array_agg(po.policy_number) AS numbers

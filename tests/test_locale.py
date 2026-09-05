@@ -11,17 +11,6 @@ import pytest
 
 from policydesk.agent import executor, i18n
 from policydesk.agent import locale as lang
-from policydesk.core.db import Database
-
-
-@pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    return pool
 
 
 @pytest.mark.parametrize(

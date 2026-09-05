@@ -15,7 +15,6 @@ import pytest
 from policydesk.agent import tools
 from policydesk.agent.scenarios import payment
 from policydesk.agent.scenarios.payment import GRACE_ARTICLE, MODE_LABEL, PAYMENT, grace_rule, payment_state
-from policydesk.core.db import Database
 from policydesk.synthetic import service
 
 
@@ -46,16 +45,6 @@ async def test_furnish_recorded_notice_agrees_with_policy_state(seed):
             assert notice + timedelta(days=service.GRACE_DAYS) == lapse
         else:
             assert notice + timedelta(days=service.GRACE_DAYS) >= today
-
-
-@pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    return pool
 
 
 @pytest.fixture(scope="module")

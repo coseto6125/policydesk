@@ -23,19 +23,8 @@ import pytest
 
 from policydesk.agent import tools
 from policydesk.agent.scenario import CATALOGUE, Emit
-from policydesk.core.db import Database
 
 MODULE_SCENARIOS = [s for s in CATALOGUE if s.tools_module]
-
-
-@pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    return pool
 
 
 @pytest.fixture(scope="module")

@@ -208,18 +208,6 @@ def test_enrol_reports_what_it_actually_wrote():
     assert "所選組合中的商品目前無法投保" in page
 
 
-@pytest.fixture(scope="module")
-async def db():
-    from policydesk.core.db import Database
-
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    return pool
-
-
 @pytest.mark.asyncio
 async def test_a_fact_whose_source_is_gone_is_not_quoted_back_as_something_he_said(db):
     """

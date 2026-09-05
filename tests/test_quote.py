@@ -20,18 +20,6 @@ from policydesk.agent.scenarios.quote import (
     gather,
     product_rate,
 )
-from policydesk.core.db import Database
-
-
-@pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    yield pool
-    await pool.close()
 
 
 async def test_standing_brief_floor_price_unit_and_origin_share_one_catalog_row(db):
