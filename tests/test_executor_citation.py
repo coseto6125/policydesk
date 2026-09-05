@@ -10,10 +10,45 @@ from policydesk.validation.validator import Verdict, recheck
 ALLOWED = frozenset({"art.16", "art.16.carve1", "art.17", "waiting"})
 
 
+@pytest.mark.parametrize(("field", "quote", "withheld"), [
+    ("p1|art.6", "生效日起三十日", False),
+    ("p1|art.6", "生效日起十日", True),
+    ("p1|art.6", "", True),
+    ("p2|art.6", "生效日起三十日", True),
+])
+async def test_unverifiable_provision_quote_checks_current_selected_original(monkeypatch, field, quote, withheld):
+    from policydesk.agent import executor
+
+    monkeypatch.setattr(executor.statute, "unresolved", AsyncMock(return_value=[]))
+    turn = executor.Turn(1, 1)
+    turn.clause_sources = (("p1", "art.6"), ("p2", "art.6"))
+    turn.clause_texts = {"p1|art.6": "自契約生效日起三十日。", "p2|art.6": "自契約生效日起三十日。"}
+    held = await executor._unverifiable(
+        AsyncMock(), turn, "等待期依約定。", frozenset({"art.6"}), sources=("p1|art.6",),
+        quoted_fields=(executor._ProvisionQuote(field=field, text=quote, kind="waiting_period"),),
+    )
+    assert held is withheld
 
 
+def test_clause_subject_only_collects_current_visible_evidence():
+    from policydesk.agent.executor import _clause_subject, _short
+
+    facts = {"clauses": [{"product_id": "p1", "clause_id": "art.6", "verbatim": "原文"}],
+             "_private": {"product_id": "p2", "clause_id": "art.6", "verbatim": "不提供"}}
+    assert _clause_subject(_short(facts)) == {"p1|art.6": "原文"}
 
 
+def test_answer_schema_provision_quotes_are_scoped_and_limited_to_four_kinds():
+    from policydesk.agent.executor import _answer_schema
+
+    schema = _answer_schema((("p1", "art.6"),))
+    assert "quoted_fields" in schema["required"]
+    item = schema["properties"]["quoted_fields"]["items"]
+    assert item["properties"]["field"]["enum"] == ["p1|art.6"]
+    assert set(item["properties"]["kind"]["enum"]) == {
+        "benefit_condition", "exclusion", "waiting_period", "deadline",
+    }
+    assert _answer_schema(())["properties"]["quoted_fields"]["maxItems"] == 0
 
 
 
