@@ -31,10 +31,10 @@ jobs:
       # them off the dependency step means a broken lockfile still gets a syntax
       # answer rather than failing before the check that would have explained it.
       - name: Syntax
-        run: uvx --from pyci pyci-check syntax src/ tests/
+        run: uvx pyci-check@0.3.5 syntax src/ tests/
 
       - name: Imports
-        run: uvx --from pyci pyci-check imports src/
+        run: uvx pyci-check@0.3.5 imports src/
 
       - name: Lint
         run: uvx ruff check src/ tests/
@@ -45,8 +45,8 @@ jobs:
       - name: Cycles and dead code (advisory)
         continue-on-error: true
         run: |
-          uvx --from pyci pyci-check cycles src/
-          uvx --from pyci pyci-check deadcode src/
+          uvx pyci-check@0.3.5 cycles src/
+          uvx pyci-check@0.3.5 deadcode src/
 
   test:
     name: "Test"
