@@ -7,6 +7,7 @@ system in the wrong order and with the wrong values.
 """
 
 from pathlib import Path
+
 import pytest
 from msgspec import DecodeError, json
 
