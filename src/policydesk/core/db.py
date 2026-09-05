@@ -12,18 +12,55 @@ one to.
 """
 
 import os
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import stamina
 from psqlpy import ConnectionPool
 from psqlpy.exceptions import BaseConnectionError, BaseConnectionPoolError
+from stamina.instrumentation import RetryDetails, get_on_retry_hooks, set_on_retry_hooks
 
 from policydesk.bootloader import logger
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from contextlib import AbstractContextManager
+
+    from stamina.instrumentation import RetryHook
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgres://policydesk:policydesk@localhost:5434/policydesk")
+_DB_RETRY_CALLABLES = frozenset(
+    f"{__name__}.Database.{operation}" for operation in ("fetch", "fetch_val", "execute", "execute_many")
+)
+
+
+@dataclass(frozen=True)
+class _DatabaseRetryHook:
+    """General log readers may see retry metadata, never SQL values or credentials."""
+
+    hook: RetryHook
+    _policydesk_db_retry: ClassVar[bool] = True
+
+    def __call__(self, details: RetryDetails) -> AbstractContextManager[None] | None:
+        if details.name in _DB_RETRY_CALLABLES:
+            details = replace(details, args=(), kwargs={}, caused_by=type(details.caused_by)())
+        return self.hook(details)
+
+
+def _protect_retry_logs() -> None:
+    """
+    Register process-wide hooks, sanitizing only the four DB retry operations.
+
+    Stamina has no per-call hooks. Preserve unrelated events and each hook's lifecycle.
+    A marker survives module reloads so repeated setup does not stack wrappers.
+    """
+    set_on_retry_hooks(
+        hook if getattr(hook, "_policydesk_db_retry", False) is True else _DatabaseRetryHook(hook)
+        for hook in get_on_retry_hooks()
+    )
+
+
+_protect_retry_logs()
 
 
 def _is_transport_failure(exc: Exception) -> bool:

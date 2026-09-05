@@ -1,11 +1,18 @@
-"""Database outages fail integration tests without exposing connection secrets."""
+"""Database outages fail integration tests, and retry logs protect customer data."""
 
+from contextlib import contextmanager
+from importlib import import_module, reload
 from traceback import format_exception
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+import stamina
+from psqlpy.exceptions import ConnectionExecuteError
+from stamina.instrumentation import RetryDetails, get_on_retry_hooks, set_on_retry_hooks
+from structlog.testing import capture_logs
 
 import conftest
+from policydesk.core import db as database_module
 
 
 async def test_connected_database_connection_failure_fails_and_closes(monkeypatch):
@@ -58,3 +65,130 @@ async def test_connected_database_success_closes_after_context(monkeypatch, body
     else:
         await use_pool()
     pool.close.assert_awaited_once()
+
+
+@pytest.fixture
+def retry_database(monkeypatch):
+    pool = Mock()
+    connection = AsyncMock()
+    acquire = AsyncMock()
+    acquire.__aenter__.return_value = connection
+    pool.acquire.return_value = acquire
+    transaction = AsyncMock()
+    connection.transaction = Mock(return_value=transaction)
+    transaction.__aenter__.return_value = transaction
+    monkeypatch.setattr(database_module, "ConnectionPool", Mock(return_value=pool))
+    db = database_module.Database(dsn="postgres://DSN_SECRET@invalid/database")
+    return db, connection, transaction
+
+
+@pytest.mark.parametrize("operation", ["fetch", "fetch_val", "execute", "execute_many"])
+@pytest.mark.parametrize("outcome", ["recovered", "exhausted", "query_error"])
+@pytest.mark.parametrize("keyword", [False, True])
+async def test_database_retry_logs_omit_values_and_preserve_attempts(retry_database, operation, outcome, keyword):
+    db, connection, transaction = retry_database
+    target = getattr(transaction if operation == "execute_many" else connection, operation)
+    error_type = RuntimeError if outcome == "query_error" else ConnectionExecuteError
+    error = error_type("EXCEPTION_SECRET postgres://DSN_SECRET@invalid/database")
+    error.__cause__ = ValueError("CAUSE_SECRET")
+    error.__context__ = ValueError("CONTEXT_SECRET")
+    result = Mock()
+    result.result.return_value = [{"value": 1}]
+    target.side_effect = [error, result] if outcome == "recovered" else error
+    values = [["BOUND_SECRET"]] if operation == "execute_many" else ["BOUND_SECRET"]
+    sql = "SELECT 'SQL_SECRET', $1"
+
+    async def invoke():
+        method = getattr(db, operation)
+        if keyword:
+            return await method(sql=sql, **{"rows" if operation == "execute_many" else "params": values})
+        return await method(sql, values)
+
+    with capture_logs() as events, stamina.set_testing(True, attempts=3, cap=True):
+        if outcome == "recovered":
+            await invoke()
+        else:
+            with pytest.raises(error_type) as caught:
+                await invoke()
+            assert caught.value is error
+
+    attempts = {"recovered": 2, "exhausted": 3, "query_error": 1}[outcome]
+    assert target.await_count == attempts
+    assert error.__cause__.args == ("CAUSE_SECRET",)
+    assert error.__context__.args == ("CONTEXT_SECRET",)
+    scheduled = [event for event in events if event["event"] == "stamina.retry_scheduled"]
+    assert len(scheduled) == attempts - 1
+    rendered = repr(events)
+    assert all(secret not in rendered for secret in (
+        "SQL_SECRET", "BOUND_SECRET", "DSN_SECRET", "EXCEPTION_SECRET", "CAUSE_SECRET", "CONTEXT_SECRET",
+    ))
+    for retry_number, event in enumerate(scheduled, 1):
+        assert event["callable"] == f"{database_module.__name__}.Database.{operation}"
+        assert event["retry_num"] == retry_number
+        assert event["caused_by"] == "ConnectionExecuteError()"
+
+
+def test_database_retry_hook_preserves_unrelated_details_lifecycle_and_imports():
+    original_hooks = get_on_retry_hooks()
+    received = []
+    lifecycle = []
+
+    @contextmanager
+    def lifecycle_context():
+        lifecycle.append("enter")
+        yield
+        lifecycle.append("exit")
+
+    def hook(details):
+        received.append(details)
+        return lifecycle_context()
+
+    observer = Mock(return_value=None)
+    try:
+        set_on_retry_hooks([hook, observer])
+        database_module._protect_retry_logs()
+        installed = get_on_retry_hooks()
+        database_module._protect_retry_logs()
+        assert get_on_retry_hooks() == installed
+        assert import_module(database_module.__name__) is database_module
+        reload(database_module)
+        assert get_on_retry_hooks() == installed
+        error = ConnectionExecuteError("EXCEPTION_SECRET")
+        error.__cause__ = ValueError("CAUSE_SECRET")
+        error.__context__ = ValueError("CONTEXT_SECRET")
+        error.private_payload = "ATTRIBUTE_SECRET"
+        original = RetryDetails(
+            name=f"{database_module.__name__}.Database.execute", args=("SQL_SECRET",),
+            kwargs={"params": ["BOUND_SECRET"]}, retry_num=2, wait_for=0.5,
+            waited_so_far=1.0, caused_by=error,
+        )
+        with installed[0](original):
+            assert lifecycle == ["enter"]
+        assert installed[1](original) is None
+        assert lifecycle == ["enter", "exit"]
+        safe = received[0]
+        assert safe.args == ()
+        assert safe.kwargs == {}
+        assert type(safe.caused_by) is type(error)
+        assert safe.caused_by.args == ()
+        assert safe.caused_by.__cause__ is None
+        assert safe.caused_by.__context__ is None
+        assert safe.caused_by.__traceback__ is None
+        assert vars(safe.caused_by) == {}
+        assert observer.call_args.args[0].args == ()
+        assert observer.call_args.args[0].kwargs == {}
+        assert (safe.name, safe.retry_num, safe.wait_for, safe.waited_so_far) == (
+            original.name, original.retry_num, original.wait_for, original.waited_so_far,
+        )
+        assert original.args == ("SQL_SECRET",)
+        assert original.kwargs == {"params": ["BOUND_SECRET"]}
+        assert original.caused_by is error
+        for name in ("unrelated.call", f"{database_module.__name__}.Database.execute_extra"):
+            unrelated = RetryDetails(name, (), {}, 1, 0, 0, error)
+            with installed[0](unrelated):
+                pass
+            assert received[-1] is unrelated
+            assert installed[1](unrelated) is None
+            assert observer.call_args.args[0] is unrelated
+    finally:
+        set_on_retry_hooks(original_hooks)
