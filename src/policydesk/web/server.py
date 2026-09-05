@@ -18,7 +18,6 @@ import base64
 import contextlib
 import os
 import re
-import secrets
 from datetime import UTC, date, datetime
 from html import escape
 from pathlib import Path

@@ -356,14 +356,14 @@ def test_the_trace_records_the_request_that_actually_went_out():
     """
     from policydesk.llm.provider import _anthropic_schema, audit_request
 
-    secret = "客戶黃雅琪，身分證 A123456789，持有 CL1001。"
+    customer_text = "客戶黃雅琪，身分證 A123456789，持有 CL1001。"
     schema = {"type": "object", "properties": {
         "reply": {"type": "string"},
         "citations": {"type": "array", "maxItems": 0},
     }}
     record = audit_request({
         "model": "claude-haiku-4-5",
-        "system": f"你是保險櫃台。{secret}",
+        "system": f"你是保險櫃台。{customer_text}",
         "messages": [{"role": "user", "content": "我的保單有哪些"}],
         "tools": [{"name": "list_policies"}, {"name": "billing_summary"}],
         "output_config": {"format": {"type": "json_schema", "schema": _anthropic_schema(schema)}},
