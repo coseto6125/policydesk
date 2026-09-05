@@ -9,10 +9,63 @@ already held.
 
 import re
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
+from msgspec import json
+
+from policydesk.agent.tools import insured_amount
+from policydesk.ingest.to_postgres import build_catalog
 
 SOURCE = Path("src/policydesk/ingest/to_postgres.py").read_text(encoding="utf-8")
+
+
+async def test_copy_corpus_legacy_ideographs_are_normalized_before_postgres(tmp_path):
+    from policydesk.core.store import connect
+    from policydesk.ingest.to_postgres import copy_corpus
+
+    path = tmp_path / "legacy.db"
+    source = connect(path)
+    source.execute(
+        "INSERT INTO product (product_id,doc_sha,insurer,name,line,attachment,pages) VALUES (?,?,?,?,?,?,?)",
+        ("p", "sha", "test", "一" + chr(0xF98E) + "期（Ａ）", "health", "main", 1),
+    )
+    source.execute(
+        "INSERT INTO clause (product_id,clause_id,kind,heading,verbatim,page) VALUES (?,?,?,?,?,?)",
+        ("p", "art.1", "procedure", "申" + chr(0xF9B4), "受 " + chr(0xFA17) + " 人（Ａ）：文件。", 1),
+    )
+    source.commit()
+    source.close()
+    db = AsyncMock()
+    db.fetch_val.return_value = 0
+    assert await copy_corpus(path, db) == (1, 1)
+    product_call, clause_call = db.execute_many.call_args_list
+    assert product_call.args[1][0][3] == "一年期（Ａ）"
+    assert clause_call.args[1][0][3:5] == ("申領", "受益人（Ａ）：文件。")
+
+
+
+
+
+
+
+
+def test_connect_legacy_corpus_adds_unknown_source_kind_without_losing_product(tmp_path):
+    import sqlite3
+
+    from policydesk.core.store import connect
+
+    path = tmp_path / "legacy.db"
+    with sqlite3.connect(path) as legacy:
+        legacy.execute("CREATE TABLE product (product_id TEXT PRIMARY KEY, name TEXT)")
+        legacy.execute("INSERT INTO product VALUES ('existing', '原有商品')")
+    migrated = connect(path)
+    try:
+        assert migrated.execute("SELECT product_id,name,document_kind FROM product").fetchone() == (
+            "existing", "原有商品", "unknown",
+        )
+    finally:
+        migrated.close()
 
 
 def _conflict_clause(table: str) -> str:
@@ -103,7 +156,7 @@ async def test_a_clause_the_parser_stopped_emitting_is_withdrawn(tmp_path):
     if product_id is None:
         pytest.skip("no product carries a clause")
     held = await db.fetch(
-        "SELECT clause_id, kind, heading, verbatim, page FROM clause WHERE product_id = $1::text",
+        "SELECT clause_id, kind, heading, verbatim, page, overrides FROM clause WHERE product_id = $1::text",
         [str(product_id)],
     )
 
@@ -113,21 +166,22 @@ async def test_a_clause_the_parser_stopped_emitting_is_withdrawn(tmp_path):
     src = sqlite3.connect(store)
     src.execute(
         "CREATE TABLE product (product_id TEXT PRIMARY KEY, doc_sha TEXT, insurer TEXT, name TEXT,"
-        " line TEXT, attachment TEXT, approval TEXT, pages INT, source_url TEXT)"
+        " line TEXT, attachment TEXT, approval TEXT, pages INT, source_url TEXT, document_kind TEXT)"
     )
     src.execute(
         "CREATE TABLE clause (product_id TEXT, clause_id TEXT, kind TEXT, heading TEXT,"
         " verbatim TEXT, page INT, overrides TEXT)"
     )
     row = await db.fetch_one(
-        "SELECT doc_sha, insurer, name, line, attachment, approval, pages, source_url"
+        "SELECT doc_sha, insurer, name, line, attachment, approval, pages, source_url, document_kind"
         " FROM product WHERE product_id = $1::text",
         [str(product_id)],
     )
-    src.execute("INSERT INTO product VALUES (?,?,?,?,?,?,?,?,?)", (str(product_id), *row.values()))
+    src.execute("INSERT INTO product VALUES (?,?,?,?,?,?,?,?,?,?)", (str(product_id), *row.values()))
     src.executemany(
         "INSERT INTO clause VALUES (?,?,?,?,?,?,?)",
-        [(str(product_id), c["clause_id"], c["kind"], c["heading"], c["verbatim"], c["page"], "[]") for c in held],
+        [(str(product_id), c["clause_id"], c["kind"], c["heading"], c["verbatim"], c["page"],
+          json.encode(c["overrides"]).decode()) for c in held],
     )
     src.commit()
 
@@ -150,6 +204,10 @@ async def test_a_clause_the_parser_stopped_emitting_is_withdrawn(tmp_path):
         assert int(left) == 0, "a clause the parser no longer emits survived the reload"
         kept = await db.fetch_val("SELECT count(*) FROM clause WHERE product_id = $1::text", [str(product_id)])
         assert int(kept) == len(held), f"the reload took {len(held) - int(kept)} clauses it should have kept"
+        retained = await db.fetch("SELECT clause_id,overrides FROM clause WHERE product_id=$1::text", [str(product_id)])
+        assert {row["clause_id"]: row["overrides"] for row in retained} == {
+            row["clause_id"]: row["overrides"] for row in held
+        }
         others = await db.fetch_val("SELECT count(*) FROM clause WHERE product_id <> $1::text", [str(product_id)])
         assert int(others) > 0, "a load carrying one product emptied every other product"
     finally:

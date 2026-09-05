@@ -24,6 +24,14 @@ from enum import StrEnum
 from msgspec import Struct
 
 
+class DocumentKind(StrEnum):
+    """The published source's role, not a certification of its completeness."""
+
+    CONTRACT = "contract"
+    BROCHURE = "brochure"
+    UNKNOWN = "unknown"
+
+
 class ClauseKind(StrEnum):
     """What a clause does to a claim, which decides how it resolves against others."""
 

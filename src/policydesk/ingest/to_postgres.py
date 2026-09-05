@@ -16,14 +16,17 @@ runs, and `catalog_entry` carries a MOCK DATA comment in the schema so nobody la
 mistakes them for something scraped.
 """
 
+import asyncio
 import sqlite3
 from decimal import Decimal
 from hashlib import blake2b
 from typing import TYPE_CHECKING
 
 from msgspec import json
+from pypdf import PdfReader
 
 from policydesk.bootloader import logger
+from policydesk.clauses.index import _tidy, document_kind
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -89,18 +92,20 @@ async def copy_corpus(sqlite_path: Path, db: Database) -> tuple[int, int]:
     """
     src = sqlite3.connect(sqlite_path)
     src.row_factory = sqlite3.Row
+    has_document_kind = "document_kind" in {column["name"] for column in src.execute("PRAGMA table_info(product)")}
 
     products = [
         (
             r["product_id"],
             r["doc_sha"],
             r["insurer"],
-            r["name"],
+            _tidy(r["name"]),
             r["line"],
             r["attachment"],
             r["approval"],
             r["pages"],
             r["source_url"],
+            r["document_kind"] if has_document_kind else "unknown",
         )
         for r in src.execute("SELECT * FROM product")
     ]
@@ -110,12 +115,12 @@ async def copy_corpus(sqlite_path: Path, db: Database) -> tuple[int, int]:
     # and the first row that does carry a value fails the batch with "insufficient
     # data left in message". The error names neither the column nor the row.
     await db.execute_many(
-        """INSERT INTO product (product_id, doc_sha, insurer, name, line, attachment, approval, pages, source_url)
-           VALUES ($1::text,$2::text,$3::text,$4::text,$5::text,$6::text,$7::text,$8::int,$9::text)
+        """INSERT INTO product (product_id, doc_sha, insurer, name, line, attachment, approval, pages, source_url, document_kind)
+           VALUES ($1::text,$2::text,$3::text,$4::text,$5::text,$6::text,$7::text,$8::int,$9::text,$10::text)
            ON CONFLICT (product_id) DO UPDATE SET
              doc_sha = excluded.doc_sha, insurer = excluded.insurer, name = excluded.name,
              line = excluded.line, attachment = excluded.attachment, approval = excluded.approval,
-             pages = excluded.pages, source_url = excluded.source_url""",
+             pages = excluded.pages, source_url = excluded.source_url, document_kind = excluded.document_kind""",
         products,
     )
 
@@ -124,8 +129,8 @@ async def copy_corpus(sqlite_path: Path, db: Database) -> tuple[int, int]:
             r["product_id"],
             r["clause_id"],
             r["kind"],
-            r["heading"],
-            r["verbatim"],
+            _tidy(r["heading"]),
+            _tidy(r["verbatim"]),
             r["page"],
             # SQLite held this as a JSON string; Postgres wants a real array. Decoded
             # with the reader that wrote it — hand-splitting on commas and stripping
@@ -205,6 +210,7 @@ async def build_catalog(db: Database) -> int:
     rows = await db.fetch(
         """SELECT p.product_id, p.line, p.attachment, count(c.clause_id) AS clauses
            FROM product p LEFT JOIN clause c USING (product_id)
+           WHERE p.document_kind = 'contract'
            GROUP BY p.product_id HAVING count(c.clause_id) >= 10"""
     )
 
@@ -267,3 +273,29 @@ async def build_catalog(db: Database) -> int:
     )
     logger.info("catalog_built", entries=len(entries))
     return len(entries)
+
+
+async def refresh_document_kinds(corpus: Path, db: Database) -> dict[str, int]:
+    """Classify existing sources from their PDFs without rewriting clauses or policies."""
+    rows = await db.fetch(
+        """SELECT p.product_id, p.doc_sha,
+                  EXISTS (SELECT 1 FROM clause c WHERE c.product_id = p.product_id AND c.clause_id = 'art.1') AS has_first
+           FROM product p ORDER BY p.product_id"""
+    )
+
+    def classify() -> tuple[list[tuple[str, str]], dict[str, int]]:
+        updates = []
+        counts: dict[str, int] = {}
+        for row in rows:
+            path = corpus / f"{row['doc_sha']}.pdf"
+            reader = PdfReader(path)
+            first_page = reader.pages[0].extract_text() if reader.pages else ""
+            kind = document_kind(first_page or "", has_first_article=row["has_first"])
+            updates.append((row["product_id"], kind.value))
+            counts[kind.value] = counts.get(kind.value, 0) + 1
+        return updates, counts
+
+    updates, counts = await asyncio.to_thread(classify)
+    await db.execute_many("UPDATE product SET document_kind = $2::text WHERE product_id = $1::text", updates)
+    logger.info("document_kinds_refreshed", counts=counts)
+    return counts
