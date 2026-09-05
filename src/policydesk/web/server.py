@@ -183,8 +183,17 @@ def _unauthorised(request: Request, what: str, **detail: object):
 
 @app.get("/")
 async def index(_request: Request):
-    """Serve the two-pane page."""
-    return html((STATIC / "index.html").read_text().replace("__DESK_TOKEN__", DESK_TOKEN))
+    """
+    Serve the two-pane page.
+
+    The response carries no cache validator of its own, so a browser is free to reuse
+    whatever copy it holds. It did: a recording run on a freshly restarted server ran
+    the previous build's script, and a fix that was verified in the served bytes was
+    read as absent from the screen. The page is one file with the whole client in it and
+    it changes on every deploy, so it is never the right thing to reuse.
+    """
+    page = (STATIC / "index.html").read_text().replace("__DESK_TOKEN__", DESK_TOKEN)
+    return html(page, headers={"Cache-Control": "no-store, must-revalidate"})
 
 
 @app.get("/doc/<document_id:int>")
