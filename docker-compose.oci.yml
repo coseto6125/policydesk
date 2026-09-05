@@ -1,0 +1,56 @@
+# OCI deployment: no model weights, no OpenAI key, no LAN encoder.
+#
+# The base compose file is written for a workstation that can reach an operator-run
+# llama-server and can mount 1.1 GB of ONNX exports. A cloud host has neither, so both
+# channels move to hosted APIs: embeddings and reranking to Cloudflare Workers AI,
+# the answering model to Claude Haiku over the Anthropic Messages API.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.oci.yml up -d desk
+#
+# Postgres keeps the base file's definition; the corpus arrives as a pg_restore dump
+# rather than through the ingest service, which needs the insurer's PDFs.
+
+services:
+  desk:
+    environment:
+      # Embeddings and reranking. The vector index records which backend built it, so
+      # a mismatch here raises rather than answering from vectors the encoder did not
+      # produce. POLICYDESK_EMBED_URL stays unset: setting it would select the
+      # llama-server backend and reach for a private address this host cannot see.
+      POLICYDESK_EMBED_URL: ""
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:?set in .env}
+      CLOUDFLARE_AUTH_TOKEN: ${CLOUDFLARE_AUTH_TOKEN:?set in .env}
+      POLICYDESK_CF_MODEL: ${POLICYDESK_CF_MODEL:-@cf/baai/bge-m3}
+
+      # The answering model. The subscription OAuth token is read from a file rather
+      # than an environment variable because it rotates: Claude Code refreshes it in
+      # the background and the desk re-reads the file near expiry. Refreshing it here
+      # would invalidate the copy that Claude Code holds, so this path is read-only.
+      ANTHROPIC_OAUTH_CREDS_PATH: /run/secrets/anthropic-token.json
+      POLICYDESK_MODEL: ${POLICYDESK_MODEL:-claude-haiku-4-5}
+
+      # Unset, the desk mints a token per boot and logs it. Set it to keep the back
+      # office reachable at one token across restarts.
+      POLICYDESK_DESK_TOKEN: ${POLICYDESK_DESK_TOKEN:-}
+
+      # Neither ONNX export ships to this host. Empty selects the hosted channels
+      # above instead of a missing local model.
+      POLICYDESK_EMBED_MODEL: ""
+      POLICYDESK_RERANK_MODEL: ""
+
+      # An OpenAI key would outrank nothing here — the provider order puts the
+      # Anthropic credential file first — but leaving it unset keeps the fallback
+      # chain honest about what this deployment actually runs on.
+      OPENAI_API_KEY: ""
+
+    volumes:
+      # The token file, read-only. Synced from the workstation; the desk never writes it.
+      - ${ANTHROPIC_TOKEN_FILE:?path to a copy of ~/.claude/.credentials.json}:/run/secrets/anthropic-token.json:ro
+      # The prebuilt vector index. Rebuilding 15,824 passages on the host would spend
+      # Workers AI quota to reproduce bytes the workstation already has.
+      - ./data/vectors:/app/data/vectors:ro
+
+    ports:
+      # Bound to loopback: the public entrance is the Cloudflare tunnel, so the port
+      # itself needs no exposure on the host's own interface.
+      - "127.0.0.1:8100:8100"
