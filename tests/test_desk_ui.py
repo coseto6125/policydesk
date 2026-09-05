@@ -8,6 +8,7 @@ defect that was visible on screen and invisible in the code.
 import json
 import shutil
 import subprocess
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -141,7 +142,7 @@ def test_render_case_required_missing_documents_remain_visible_and_pending(issue
     node = shutil.which("node")
     assert node is not None, "UI renderer tests require Node.js on PATH"
     functions = []
-    for name in ("renderBoard", "renderCase", "renderPolicies", "renderModalDocs"):
+    for name in ("renderBoard", "renderCase", "renderPolicies", "renderModalDocs", "updateDocumentDemoControls"):
         start = PAGE.index(f"function {name}(")
         end = PAGE.index("\n}\n", start) + len("\n}\n")
         functions.append(PAGE[start:end])
@@ -164,8 +165,9 @@ def test_render_case_required_missing_documents_remain_visible_and_pending(issue
 const fs = require('node:fs');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const nodes = {};
-const $ = id => nodes[id] ??= {classList: {toggle() {}}, dataset: {}};
+const $ = id => nodes[id] ??= {classList: {toggle() {}}, dataset: {}, querySelectorAll: () => [], setAttribute() {}};
 let caseId = null, lastSnapshot = null, lastStage = null, lastBoard = {};
+let documentDemoAvailable = false, documentDemoRetry = false, documentDemoBusy = false;
 const STAGES = ['inquiry','proposed','issued','signed','verified','review','approved','rejected'].map(s => [s, s]);
 const STAGE_NAMES = Object.fromEntries(STAGES);
 const TILE_GLYPH = {done:'',wait:'',flag:'',bad:'',open:''};
@@ -226,6 +228,9 @@ def test_document_modal_explains_fixed_samples_and_future_local_verification():
     assert "正式場景規劃以地端模型檢查文件資料正確性" in modal
     assert "尚未執行地端模型驗證" in modal
     assert "資料檢查不等同身分或簽署效力認證" in modal
+    assert "補齊文件、記錄模擬核對並送交人工審核" in modal
+    assert "核准或退件仍由專人決定" in modal
+    assert "不會直接送審" not in modal
 
 
 @pytest.mark.parametrize("sample", ["matching", "mismatched"])
@@ -240,7 +245,9 @@ const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 let clicked;
 const $ = id => ({addEventListener: (event, callback) => { clicked = callback; }});
 const sent = [];
-const customerWs = {send: value => sent.push(JSON.parse(value))};
+const customerWs = {readyState:1, send: value => sent.push(JSON.parse(value))};
+const documentDemoAvailable = true, documentDemoBusy = false;
+const waiting = () => {};
 eval(input.listener);
 const button = {dataset: {doc:'17', sample:input.sample}, classList: {contains: () => false}};
 clicked({target:{closest: () => button}});
@@ -252,3 +259,109 @@ process.stdout.write(JSON.stringify(sent));
     )
     assert clicked.returncode == 0, clicked.stderr
     assert json.loads(clicked.stdout) == [{"type": "upload", "document_id": 17, "sample": sample}]
+
+
+def test_document_demo_buttons_follow_test_order_with_complete_primary():
+    class Buttons(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.buttons = []
+
+        def handle_starttag(self, tag, attrs):
+            attributes = dict(attrs)
+            if tag == "button" and "data-document-demo" in attributes:
+                self.buttons.append(attributes)
+
+    parser = Buttons()
+    parser.feed(PAGE)
+    assert [button["data-document-demo"] for button in parser.buttons] == ["missing", "wrong", "complete"]
+    assert [button.get("class", "") for button in parser.buttons] == ["", "", "primary"]
+    for button in parser.buttons:
+        assert "disabled" in button
+        assert button["aria-describedby"] == "documentDemoNotice documentDemoStatus"
+    for label in ("一鍵缺漏測試", "一鍵錯誤", "一鍵完整"):
+        assert label in PAGE
+
+
+@pytest.mark.parametrize("mode", ["missing", "wrong", "complete"])
+@pytest.mark.parametrize(
+    ("stage", "completed", "unissued", "expected_modes"),
+    [
+        ("issued", False, [], {"missing", "wrong", "complete"}),
+        ("proposed", False, [], set()),
+        ("verified", False, [], set()),
+        ("issued", True, [], set()),
+        ("signed", True, [], {"complete"}),
+        ("verified", True, [], {"complete"}),
+        ("signed", False, [], set()),
+        ("signed", True, ["尚未交付"], set()),
+        ("verified", True, ["尚未交付"], set()),
+        ("review", True, [], set()),
+        ("approved", True, [], set()),
+        ("rejected", True, [], set()),
+    ],
+)
+def test_document_demo_click_uses_current_stage_and_only_sends_mode(mode, stage, completed, unissued, expected_modes):
+    node = shutil.which("node")
+    assert node is not None, "UI renderer tests require Node.js on PATH"
+    functions = []
+    for name in ("renderModalDocs", "updateDocumentDemoControls", "waiting", "connectCustomer"):
+        start = PAGE.index(f"function {name}(")
+        end = PAGE.index("\n}\n", start) + len("\n}\n")
+        functions.append(PAGE[start:end])
+    start = PAGE.index('$("documentDemoActions").addEventListener("click",')
+    end = PAGE.index("\n});", start) + len("\n});")
+    harness = r"""
+const fs = require('node:fs');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const nodes = {};
+const uploads = [{disabled:false}];
+const $ = id => nodes[id] ??= {
+  querySelectorAll: () => uploads,
+  setAttribute(key, value) {this[key] = value;},
+  addEventListener(event, callback) {this.click = callback;},
+  append() {},
+  close() {this.closed = true;},
+};
+const document = {createElement: () => ({remove() {}})};
+let pending = null, documentDemoAvailable = false, documentDemoRetry = false, documentDemoBusy = false, customerWs = null;
+const sent = [];
+const location = {host:'localhost'};
+class WebSocket {
+  readyState = 1;
+  send(value) {sent.push(JSON.parse(value));}
+}
+const esc = value => String(value ?? '');
+const icon = () => '';
+const PILLS = {ok: text => text, wait: text => text};
+const toBottom = () => {}, bubble = () => {}, renderChips = () => {}, renderCitations = () => {};
+eval(input.functions.join('\n') + '\n' + input.listener + `
+connectCustomer('demo');
+renderModalDocs([{document_id: 17, kind:'文件', signed_at:input.completed ? 'date' : null}], input.unissued, input.stage);
+const before = Object.fromEntries(['missing','wrong','complete'].map(mode => [mode, $('documentDemo' + mode).disabled]));
+const button = $('documentDemo' + input.mode);
+button.dataset = {documentDemo:input.mode};
+$('documentDemoActions').click({target:{closest: () => button}});
+$('documentDemoActions').click({target:{closest: () => button}});
+customerWs.onmessage({data:JSON.stringify({type:'notice',text:'state result',pending_reply:true})});
+const busy = {disabled:button.disabled, status:$('documentDemoStatus').textContent, uploadsDisabled:uploads[0].disabled};
+customerWs.onmessage({data:JSON.stringify({type:'reply',text:'state guidance'})});
+process.stdout.write(JSON.stringify({sent, before, busy, after:button.disabled, closed:!!$('docModal').closed}));
+`);
+"""
+    clicked = subprocess.run(  # noqa: S603 (only local source and fixed demo choices reach Node)
+        [node, "-e", harness],
+        input=json.dumps({"functions": functions, "listener": PAGE[start:end], "mode": mode, "stage": stage, "completed": completed, "unissued": unissued}),
+        capture_output=True, text=True, check=False, timeout=10,
+    )
+    assert clicked.returncode == 0, clicked.stderr
+    result = json.loads(clicked.stdout)
+    allowed = mode in expected_modes
+    assert result["before"] == {choice: choice not in expected_modes for choice in ("missing", "wrong", "complete")}
+    assert result["sent"] == ([{"type": "document_demo", "mode": mode}] if allowed else [])
+    assert result["busy"]["disabled"] is True
+    assert result["busy"]["uploadsDisabled"] is True
+    assert result["after"] is not allowed
+    assert result["closed"] is allowed
+    if allowed:
+        assert result["busy"]["status"] == "示範處理中，請等候櫃台說明結果。"

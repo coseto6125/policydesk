@@ -245,19 +245,25 @@ A rejection is not receipt or completed signing.
 
 Choose the current state and next step ONLY from pending_signatures.stage:
 - inquiry/proposed: files are not ready; list unissued and ask 展示人員 to prepare them first.
-- issued: state signed/total and list every missing title, one per line. Guide the customer to
-  右上角「應簽署文件」 and「下載」to view the forms. Then offer BOTH buttons by their full names:
-  「正確示範文件」records the filename and both roles' simulated signatures.
-  「錯誤示範文件」selects an unrelated sheet of paper (空白便條紙), not the required form.
-  The demo rejects that sample and writes nothing; it neither records a note nor resets progress.
-  Progress updates after each choice.
-  Also explain the next step in this reply: completing all files finishes the document demo;
-  展示人員 then handles mock identity verification and submission.
+- issued: identify this as a simulation with no real files or signatures, then state signed/total and missing titles.
+  Guide the customer to 右上角「應簽署文件」;「下載」views a form but does not sign it.
+  Recommend「一鍵完整」to finish remaining mock signatures, run mock identity verification, and submit for human review.
+  It runs these steps automatically; the customer need not upload each file or ask staff to advance them.
+  On first guidance, also explain the optional tests:
+  「一鍵缺漏測試」leaves one file unsigned. With only one missing file, it changes nothing.
+  「一鍵錯誤」demonstrates rejection of an unrelated sample and changes no records.
+  Individual-file controls remain available for inspecting the detailed flow.
+  These two tests are optional, not prerequisites for completing the demo.
+  Progress updates after each choice; read the resulting missing list instead of assuming a fixed file.
+  A successful complete action ends at review, where a human decides approval or rejection.
 - signed: documents are complete only when missing is empty. Say there are no missing files and no more uploads.
-  Next, 展示人員 performs 模擬身分驗證, then submits for manual review. The customer UI has neither action.
+  Automatic mock verification has not completed. Explain any recorded refusal and use「一鍵完整」to retry without re-signing.
 - verified: mock identity verification is complete, submission is still pending, and manual review has not started.
-  Ask 展示人員 to submit; only after submission should the customer wait for a review decision.
-- review: already submitted for 人工審核; 等待 the reviewer's decision.
+  Explain any missing submission requirements. Ask staff to supply missing case data before retrying「一鍵完整」.
+  With no missing requirement reported,「一鍵完整」retries submission without repeating signatures or verification.
+- review: already submitted for 人工審核. A real staff member uses the desk to approve or reject this demo case.
+  The system records that person's decision; neither the model nor the system chooses the outcome.
+  Tell the customer to wait for that human decision, even though signatures and identity checks are simulated.
 - approved: the recorded demo decision is approval; this ends the demo, not a real policy issuance process.
 - rejected: report 本示範案件已退件. Ask 展示人員 about the next step; do not ask the customer to sign again.
 If unissued is nonempty, report those unavailable files separately; never call an incomplete set ready.
@@ -271,6 +277,8 @@ The samples use fixed demo rules, NOT model verification. The「！」beside the
 planned local-model data checks for a future real setting; that capability is not active today.
 """
 
+DOCUMENT_QUESTIONS = ("我還缺哪幾份文件？", "模擬上傳會記錄什麼？", "文件完成後下一步是什麼？")
+
 
 ISSUE_DOCUMENTS = Scenario(
     name="issue_documents",
@@ -281,6 +289,7 @@ ISSUE_DOCUMENTS = Scenario(
     tools=("pending_signatures",),
     transitions=("verify_identity",),
     requires_stage="proposed",
+    quick_replies=DOCUMENT_QUESTIONS,
 )
 
 DOCUMENT_PROGRESS = Scenario(
@@ -290,7 +299,7 @@ DOCUMENT_PROGRESS = Scenario(
     description="查詢本案目前進度、核對或送審狀態、下一步，以及投保文件怎麼操作或還缺什麼時使用。每次讀取最新紀錄，不沿用先前對話；不處理理賠應備文件。",
     injection=DOCUMENT_GUIDANCE,
     tools=("pending_signatures",),
-    quick_replies=("我還缺哪幾份文件？", "模擬上傳會記錄什麼？", "文件完成後下一步是什麼？"),
+    quick_replies=DOCUMENT_QUESTIONS,
 )
 
 VERIFY_IDENTITY = Scenario(
@@ -303,6 +312,7 @@ VERIFY_IDENTITY = Scenario(
     params=(Param(name="national_id", description="身分證字號", example="A123456789"),),
     transitions=("submit",),
     requires_stage="signed",
+    quick_replies=DOCUMENT_QUESTIONS,
 )
 
 CLAIM_CHECKLIST = Scenario(

@@ -37,6 +37,7 @@ from policydesk.bootloader import logger
 from policydesk.core import documents
 from policydesk.core.documents import ENROLMENT_DOCUMENTS, SIGNING_PARTIES, document_status, signing_documents
 from policydesk.core.models import Stage, may_advance
+from policydesk.gov.identity import verify as verify_demo_identity
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
@@ -267,6 +268,7 @@ async def record_signature(db: Database, case_id: int, *, document_id: int, part
 @_atomic_case
 async def upload_document(
     db: Database, case_id: int, *, document_id: int, filename: str = "", sample: str | None = None,
+    advance_demo: bool = False,
 ) -> Outcome:
     """
     Record the verified session's demo upload and both roles atomically, without writing file bytes.
@@ -275,6 +277,7 @@ async def upload_document(
     A filename is display metadata, not a filesystem path or proof of a real signature.
     Fixed samples exercise matching and mismatched document kinds by demo rules only.
     They do not call a local model or inspect a real file.
+    The confirmed demo socket opts into verification and submission after the last document.
     """
     if sample is not None and sample not in ("matching", "mismatched"):
         return Refusal(reason="請選擇有效的示範文件")
@@ -295,10 +298,76 @@ async def upload_document(
         if sample == "mismatched":
             return Refusal(reason=f"示範規則檢查：所選樣本是空白便條紙，不是本欄需要的「{document['kind']}」，未記錄模擬簽署。")
         filename = f"示範-{document['kind']}.pdf"
-    return await _record_signatures(
+    outcome = await _record_signatures(
         db, case_id, document_id=document_id, parties=SIGNING_PARTIES,
         document_sha=document["sha"] or "", filename=filename,
     )
+    if advance_demo and isinstance(outcome, Applied):
+        return await _finish_document_demo(db, case_id)
+    return outcome
+
+
+@_atomic_case
+async def demonstrate_documents(db: Database, case_id: int, *, mode: str) -> Outcome:
+    """
+    Apply one demo preset to the confirmed session's case, never real documents.
+
+    Missing leaves one pending document without erasing prior progress. Wrong writes
+    nothing. Complete records pending documents, then runs mock verification and submission.
+    All selected documents share one case transaction, including cancellation rollback.
+    """
+    if mode not in ("missing", "wrong", "complete"):
+        return Refusal(reason="請選擇有效的文件示範操作")
+    stage = await db.fetch_val('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
+    if mode == "complete" and stage in (Stage.SIGNED.value, Stage.VERIFIED.value, Stage.REVIEW.value):
+        return await _finish_document_demo(db, case_id)
+    if stage != Stage.ISSUED.value:
+        return Refusal(reason="案件狀態不允許進行簽署")
+    documents = await signing_documents(db, case_id)
+    status = document_status(documents)
+    if status["unissued"]:
+        return Refusal(reason="應備文件尚未全部產生，請先由櫃台補齊")
+    pending = [document for document in documents if document["signed_at"] is None]
+    if not pending:
+        return Refusal(reason="目前沒有待完成模擬簽署的文件")
+    if mode == "wrong":
+        return Refusal(reason=f"示範規則檢查：空白便條紙不是所需的「{pending[0]['title']}」，未記錄模擬簽署。")
+    selected = pending[:-1] if mode == "missing" else pending
+    if any(not document["sha"] for document in selected):
+        return Refusal(reason="文件缺少目前版本，請先由櫃台重新產生")
+    outcome = Refusal(reason="尚有文件未完成模擬簽署", missing=status["missing"])
+    for document in selected:
+        outcome = await _record_signatures(
+            db, case_id, document_id=document["document_id"], parties=SIGNING_PARTIES,
+            document_sha=document["sha"], filename=f"示範-{document['kind']}.pdf",
+        )
+    if mode == "complete" and isinstance(outcome, Applied):
+        return await _finish_document_demo(db, case_id)
+    return outcome
+
+
+async def _finish_document_demo(db: Database, case_id: int) -> Outcome:
+    """
+    Resume guarded demo steps in the caller's transaction; leave decisions to humans.
+
+    Refusals preserve completed steps and their evidence for a retry. Exceptions roll
+    the whole command back. A completed submission is read-only on repeated clicks.
+    """
+    case = await db.fetch_one(
+        'SELECT c.stage, c.case_version, m.national_id FROM "case" c JOIN member m USING (member_id) WHERE c.case_id = $1::bigint',
+        [case_id],
+    )
+    if case["stage"] == Stage.REVIEW.value:
+        return Applied(case_id=case_id, stage=Stage.REVIEW, case_version=case["case_version"])
+    if case["stage"] == Stage.SIGNED.value:
+        result = verify_demo_identity(case["national_id"])
+        outcome = await _verify_identity(
+            db, case_id, national_id=case["national_id"], verified=result.verified,
+            reason="示範身分核對（非地端模型驗證）" if result.verified else result.reason, latency_ms=0,
+        )
+        if isinstance(outcome, Refusal):
+            return outcome
+    return await _submit_for_review(db, case_id)
 
 
 async def _record_signatures(
@@ -370,6 +439,13 @@ async def verify_identity(db: Database, case_id: int, *, national_id: str, verif
     leave no trace cannot be audited.
 
     """
+    return await _verify_identity(
+        db, case_id, national_id=national_id, verified=verified, reason=reason, latency_ms=latency_ms,
+    )
+
+
+async def _verify_identity(db: Database, case_id: int, *, national_id: str, verified: bool, reason: str, latency_ms: int) -> Outcome:
+    """Apply the identity guard inside the caller's case transaction."""
     case = await db.fetch_one(
         """SELECT c.stage, m.national_id AS member_national_id
            FROM "case" c JOIN member m USING (member_id) WHERE c.case_id = $1::bigint""",
@@ -418,6 +494,11 @@ async def submit_for_review(db: Database, case_id: int) -> Outcome:
     application is accepted, and nothing in this function looks at the answer.
 
     """
+    return await _submit_for_review(db, case_id)
+
+
+async def _submit_for_review(db: Database, case_id: int) -> Outcome:
+    """Apply the completeness guard inside the caller's case transaction."""
     case = await db.fetch_one('SELECT stage, adviser_licence FROM "case" WHERE case_id = $1::bigint', [case_id])
     if case is None:
         return Refusal(reason="查無此案件")

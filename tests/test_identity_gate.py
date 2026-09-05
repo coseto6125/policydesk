@@ -181,14 +181,16 @@ async def test_customer_socket_rename_to_new_member_allows_enrol_without_old_cas
     assert server.cmd.snapshot.await_count == 1, "new enrol must not inherit old confirmation"
 
 
-@pytest.mark.parametrize("command", ["upload", "verify"])
+@pytest.mark.parametrize("command", ["upload", "verify", "document_demo"])
 @pytest.mark.parametrize("identity_locked", [False, True])
 async def test_customer_socket_unverified_mutation_is_denied(customer_handler, monkeypatch, command, identity_locked):
     server, request, _, _ = customer_handler
     upload = AsyncMock()
     verification = AsyncMock()
+    demo = AsyncMock()
     monkeypatch.setattr(server.cmd, "upload_document", upload)
     monkeypatch.setattr(server.cmd, "verify_identity", verification)
+    monkeypatch.setattr(server.cmd, "demonstrate_documents", demo)
     socket = _CustomerSocket([
         {"type": "hello", "name": "fixture-owner"},
         *([{"type": "say", "text": issue(Sex.MALE, 9)}] * server.MAX_CONFIRM_ATTEMPTS if identity_locked else []),
@@ -201,7 +203,36 @@ async def test_customer_socket_unverified_mutation_is_denied(customer_handler, m
     assert request.app.ctx.db.fetch_one.await_count == 1
     upload.assert_not_awaited()
     verification.assert_not_awaited()
+    demo.assert_not_awaited()
     server.cmd.snapshot.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mode", ["missing", "wrong", "complete"])
+async def test_customer_socket_document_demo_uses_confirmed_case_and_guides_once(customer_handler, monkeypatch, mode):
+    server, request, members, answer = customer_handler
+    outcomes = {
+        "missing": server.cmd.Refusal("尚有文件", ("健康告知書",)),
+        "wrong": server.cmd.Refusal("示範文件不符，未記錄模擬簽署"),
+        "complete": SimpleNamespace(),
+    }
+    outcome = outcomes[mode]
+    demo = AsyncMock(return_value=outcome)
+    monkeypatch.setattr(server.cmd, "demonstrate_documents", demo)
+    socket = _CustomerSocket([
+        {"type": "hello", "name": "fixture-owner"},
+        {"type": "say", "text": members["fixture-owner"]["national_id"]},
+        {"type": "document_demo", "case_id": 999, "document_ids": [999], "mode": mode},
+    ])
+    await server.customer_socket(request, socket)
+    demo.assert_awaited_once_with(request.app.ctx.db, 1, mode=mode)
+    answer.assert_awaited_once()
+    assert answer.call_args.kwargs == {
+        "case_id": 1, "text": "；".join((outcome.reason, *outcome.missing)) if mode != "complete" else "",
+        "confirmed": True, "floor": 0, "document_event": True,
+    }
+    notices = [frame for frame in socket.sent if frame["type"] == "notice"]
+    assert len(notices) == (mode != "complete")
+    assert all(frame["pending_reply"] is True for frame in notices)
 
 
 @pytest.mark.parametrize("owned", [False, True])
@@ -219,11 +250,14 @@ async def test_customer_socket_upload_passes_confirmed_case_to_core_command(cust
         {"type": "upload", "case_id": 999, "document_id": 22, "filename": "signed.pdf"},
     ])
     await server.customer_socket(request, socket)
-    upload.assert_awaited_once_with(db, 1, document_id=22, filename="signed.pdf")
+    upload.assert_awaited_once_with(db, 1, document_id=22, filename="signed.pdf", advance_demo=True)
     if owned:
         assert socket.sent[-1]["type"] == "case"
     else:
-        assert socket.sent[-1] == {"type": "notice", "text": "無法處理這份文件。", "level": "warn"}
+        assert socket.sent[-2] == {
+            "type": "notice", "text": "無法處理這份文件。", "level": "warn", "pending_reply": True,
+        }
+        assert socket.sent[-1]["type"] == "case"
 
 
 @pytest.mark.parametrize("remaining", [(), ("健康告知書",)])
@@ -298,7 +332,7 @@ async def test_customer_socket_wrong_sample_guides_without_claiming_success(cust
         {"type": "upload", "case_id": 999, "document_id": 22, "sample": "mismatched"},
     ])
     await server.customer_socket(request, socket)
-    upload.assert_awaited_once_with(request.app.ctx.db, 1, document_id=22, sample="mismatched")
+    upload.assert_awaited_once_with(request.app.ctx.db, 1, document_id=22, sample="mismatched", advance_demo=True)
     assert answer.call_args.kwargs["document_event"] is True
     assert answer.call_args.kwargs["text"] == refusal.reason
     assert any(frame.get("level") == "warn" for frame in socket.sent)
