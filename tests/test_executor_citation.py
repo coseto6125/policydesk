@@ -336,3 +336,46 @@ def test_answer_schema_hidden_rows_do_not_become_selectable_sources():
     schema = _answer_schema(_clause_sources(visible))
     assert schema["properties"]["citations"]["items"]["enum"] == [f"p{number}|art.6" for number in range(40)]
     assert _answer_schema(())["properties"]["citations"]["maxItems"] == 0
+
+
+def test_the_trace_records_the_request_that_actually_went_out():
+    """
+    The row describes the payload the provider sent, not the arguments it was given.
+
+    The request column held `{"scenario": ...}` and nothing else, so a 16,781-token
+    call left a 22-character row and the trace could not answer its own question.
+    Storing the brief verbatim would answer it and would copy every name, national ID
+    and policy into a second table with no retention rule, so the row carries the
+    evidence instead: the tools offered, the reply's shape, and digests.
+
+    Built from the sent body rather than the executor's arguments, because the two
+    differ. `_anthropic_schema` rewrites `maxItems: 0` into `{"type": "null"}`, so a
+    record built from the arguments names a field the model could not fill on that
+    call — the names match and the constraint does not. Reading the body also means a
+    future rewrite is recorded without anyone remembering to describe it.
+    """
+    from policydesk.llm.provider import _anthropic_schema, audit_request
+
+    secret = "客戶黃雅琪，身分證 A123456789，持有 CL1001。"
+    schema = {"type": "object", "properties": {
+        "reply": {"type": "string"},
+        "citations": {"type": "array", "maxItems": 0},
+    }}
+    record = audit_request({
+        "model": "claude-haiku-4-5",
+        "system": f"你是保險櫃台。{secret}",
+        "messages": [{"role": "user", "content": "我的保單有哪些"}],
+        "tools": [{"name": "list_policies"}, {"name": "billing_summary"}],
+        "output_config": {"format": {"type": "json_schema", "schema": _anthropic_schema(schema)}},
+    })
+
+    assert record["tools"] == ["billing_summary", "list_policies"], "the permission decision is legible"
+    assert record["response_fields"] == ["citations", "reply"]
+    # The constraint, not just the field name: nothing could be cited on this call.
+    assert record["emptied_fields"] == ["citations"]
+    assert len(record["system_sha256"]) == 64
+    assert record["system_chars"] > 0
+
+    written = str(record)
+    for fragment in ("黃雅琪", "A123456789", "CL1001", "保險櫃台"):
+        assert fragment not in written, f"{fragment} reached the trace"

@@ -2084,7 +2084,11 @@ function connectCustomer(name) {
         break;
       case "case": renderCase(m); break;
       case "reply":
-        waiting(false);
+        // Not every reply ends the turn. An identity check answers the question it
+        // interrupted and then speaks again about documents, and releasing the pane
+        // after the first let a question typed in that gap be answered ahead of the
+        // guidance still on its way.
+        if (!m.pending_reply) waiting(false);
         bubble("them", m.text);
         renderChips(m.quick);
         if (m.scenario) {
@@ -2096,7 +2100,9 @@ function connectCustomer(name) {
         break;
       case "notice":
         if (!m.pending_reply) waiting(false);
-        bubble("sys", m.text);
+        // An empty notice exists only to release the pane when a promised second reply
+        // turns out not to be coming. It has nothing to say.
+        if (m.text) bubble("sys", m.text);
         break;
     }
   };

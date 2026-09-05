@@ -23,6 +23,7 @@ import asyncio
 import re
 import time
 from collections import defaultdict
+from hashlib import sha256
 from datetime import UTC, date, datetime
 from importlib import import_module
 from itertools import zip_longest
@@ -201,7 +202,7 @@ async def _record(db: Database, turn: Turn, phase: Phase, completion: Completion
             turn.case_id, turn.turn_id, phase.value, scenario, completion.provider, completion.model,
             completion.prompt_tokens, completion.completion_tokens, completion.cached_tokens,
             completion.total_tokens, cost(completion), completion.latency_ms,
-            {"scenario": scenario}, {"text": completion.text[:2000]},
+            {"scenario": scenario, **(completion.request or {})}, {"text": completion.text[:2000]},
         ],
     )
 
