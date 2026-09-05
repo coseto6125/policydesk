@@ -136,19 +136,69 @@ def test_identity_check_compares_against_the_case_owner():
     assert "member_national_id" in body, "the check must compare against the case's member"
 
 
-def test_calculator_is_offered_to_the_model_not_merely_described():
-    """
-    The scenario text tells the model 金額由計算工具產生; the tool has to be reachable.
+async def test_calculator_structured_answer_reaches_actual_calculator(db, live_case, monkeypatch):
+    from unittest.mock import AsyncMock
 
-    A review found `calculate` had zero callers outside its own tests: the answering
-    call passed no `tools=`, so the model wrote figures into prose from the material it
-    had been handed and nothing checked them. A tool the model cannot reach is a claim.
-    """
-    from pathlib import Path
+    from msgspec import json, structs
 
-    source = Path("src/policydesk/agent/executor.py").read_text()
-    assert "TOOL_SCHEMA" in source
-    assert "tools=[TOOL_SCHEMA]" in source
+    from policydesk.agent import executor
+    from policydesk.agent.scenario import BY_NAME
+    from policydesk.llm.provider import Completion
+
+    scenario = structs.replace(BY_NAME["quote"], calculator=True)
+    monkeypatch.setattr(executor, "_route", AsyncMock(return_value=(scenario, {})))
+    monkeypatch.setattr(executor, "_gather", AsyncMock(return_value={"_allowed_clauses": frozenset()}))
+
+    class RequestsCalculation:
+        name = "stub"
+
+        async def complete(self, **kwargs):
+            assert "maxItems" not in kwargs["schema"]["properties"]["calculations"]
+            return Completion(text=json.encode({"reply": "已提出計算。", "citations": [],
+                                                "calculations": ["2000 * 3"]}).decode(), provider="stub")
+
+    turn = await executor.run_turn(RequestsCalculation(), db, case_id=live_case["case_id"],
+                                   member_id=live_case["member_id"], text="請計算", confirmed=False)
+    assert turn.computations == (("2000 * 3", 6000),)
+    assert turn.faults == ()
+
+
+@pytest.mark.parametrize(("payload", "expected_fault"), [
+    ({"reply": "這件一定會賠。", "citations": [], "calculations": []}, "promise:"),
+    ({"reply": "不能保證會理賠。", "citations": [], "calculations": []}, None),
+    ({"reply": "請查條款。", "citations": ["other|art.6"], "calculations": []}, "source:"),
+    ({"reply": "計算中。", "citations": [], "calculations": ["2 * 3"]}, "unoffered_calculator"),
+    ({"reply": "缺少來源欄位。"}, "answer_format"),
+])
+async def test_run_turn_structured_answer_enforces_guards(db, live_case, monkeypatch, payload, expected_fault):
+    from unittest.mock import AsyncMock
+
+    from msgspec import json
+
+    from policydesk.agent import executor
+    from policydesk.agent.scenario import BY_NAME
+    from policydesk.llm.provider import Completion
+
+    monkeypatch.setattr(executor, "_route", AsyncMock(return_value=(BY_NAME["quote"], {})))
+    monkeypatch.setattr(executor, "_gather", AsyncMock(return_value={"_allowed_clauses": frozenset()}))
+    if expected_fault == "promise:":
+        assert executor._promises(payload["reply"]), "the detector recognizes this phrase"
+
+    class Answers:
+        name = "stub"
+
+        async def complete(self, **kwargs):
+            assert kwargs["schema"]["properties"]["calculations"]["maxItems"] == 0
+            return Completion(text=json.encode(payload).decode(), provider="stub")
+
+    turn = await executor.run_turn(Answers(), db, case_id=live_case["case_id"], member_id=live_case["member_id"],
+                                   text="請說明", confirmed=False)
+    if expected_fault is None:
+        assert turn.reply == payload["reply"]
+        assert turn.faults == ()
+    else:
+        assert any(fault.startswith(expected_fault) for fault in turn.faults)
+        assert turn.reply != payload["reply"]
 
 
 def test_surgery_multipliers_are_reachable_from_a_scenario():
@@ -524,6 +574,95 @@ async def test_a_document_clause_reaches_the_model_whole(db):
     assert max(len(r["verbatim"]) for r in sent) <= DOCUMENT_CHARS
 
 
+async def test_required_documents_reingested_article_preserves_current_original(db):
+    from policydesk.agent.executor import _short
+    from policydesk.agent.tools import required_documents
+
+    product_id, clause_id = "66a8307d78fd", "art.23"
+    original = await db.fetch_val(
+        "SELECT verbatim FROM contract_clause WHERE product_id = $1 AND clause_id = $2",
+        [product_id, clause_id],
+    )
+    assert original
+    rows = _short(await required_documents(db, [product_id]))
+    row = next(row for row in rows if row["clause_id"] == clause_id)
+    assert row["verbatim"] == original
+    assert not row.get("excerpt", False)
+
+
+async def test_required_documents_compatibility_heading_returns_document_list(db):
+    from policydesk.agent.tools import required_documents
+
+    rows = await required_documents(db, ["1bbac7be6893"])
+    row = next(row for row in rows if row["clause_id"] == "art.13")
+    assert "四、受益人的身分證明。" in row["verbatim"]
+
+
+async def test_required_documents_retrieval_keeps_each_product_and_rejects_other_scopes(db):
+    from unittest.mock import Mock
+
+    from policydesk.agent.tools import required_documents
+    from policydesk.retrieval.base import CLAUSE, Hit
+
+    products = ["1bbac7be6893", "dec6e9884f02", "3c19273cce6b"]
+    expected = dict(zip(products, ["art.13", "art.17", "art.14"], strict=True))
+    index = Mock()
+
+    def search(query, *, corpus, scope, limit):
+        assert "診斷證明" in query
+        assert corpus == CLAUSE
+        assert len(scope) == 1
+        product = scope[0]
+        return [Hit(CLAUSE, expected[product], product, 1),
+                Hit(CLAUSE, "art.15", "38cfb37f85cf", 0.9),
+                Hit("statute", "art.1", product, 0.8)]
+
+    index.search.side_effect = search
+    rows = await required_documents(db, products + products[:1], index=index, topic="診斷證明")
+    assert index.search.call_count == len(products)
+    assert [(row["product_id"], row["clause_id"]) for row in rows] == list(expected.items())
+
+
+async def test_required_documents_empty_scope_never_searches():
+    from unittest.mock import AsyncMock, Mock
+
+    from policydesk.agent.tools import required_documents
+
+    db, index = AsyncMock(), Mock()
+    assert await required_documents(db, [], index=index) == []
+    index.search.assert_not_called()
+    db.fetch.assert_not_called()
+
+
+@pytest.mark.parametrize("products", [5, 7])
+async def test_required_documents_eight_per_product_survive_prompt_context(monkeypatch, products):
+    from unittest.mock import AsyncMock, Mock
+
+    from policydesk.agent import tools
+    from policydesk.agent.executor import _short
+    from policydesk.retrieval.base import CLAUSE, Hit
+
+    ids = [f"p{number}" for number in range(products)]
+    index = Mock()
+
+    def search(query, *, corpus, scope, limit):
+        assert limit == 8
+        return [Hit(CLAUSE, f"art.{number}", scope[0], 1) for number in range(8)]
+
+    async def rows_for(db, keys):
+        return [{"product_id": product, "clause_id": clause, "verbatim": "申領文件（原文）。"}
+                for product, clause in keys]
+
+    index.search.side_effect = search
+    monkeypatch.setattr(tools, "_clauses_by_id", rows_for)
+    rows = await tools.required_documents(AsyncMock(), ids, index=index)
+    sent = _short(rows)
+    assert len(sent) == products * 8
+    assert {(row["product_id"], row["clause_id"]) for row in sent} == {
+        (product, f"art.{number}") for product in ids for number in range(8)
+    }
+
+
 @pytest.mark.asyncio
 async def test_every_product_a_member_holds_appears_in_the_document_list(db):
     # `_short` keeps twelve rows, and the query ordered by product — so a member holding
@@ -814,32 +953,3 @@ def test_a_reference_is_resolved_inside_its_own_contract():
 
     rows = [{"product_id": "p1", "clause_id": "art.4", "verbatim": "因第三條約定而住院。"}]
     assert _referenced(rows) == [("p1", "art.3")]
-
-
-@pytest.mark.parametrize("products", [5, 7])
-async def test_required_documents_eight_per_product_survive_prompt_context(monkeypatch, products):
-    from unittest.mock import AsyncMock, Mock
-
-    from policydesk.agent import tools
-    from policydesk.agent.executor import _short
-    from policydesk.retrieval.base import CLAUSE, Hit
-
-    ids = [f"p{number}" for number in range(products)]
-    index = Mock()
-
-    def search(query, *, corpus, scope, limit):
-        assert limit == 8
-        return [Hit(CLAUSE, f"art.{number}", scope[0], 1) for number in range(8)]
-
-    async def rows_for(db, keys):
-        return [{"product_id": product, "clause_id": clause, "verbatim": "申領文件（原文）。"}
-                for product, clause in keys]
-
-    index.search.side_effect = search
-    monkeypatch.setattr(tools, "_clauses_by_id", rows_for)
-    rows = await tools.required_documents(AsyncMock(), ids, index=index)
-    sent = _short(rows)
-    assert len(sent) == products * 8
-    assert {(row["product_id"], row["clause_id"]) for row in sent} == {
-        (product, f"art.{number}") for product in ids for number in range(8)
-    }
