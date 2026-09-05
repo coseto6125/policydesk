@@ -2031,8 +2031,17 @@ function renderSetup(draft) {
   return card;
 }
 
+// The socket scheme follows the page. Hardcoding the insecure one makes it mixed
+// content the moment the page is served over https, and the browser refuses it with no
+// visible error: behind the demo tunnel both panes stayed at 尚未連線 and the composer
+// kept 請先完成建檔, while http://localhost:8100 was fine. The defect lived only where
+// the QR code sends people.
+function wsUrl(path) {
+  return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${path}`;
+}
+
 function connectCustomer(name) {
-  customerWs = new WebSocket(`ws://${location.host}/ws/customer`);
+  customerWs = new WebSocket(wsUrl("/ws/customer"));
   customerWs.onopen = () => customerWs.send(JSON.stringify({ type: "hello", name }));
   customerWs.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
@@ -2110,7 +2119,7 @@ function connectCustomer(name) {
 }
 
 function connectDesk() {
-  deskWs = new WebSocket(`ws://${location.host}/ws/desk?token=${encodeURIComponent(DESK_TOKEN)}&member=${memberId}`);
+  deskWs = new WebSocket(wsUrl(`/ws/desk?token=${encodeURIComponent(DESK_TOKEN)}&member=${memberId}`));
   deskWs.onopen = () => setLink("live", "已連線 · 即時同步");
   deskWs.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
