@@ -1,10 +1,12 @@
 """
 The model, behind a seam.
 
-Two implementations sit behind one Protocol. `OpenAIProvider` calls the Responses API
-over HTTP; `ScriptedProvider` answers from a fixture. Nothing above this module knows
-which one it holds — the difference shows only in `llm_usage.provider`, which is the
-property that makes running on a mock honest rather than a pretence.
+Four implementations sit behind one Protocol. `AnthropicProvider` calls the Anthropic
+Messages API through the official SDK and is what a deployment runs on; `OpenAIProvider`
+calls the Responses API over HTTP; `CodexCliProvider` shells out to a locally signed-in
+`codex`; `ScriptedProvider` answers from a fixture. Nothing above this module knows which
+one it holds — the difference shows only in `llm_usage.provider`, which is the property
+that makes running on a mock honest rather than a pretence.
 
 Every call is recorded whichever provider served it: phase, scenario, tools offered,
 token counts, latency, and the request and response bodies. A prompt-based validator
@@ -26,10 +28,12 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 import aiohttp
+import anthropic
 import stamina
 from msgspec import DecodeError, Struct, json
 
 from policydesk.bootloader import logger
+from policydesk.llm.oauth import OAUTH_BETA_HEADER, OAuthCredentialError, SubscriptionOAuthToken
 
 RESPONSES_URL = "https://api.openai.com/v1/responses"
 DEFAULT_MODEL = os.environ.get("POLICYDESK_MODEL", "gpt-5.6-luna")
@@ -39,9 +43,8 @@ class Phase(StrEnum):
     """
     Where in a turn a model call sits.
 
-    Matches the `llm_usage.phase` check constraint. `VALIDATE` is this project's
-    addition to the enoract set: a prompt-based check is itself a traced call, which
-    is how a non-deterministic verdict still leaves an auditable record.
+    Names the seven phases allowed by the memory migration's `llm_usage` constraint.
+    An allowed phase does not imply that its runtime path writes usage records.
     """
 
     ROUTE = "route"
@@ -50,6 +53,12 @@ class Phase(StrEnum):
     VALIDATE = "validate"
     REPAIR = "repair"
     EMBEDDING = "embedding"
+    FACTS = "facts"
+
+    @property
+    def temperature(self) -> float:
+        """HTTP sampling only; the CLI does not expose temperature."""
+        return 0.3 if self is Phase.ANSWER else 0.1
 
 
 class Completion(Struct, frozen=True):
@@ -80,6 +89,7 @@ class Provider(Protocol):
         tools: list[dict[str, Any]] | None = None,
         schema: dict[str, Any] | None = None,
         model: str | None = None,
+        phase: Phase | None = None,
     ) -> Completion:
         """
         Ask the model once.
@@ -90,6 +100,7 @@ class Provider(Protocol):
             tools: Tool schemas the model may call.
             schema: A JSON Schema the reply must satisfy, for a structured verdict.
             model: Overrides the configured model.
+            phase: Selects HTTP sampling; providers without temperature ignore it.
 
         Returns:
             The completion and its usage.
@@ -139,6 +150,7 @@ class OpenAIProvider:
         tools: list[dict[str, Any]] | None = None,
         schema: dict[str, Any] | None = None,
         model: str | None = None,
+        phase: Phase | None = None,
     ) -> Completion:
         """
         Ask the model once over HTTP.
@@ -149,6 +161,7 @@ class OpenAIProvider:
             tools: Tool schemas the model may call.
             schema: A JSON Schema the reply must satisfy.
             model: Overrides the configured model.
+            phase: Selects the HTTP sampling temperature when supplied.
 
         Returns:
             The completion and its usage.
@@ -168,6 +181,8 @@ class OpenAIProvider:
         }
         if tools:
             body["tools"] = tools
+        if phase is not None:
+            body["temperature"] = phase.temperature
         if schema:
             body["text"] = {"format": {"type": "json_schema", "name": "verdict", "strict": True, "schema": schema}}
 
@@ -238,6 +253,7 @@ class ScriptedProvider:
         tools: list[dict[str, Any]] | None = None,  # noqa: ARG002  - Protocol shape; a script has no tools to offer
         schema: dict[str, Any] | None = None,  # noqa: ARG002  - Protocol shape; a script cannot be constrained
         model: str | None = None,
+        phase: Phase | None = None,  # noqa: ARG002 - Scripted answers do not sample.
     ) -> Completion:
         """
         Return the scripted answer for this input.
@@ -248,6 +264,7 @@ class ScriptedProvider:
             tools: Ignored.
             schema: Ignored.
             model: Recorded as the model name.
+            phase: Ignored.
 
         Returns:
             The scripted completion.
@@ -417,6 +434,7 @@ class CodexCliProvider:
         tools: list[dict[str, Any]] | None = None,
         schema: dict[str, Any] | None = None,
         model: str | None = None,
+        phase: Phase | None = None,  # noqa: ARG002 - Codex CLI has no temperature control.
     ) -> Completion:
         """
         Ask the model once, through the CLI.
@@ -427,6 +445,7 @@ class CodexCliProvider:
             tools: Tool schemas the model may call, described into the prompt.
             schema: A JSON Schema the reply must satisfy.
             model: Overrides the configured model.
+            phase: Ignored; the CLI uses its existing reasoning effort and schema.
 
         Returns:
             The completion and its usage.
@@ -592,25 +611,300 @@ def _split_envelope(text: str) -> tuple[str, tuple[dict[str, Any], ...]]:
     return parsed.get("reply", ""), calls
 
 
+# ------------------------------------------------------------- Anthropic provider
+
+ANTHROPIC_MODEL = os.environ.get("POLICYDESK_ANTHROPIC_MODEL", "claude-haiku-4-5")
+# The answer call has to hold a full reply plus its citations and quoted clause text.
+# Haiku 4.5 does not think unless asked, so nothing shares this ceiling with a
+# reasoning block and the whole budget is the answer.
+ANTHROPIC_MAX_TOKENS = int(os.environ.get("POLICYDESK_ANTHROPIC_MAX_TOKENS", "8000"))
+
+
+def _anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    """
+    Rewrite a Responses function tool into the shape Anthropic takes.
+
+    Args:
+        tool: A `tool_schema` result: `type`, `name`, `description`, `parameters`.
+
+    Returns:
+        The same tool with its parameter schema under `input_schema`, which is the only
+        difference between the two dialects for the tools this desk offers.
+
+    """
+    return {
+        "name": tool["name"],
+        "description": tool.get("description", ""),
+        "input_schema": _anthropic_schema(tool.get("parameters") or {"type": "object", "properties": {}}),
+    }
+
+
+def _anthropic_schema(node: Any) -> Any:
+    """
+    Rewrite a JSON Schema into the subset Anthropic's validator accepts.
+
+    Args:
+        node: Any node of the schema.
+
+    Returns:
+        The rewritten node. Two shapes differ from the dialect the Responses API takes,
+        and both are rewritten into an equivalent rather than dropped — a constraint
+        this desk states about citations is not one to lose in a translation.
+
+        - `maxItems: 0` on an array is rejected outright: verified 400 "For 'array'
+          type, property 'maxItems' is not supported", the same answer `prefixItems`
+          gets. `_answer_schema` and `VERDICT_SCHEMA` use it to say "cite nothing", so
+          the array becomes `{"type": "null"}` — under structured outputs the only
+          legal token sequence for that field is then `null`, which is hard enforcement
+          and not the model choosing to comply. Verified against `claude-haiku-4-5` on
+          three of three attempts under a prompt demanding the field be filled.
+          `_restore_empty` reads that `null` back as the empty list the caller's struct
+          expects, so nothing above this module sees the rewrite. Keeping the guarantee
+          here is what leaves `_unverifiable` a second line of defence rather than the
+          only one. (`items: false` and `minItems` are accepted but unenforced — the
+          model fills the array anyway — and an empty `enum` is rejected.)
+        - `{"type": ["string", "null"], "enum": [..., null]}` — the form msgspec emits
+          for a nullable enum — is rejected as an enum whose values do not match the
+          declared type. It becomes the equivalent `anyOf` of a typed enum and null.
+
+    """
+    if isinstance(node, dict):
+        if node.get("type") == "array" and node.get("maxItems") == 0:
+            # The description survives, so the model still reads why the field is empty.
+            return {"type": "null"} | ({"description": node["description"]} if "description" in node else {})
+        if isinstance(kinds := node.get("type"), list) and "null" in kinds and "enum" in node:
+            plain = [kind for kind in kinds if kind != "null"]
+            base = {
+                "type": plain[0] if len(plain) == 1 else plain,
+                "enum": [value for value in node["enum"] if value is not None],
+            }
+            rest = {k: _anthropic_schema(v) for k, v in node.items() if k not in ("type", "enum")}
+            return rest | {"anyOf": [base, {"type": "null"}]}
+        return {k: _anthropic_schema(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_anthropic_schema(item) for item in node]
+    return node
+
+
+def _emptied(schema: dict[str, Any]) -> tuple[str, ...]:
+    """
+    Name the fields `_anthropic_schema` turned into a null.
+
+    Args:
+        schema: The schema the caller passed, before the rewrite.
+
+    Returns:
+        The top-level property names that said `maxItems: 0`. Both schemas that use it —
+        `_answer_schema` and `VERDICT_SCHEMA` — are flat objects, so a top-level scan is
+        the whole set; a nested one would need the body walked as well, and none exists.
+
+    """
+    return tuple(
+        name
+        for name, node in (schema.get("properties") or {}).items()
+        if isinstance(node, dict) and node.get("type") == "array" and node.get("maxItems") == 0
+    )
+
+
+def _restore_empty(text: str, fields: tuple[str, ...]) -> str:
+    """
+    Read the nulls `_anthropic_schema` asked for back as empty lists.
+
+    Args:
+        text: The model's reply, as the API returned it.
+        fields: The names that were rewritten.
+
+    Returns:
+        The reply with each rewritten field set to `[]`, so it decodes into the caller's
+        struct unchanged. A reply that does not parse is handed back untouched: the
+        caller already reports a malformed answer as a format fault, and repairing one
+        here would only hide it.
+
+    """
+    try:
+        body = json.decode(text.encode())
+    except DecodeError:
+        return text
+    if not isinstance(body, dict):
+        return text
+    for field in fields:
+        if body.get(field) is None:
+            body[field] = []
+    return json.encode(body).decode()
+
+
+class AnthropicProvider:
+    """
+    Calls the Anthropic Messages API on Claude Code's subscription OAuth token.
+
+    The seam exists so the desk runs on a host nobody is signed in on. `CodexCliProvider`
+    needs a `codex` session on the machine, which a container cannot have; this one reads
+    a credential file, and `ANTHROPIC_OAUTH_CREDS_PATH` points it at a token synced to
+    the deployment. The trade against the CLI is the same one the HTTP path already made:
+    a request instead of a process, so about one second instead of about five.
+
+    The official SDK rather than raw HTTP, unlike `OpenAIProvider`: the request body here
+    is small enough to read in one screen, and the SDK carries the retry policy, the
+    typed errors and the response model that the HTTP path spells out by hand.
+
+    Sampling reaches the API through `extra_body`. Anthropic removed `temperature` from
+    the models released after Haiku 4.5, so the SDK no longer takes it as a parameter —
+    but Haiku 4.5 itself still honours it, and `Phase.temperature` is the reason this
+    desk routes at 0.1 and answers at 0.3.
+    """
+
+    name = "anthropic"
+
+    def __init__(self, model: str = ANTHROPIC_MODEL) -> None:
+        self._model = model
+        self._credentials = SubscriptionOAuthToken()
+        self._client: anthropic.AsyncAnthropic | None = None
+
+    async def close(self) -> None:
+        """Close the shared HTTP client."""
+        if self._client is not None:
+            await self._client.close()
+        self._client = None
+
+    def _open_client(self) -> anthropic.AsyncAnthropic:
+        """
+        Return the shared client, opening it on first use.
+
+        Returns:
+            One client reused across calls, carrying a token read fresh each time.
+
+        The token is re-set per call because Claude Code rotates it in the background and
+        the SDK reads this attribute at request time. Rebuilding the client instead would
+        throw away the connection pool on every turn, which is the cost `OpenAIProvider`'s
+        shared session exists to avoid.
+
+        """
+        if self._client is None:
+            self._client = anthropic.AsyncAnthropic(
+                auth_token=self._credentials.token(),
+                # The header is what makes the API accept a subscription Bearer token
+                # instead of a Console key. `anthropic-version` the SDK sends itself.
+                default_headers={"anthropic-beta": OAUTH_BETA_HEADER},
+                timeout=90.0,
+                max_retries=3,
+            )
+        self._client.auth_token = self._credentials.token()
+        return self._client
+
+    async def complete(
+        self,
+        *,
+        instructions: str,
+        user_input: str,
+        tools: list[dict[str, Any]] | None = None,
+        schema: dict[str, Any] | None = None,
+        model: str | None = None,
+        phase: Phase | None = None,  # noqa: ARG002 - see below; the SDK takes no temperature.
+    ) -> Completion:
+        """
+        Ask the model once.
+
+        Args:
+            instructions: The system-level brief, sent as the top-level `system`.
+            user_input: What this turn is about, sent as the one user message.
+            tools: Tool schemas the model may call, rewritten by `_anthropic_tool`.
+            schema: A JSON Schema the reply must satisfy, enforced by `output_config`.
+            model: Overrides the configured model.
+            phase: Ignored. `Phase.temperature` is deliberately not forwarded on this
+                path — do not re-add it. Anthropic removed sampling from the models
+                released after Haiku 4.5, so `anthropic` 1.4.0's `messages.create` takes
+                no `temperature` parameter at all; Haiku 4.5 itself still honours the
+                field on the wire, but the only way to reach it is `extra_body`, and
+                this desk does not route a customer's turn through an undeclared back
+                door. The model answers at its own default. `Phase.temperature` stays
+                because the HTTP and CLI paths still read it.
+
+        Returns:
+            The completion and its usage.
+
+        Raises:
+            ProviderError: The API refused, or the credential file could not be read.
+                The caller states that it could not answer; it never invents one.
+
+        """
+        body: dict[str, Any] = {
+            "model": model or self._model,
+            "max_tokens": ANTHROPIC_MAX_TOKENS,
+            "system": instructions,
+            "messages": [{"role": "user", "content": user_input}],
+        }
+        if tools:
+            body["tools"] = [_anthropic_tool(tool) for tool in tools]
+        if schema:
+            body["output_config"] = {"format": {"type": "json_schema", "schema": _anthropic_schema(schema)}}
+
+        started = time.perf_counter()
+        try:
+            message = await self._open_client().messages.create(**body)
+        except OAuthCredentialError as exc:
+            raise ProviderError(f"anthropic credentials unreadable: {exc}") from exc
+        except anthropic.APIStatusError as exc:
+            logger.warning("llm_http_error", status=exc.status_code, message=str(exc)[:400])
+            raise ProviderError(f"anthropic api {exc.status_code}: {str(exc)[:400]}") from exc
+        except anthropic.APIError as exc:
+            logger.warning("llm_transport_error", message=str(exc)[:400])
+            raise ProviderError(f"anthropic api unreachable: {str(exc)[:400]}") from exc
+        latency_ms = int((time.perf_counter() - started) * 1000)
+
+        text = "".join(block.text for block in message.content if block.type == "text")
+        if schema and (emptied := _emptied(schema)):
+            text = _restore_empty(text, emptied)
+        usage = message.usage
+        # Anthropic reports the cached slice beside the uncached count; `pricing.price`
+        # reads `cached_tokens` as a slice *of* `prompt_tokens`, so the two are summed
+        # here rather than passed through, or the cached tokens would go unpriced.
+        cached = usage.cache_read_input_tokens or 0
+        prompt_tokens = usage.input_tokens + cached + (usage.cache_creation_input_tokens or 0)
+        return Completion(
+            text=text,
+            tool_calls=tuple(
+                {"type": "function_call", "name": block.name, "arguments": json.encode(block.input).decode()}
+                for block in message.content
+                if block.type == "tool_use"
+            ),
+            model=message.model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=usage.output_tokens,
+            cached_tokens=cached,
+            total_tokens=prompt_tokens + usage.output_tokens,
+            latency_ms=latency_ms,
+            provider=self.name,
+            raw={"stop_reason": message.stop_reason, "usage": usage.model_dump(mode="json"), "text": text[:4000]},
+        )
+
+
 def build_provider() -> Provider:
     """
     Choose the provider this deployment runs on.
 
     Returns:
-        The HTTP provider when an API key is set, and the CLI provider otherwise.
-        `POLICYDESK_PROVIDER` forces either one. The fallback is deliberate: a machine
-        with `codex` signed in can drive the whole desk with no key at all, and a
-        deployment that meant to use a key finds out at the first turn rather than
-        silently spending someone else's subscription.
+        The provider named by `POLICYDESK_PROVIDER`, or the first of these that this
+        machine can actually run: the Anthropic subscription path when a credential file
+        is readable, the OpenAI HTTP path when a key is set, the codex CLI otherwise.
+
+    Anthropic leads because it is what this desk is meant to run on, and because it is
+    the only one a cloud host can reach: `ANTHROPIC_OAUTH_CREDS_PATH` points at a synced
+    token, and neither an API key nor a signed-in `codex` session is needed. The other
+    two stay reachable, by name or by being the only thing present.
 
     """
     match os.environ.get("POLICYDESK_PROVIDER", "").lower():
+        case "anthropic":
+            return AnthropicProvider()
         case "openai":
             return OpenAIProvider()
         case "codex":
             return CodexCliProvider()
         case _:
+            if SubscriptionOAuthToken.available():
+                return AnthropicProvider()
             if os.environ.get("OPENAI_API_KEY"):
+                logger.info("provider_selected", provider="openai", reason="no anthropic credentials")
                 return OpenAIProvider()
-            logger.info("provider_selected", provider="codex-cli", reason="no OPENAI_API_KEY")
+            logger.info("provider_selected", provider="codex-cli", reason="no credentials")
             return CodexCliProvider()

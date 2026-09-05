@@ -72,7 +72,7 @@ from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute, tools
 from policydesk.agent.scenario_base import Param, Scenario, gather_tools
-from policydesk.agent.tools import requires_identity
+from policydesk.agent.tools import public, requires_identity
 from policydesk.synthetic.person import OccupationClass, occupation_catalogue
 
 if TYPE_CHECKING:
@@ -97,6 +97,7 @@ never load-bearing on their own.
 """
 
 
+@public
 async def occupation_duty(
     db: Database, concern: str, *, limit: int = 2, retriever: Any | None = None
 ) -> list[dict[str, Any]]:
@@ -134,6 +135,7 @@ async def occupation_duty(
     ]
 
 
+@public
 async def occupation_classes() -> list[dict[str, object]]:
     """
     List the occupations this insurer classifies, with the class each carries.
@@ -360,7 +362,7 @@ OCCUPATION = Scenario(
         "此時先把保險法第59條雙向的規定（危險增加要通知、危險降低可以請求重新核定保費）"
         "完整說一次，職業分類對照表也可以先給他參考，不要因為缺一半資料就整段不答。"
         "答完再說明：要對照他自己名下保單的職業等級上限與條款內容，需要先核對身分，"
-        "請他提供身分證字號。不要憑空講他的職業或任何一張保單的內容。"
+        "並依本連線的核對狀態引導下一步。不要憑空講他的職業或任何一張保單的內容。"
     ),
     tools=("occupation_duty", "occupation_classes", "member_occupation", "occupation_clause"),
     tools_module="policydesk.agent.scenarios.occupation",

@@ -7,6 +7,7 @@ phrases is a substring of anything in the corpus, so the `kind IN (exclusion, ca
 waiting)` arm of the WHERE fired every time and the topic was ignored.
 """
 
+import itertools
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ STATUTE = "statute"
 
 
 @pytest.fixture(scope="module")
-def index():
+async def index(db):
     """
     Open the real index, once for the module.
 
@@ -30,14 +31,11 @@ def index():
     a filler word deciding the order, and a question of nothing but filler answering with
     silence — are both invisible to a string search.
     """
-    import asyncio
-
-    from policydesk.core.db import Database
     from policydesk.retrieval.index import INDEX_DIR, open_index
 
     if not (INDEX_DIR / "meta.json").is_file():
         pytest.skip("no index built; run policydesk-index")
-    opened = asyncio.run(open_index(Database()))
+    opened = await open_index(db)
     if opened is None:
         pytest.skip("the index would not open")
     return opened
@@ -98,7 +96,7 @@ def test_one_index_holds_both_corpora():
     from policydesk.retrieval.index import _SOURCES
 
     assert set(_SOURCES) == {CLAUSE, STATUTE}
-    assert "FROM clause" in _SOURCES[CLAUSE]
+    assert "FROM contract_clause" in _SOURCES[CLAUSE]
     assert "FROM statute_article" in _SOURCES[STATUTE]
 
 
@@ -292,16 +290,13 @@ def test_a_confident_channel_is_not_diluted_by_a_confident_mistake():
     assert [h.doc_id for h in weighted] == ["art.18", "art.6"], "the halved channel still ranks, it does not vanish"
 
 
-def test_the_weighted_hybrid_reaches_what_only_one_channel_can(index):
+async def test_the_weighted_hybrid_reaches_what_only_one_channel_can(index, db):
     # The query this whole second channel exists for. 換工作 and 職業變更 share no
     # character, so the lexical side has nothing to rank on.
-    import asyncio
-
-    from policydesk.core.db import Database
     from policydesk.retrieval.base import CLAUSE, HybridRetriever
     from policydesk.retrieval.vectors import open_vectors
 
-    semantic = asyncio.run(open_vectors(Database()))
+    semantic = await open_vectors(db)
     if semantic is None:
         pytest.skip("no vectors built")
     hits = HybridRetriever([index, semantic]).search("換工作會不會影響保險", corpus=CLAUSE, scope=(), limit=3)
@@ -326,3 +321,417 @@ def test_a_limit_of_zero_returns_nothing_rather_than_everything(index):
     from policydesk.retrieval.base import STATUTE
 
     assert index.search("復效", corpus=STATUTE, limit=0) == []
+
+
+@pytest.mark.parametrize("overlap", [0, 4, 8])
+def test_passages_long_document_covers_tail_and_every_character(overlap):
+    from tokenizers import Tokenizer, models, pre_tokenizers
+
+    from policydesk.retrieval.vectors import passages
+
+    tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))  # noqa: S106
+    tokenizer.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+    text = "契約標題\n" + "給付條件 不同條件 " * 80 + "只有尾段才有的權利。\n"
+    spans = passages(text, tokenizer, tokens=24, overlap=overlap)
+    assert len(spans) > 1
+    assert spans[0][0] == 0
+    assert spans[-1][1] == len(text)
+    assert all(left < right for left, right in spans)
+    assert all(next_left <= right for (_, right), (next_left, _) in itertools.pairwise(spans))
+    assert all(len(tokenizer.encode(text[left:right]).ids) <= 24 for left, right in spans)
+    assert "只有尾段才有的權利。" in text[spans[-1][0]:spans[-1][1]]
+
+
+def test_rrf_shared_hit_keeps_semantic_excerpt():
+    from policydesk.retrieval.base import CLAUSE, Hit, rrf
+
+    lexical = Hit(corpus=CLAUSE, scope_id="p", doc_id="art.1", score=8)
+    semantic = Hit(corpus=CLAUSE, scope_id="p", doc_id="art.1", score=0.8, start=2000, end=2400)
+    for rankings in ([lexical], [semantic]), ([semantic], [lexical]):
+        result = rrf(rankings, limit=1)
+        assert (result[0].start, result[0].end) == (2000, 2400)
+
+
+async def test_find_clause_semantic_tail_reaches_tool_output():
+    from unittest.mock import AsyncMock
+
+    from policydesk.agent.tools import DOCUMENT_CHARS, find_clause
+    from policydesk.retrieval.base import CLAUSE, Hit
+
+    body = "無關開頭。" * DOCUMENT_CHARS + "尾端給付條件。"
+    heading = "保障範圍"
+    full_text = heading + "\n" + body
+    start = full_text.index("尾端")
+    db = AsyncMock()
+    db.fetch.return_value = [{"product_id": "p", "clause_id": "art.1", "heading": heading, "verbatim": body}]
+
+    class TailRetriever:
+        def search(self, query, **kwargs):
+            assert kwargs["scope"] == ["p"]
+            return [Hit(corpus=CLAUSE, scope_id="p", doc_id="art.1", score=1, start=start, end=len(full_text))]
+
+    result = await find_clause(db, ["p"], "尾端條件", index=TailRetriever())
+    assert result[0]["verbatim"] == "…尾端給付條件。"
+
+
+async def test_find_clause_short_article_preserves_proviso_outside_match():
+    from unittest.mock import AsyncMock
+
+    from policydesk.agent.executor import _short
+    from policydesk.agent.tools import find_clause
+    from policydesk.retrieval.base import CLAUSE, Hit
+
+    body = "美容手術不予給付。但為重建基本功能所作之必要整型，不在此限。"
+    heading = "除外責任"
+    db = AsyncMock()
+    db.fetch.return_value = [{"product_id": "p", "clause_id": "art.1", "heading": heading, "verbatim": body}]
+
+    class NarrowRetriever:
+        def search(self, query, **kwargs):
+            return [Hit(corpus=CLAUSE, scope_id="p", doc_id="art.1", score=1,
+                        start=len(heading) + 1, end=len(heading) + 11)]
+
+    result = _short(await find_clause(db, ["p"], "美容手術", index=NarrowRetriever()))
+    assert result[0]["verbatim"] == body
+
+
+@pytest.mark.parametrize("size", [1398, 1436, 4000])
+async def test_find_clause_bounded_article_preserves_tail_exception(size):
+    from unittest.mock import AsyncMock
+
+    from policydesk.agent.executor import _short
+    from policydesk.agent.tools import find_clause
+    from policydesk.retrieval.base import CLAUSE, Hit
+
+    proviso = "但為重建基本功能所作之必要整型，不在此限。"
+    body = "條" * (size - len(proviso)) + proviso
+    heading = "除外責任"
+    db = AsyncMock()
+    db.fetch.return_value = [{"product_id": "p", "clause_id": "art.1", "heading": heading, "verbatim": body}]
+
+    class NarrowRetriever:
+        def search(self, query, **kwargs):
+            return [Hit(corpus=CLAUSE, scope_id="p", doc_id="art.1", score=1,
+                        start=len(heading) + 1, end=len(heading) + 100)]
+
+    result = _short(await find_clause(db, ["p"], "除外責任", index=NarrowRetriever()))
+    assert result[0]["verbatim"] == body
+    assert not result[0]["verbatim"].endswith("…"), "a whole article carries no cut mark"
+
+
+def test_short_long_clause_marks_text_truncation():
+    from policydesk.agent.executor import _short
+    from policydesk.agent.tools import DOCUMENT_CHARS
+
+    result = _short({"verbatim": "條件" * DOCUMENT_CHARS, "heading": "保障範圍"})
+    assert result["verbatim"].endswith("…"), "a quote cut here carries the same mark the retrieval path uses"
+    assert result["truncated_fields"] == ["verbatim"]
+    assert len(result["verbatim"]) == DOCUMENT_CHARS
+
+
+async def test_build_failed_encoder_keeps_active_generation(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from tokenizers import Tokenizer, models
+
+    from policydesk.retrieval import vectors
+
+    tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))  # noqa: S106
+    tokenizer.save(str(tmp_path / "tokenizer.json"))
+    (tmp_path / "current.json").write_text('{"generation":"previous"}')
+    monkeypatch.setattr(vectors, "documents", AsyncMock(return_value=[{"key": "clause|p|a", "text": "合約"}]))
+
+    class BrokenEncoder:
+        model = "test-model"
+
+        def __init__(self, url):
+            pass
+
+        def encode(self, *args, **kwargs):
+            raise OSError("server disconnected")
+
+    monkeypatch.setattr(vectors, "ServerEmbedder", BrokenEncoder)
+    with pytest.raises(OSError, match="disconnected"):
+        await vectors.build(AsyncMock(), path=tmp_path, model_dir=tmp_path, server_url="http://localhost:8090")
+    assert (tmp_path / "current.json").read_text() == '{"generation":"previous"}'
+
+
+@pytest.mark.parametrize(("covered", "unchanged"), [(True, True), (False, True), (True, False)])
+async def test_audit_passage_coverage_serializable_and_source_sensitive(tmp_path, monkeypatch, covered, unchanged):
+    from unittest.mock import AsyncMock
+
+    import numpy as np
+    from msgspec import json
+
+    from policydesk.retrieval import vectors
+
+    source = [{"key": "clause|p|art.1", "text": "保障條件與限制"}]
+    root = tmp_path / "snapshot"
+    root.mkdir()
+    matrix = np.zeros((2, vectors.DIM), dtype=np.float32)
+    matrix[:, 0] = 1
+    np.save(root / "vectors.npy", matrix)
+    np.save(root / "keys.npy", np.array([source[0]["key"]] * 2))
+    np.save(root / "spans.npy", np.array([(0, 3), (3 if covered else 4, len(source[0]["text"]))]))
+    manifest = {"generation": "snapshot", "source_sha256": vectors.fingerprint(source)}
+    (tmp_path / "current.json").write_bytes(json.encode(manifest))
+    if not unchanged:
+        source[0]["text"] = "另有條件與限制"
+    monkeypatch.setattr(vectors, "documents", AsyncMock(return_value=source))
+
+    result = await vectors.audit(AsyncMock(), path=tmp_path)
+    decoded = json.decode(json.encode(result))
+    assert decoded["complete"] is (covered and unchanged)
+    assert decoded["uncovered"] == (0 if covered else 1)
+    assert decoded["source_matches"] is unchanged
+
+
+async def test_audit_identical_sources_in_different_order_remain_current(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import numpy as np
+    from msgspec import json
+
+    from policydesk.retrieval import vectors
+
+    source = [{"key": "statute|s|art.1", "text": "原文甲"}, {"key": "statute|s|art.1.1", "text": "原文乙"}]
+    root = tmp_path / "snapshot"
+    root.mkdir()
+    matrix = np.zeros((2, vectors.DIM), dtype=np.float32)
+    matrix[:, 0] = 1
+    np.save(root / "vectors.npy", matrix)
+    np.save(root / "keys.npy", np.array([row["key"] for row in source]))
+    np.save(root / "spans.npy", np.array([(0, 3), (0, 3)]))
+    (tmp_path / "current.json").write_bytes(json.encode({
+        "generation": "snapshot", "source_sha256": vectors.fingerprint(source),
+    }))
+    monkeypatch.setattr(vectors, "documents", AsyncMock(return_value=source[::-1]))
+    result = await vectors.audit(AsyncMock(), path=tmp_path)
+    assert result["complete"] is True
+
+
+def test_server_embedder_invalid_rows_rejects_response(monkeypatch):
+    import numpy as np
+
+    from policydesk.retrieval.vectors import DIM, ServerEmbedder
+
+    def response(self, route, payload=None):
+        if route == "/v1/models":
+            return {"data": [{"id": "bge"}]}
+        return {"data": [{"index": 1, "embedding": np.ones(DIM).tolist()}]}
+
+    monkeypatch.setattr(ServerEmbedder, "_request", response)
+    with pytest.raises(ValueError, match="indices"):
+        ServerEmbedder("http://localhost:8090").encode(["一筆輸入"])
+
+
+def _write_vector_generation(root, *, generation: str, encoder: dict) -> None:
+    """Shared fixture: one manifest, one one-row matrix, matching `EmbeddingRetriever`'s layout."""
+    import numpy as np
+    from msgspec import json
+
+    from policydesk.retrieval import vectors
+
+    gen_dir = root / generation
+    gen_dir.mkdir()
+    np.save(gen_dir / "vectors.npy", np.zeros((1, vectors.DIM), dtype=np.float32))
+    np.save(gen_dir / "keys.npy", np.array(["clause|p|art.1"]))
+    np.save(gen_dir / "spans.npy", np.array([(0, 3)]))
+    manifest = {"generation": generation, "encoder": encoder, "documents": 1, "passages": 1,
+                "source_sha256": "x", "tokens": 512, "overlap": 64}
+    (root / "current.json").write_bytes(json.encode(manifest))
+
+
+def test_cf_backend_dispatches_to_cloudflare_encoder(tmp_path, monkeypatch):
+    """A manifest built by `cf-workers-ai` must open with `CloudflareEncoder`, not ONNX."""
+    import numpy as np
+
+    from policydesk.retrieval import vectors
+
+    _write_vector_generation(tmp_path, generation="gen1", encoder={"backend": "cf-workers-ai", "model": vectors.CF_MODEL})
+
+    class FakeCFEncoder:
+        def __init__(self, model):
+            self.model = model
+
+        def encode(self, texts, *, progress=0):
+            return np.zeros((len(texts), vectors.DIM), dtype=np.float32)
+
+    monkeypatch.setattr(vectors, "CloudflareEncoder", FakeCFEncoder)
+    retriever = vectors.EmbeddingRetriever(tmp_path)
+    assert isinstance(retriever._embedder, FakeCFEncoder)
+    assert retriever._embedder.model == vectors.CF_MODEL
+
+
+def test_cf_backend_model_mismatch_fails_loudly(tmp_path, monkeypatch):
+    """
+    llama-server and Workers AI serve different weights of bge-m3 (quantized vs not) —
+    a query encoded on one against an index built by the other is a silent regression,
+    never an error. `POLICYDESK_CF_MODEL` disagreeing with the manifest must raise before
+    a single vector is compared, not degrade the ranking quietly.
+    """
+    from policydesk.retrieval import vectors
+
+    _write_vector_generation(tmp_path, generation="gen1", encoder={"backend": "cf-workers-ai", "model": vectors.CF_MODEL})
+    monkeypatch.setenv("POLICYDESK_CF_MODEL", "@cf/some-other-model")
+    with pytest.raises(ValueError, match="differs from the indexed model"):
+        vectors.EmbeddingRetriever(tmp_path)
+
+
+async def test_build_selects_cf_workers_ai_when_no_server_url_but_creds_present(tmp_path, monkeypatch):
+    """
+    `build` follows the same presence-based dispatch as the llama-server branch: a
+    server URL wins, cf-workers-ai is next when configured, ONNX is the fallback.
+    """
+    from unittest.mock import AsyncMock
+
+    import numpy as np
+    from msgspec import json
+    from tokenizers import Tokenizer, models
+
+    from policydesk.retrieval import vectors
+
+    tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))  # noqa: S106
+    tokenizer.save(str(tmp_path / "tokenizer.json"))
+    monkeypatch.setattr(vectors, "documents", AsyncMock(return_value=[{"key": "clause|p|a", "text": "合約"}]))
+    monkeypatch.delenv("POLICYDESK_EMBED_URL", raising=False)
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("CLOUDFLARE_AUTH_TOKEN", "token")
+
+    class FakeCFEncoder:
+        def __init__(self, model):
+            self.model = model
+
+        def encode(self, texts, *, progress=0):
+            return np.zeros((len(texts), vectors.DIM), dtype=np.float32)
+
+    monkeypatch.setattr(vectors, "CloudflareEncoder", FakeCFEncoder)
+    await vectors.build(AsyncMock(), path=tmp_path, model_dir=tmp_path)
+    manifest = json.decode((tmp_path / "current.json").read_bytes())
+    assert manifest["encoder"] == {"backend": "cf-workers-ai", "model": vectors.CF_MODEL}
+
+
+def test_parse_cf_credentials_requires_matching_counts(monkeypatch):
+    from policydesk.retrieval.vectors import parse_cf_credentials
+
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_AUTH_TOKEN", raising=False)
+    assert parse_cf_credentials(None, None) == []
+    assert parse_cf_credentials("a,b", "t1,t2") == [("a", "t1"), ("b", "t2")]
+    with pytest.raises(ValueError, match="counts must match"):
+        parse_cf_credentials("a,b", "t1")
+
+
+async def test_cloudflare_embed_halves_batch_on_400_with_more_than_one_item(monkeypatch):
+    """
+    The measured split: a 400 on a multi-item batch means "this batch, not this text" —
+    halve and retry rather than fail the whole request. A single-item 400 has nowhere
+    left to halve to, so it propagates.
+    """
+    import aiohttp
+
+    from policydesk.retrieval.vectors import DIM, CloudflareClient
+
+    calls: list[int] = []
+
+    async def fake_run(self, model, payload):
+        texts = payload["text"]
+        calls.append(len(texts))
+        if len(texts) > 1:
+            raise aiohttp.ClientResponseError(request_info=None, history=(), status=400)
+        return {"result": {"data": [[0.0] * DIM]}}
+
+    monkeypatch.setattr(CloudflareClient, "run", fake_run)
+    client = object.__new__(CloudflareClient)
+    rows = await client.embed("model", ["a", "b", "c", "d"], max_batch=4)
+    assert len(rows) == 4
+    assert calls[0] == 4, "the whole batch is tried first"
+    assert calls.count(1) == 4, "it must bottom out at one item per call, not fail early"
+
+
+async def test_cloudflare_embed_retries_5xx_and_propagates_other_4xx(monkeypatch):
+    import aiohttp
+
+    from policydesk.retrieval.vectors import DIM, CloudflareClient
+
+    client = object.__new__(CloudflareClient)
+
+    attempts = {"n": 0}
+
+    async def flaky_5xx(self, model, payload):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise aiohttp.ClientResponseError(request_info=None, history=(), status=503)
+        return {"result": {"data": [[0.0] * DIM]}}
+
+    monkeypatch.setattr(CloudflareClient, "run", flaky_5xx)
+    rows = await client.embed("model", ["a"], max_batch=4)
+    assert len(rows) == 1
+    assert attempts["n"] == 2, "a transient 5xx must be retried, not fatal"
+
+    async def permanent_403(self, model, payload):
+        raise aiohttp.ClientResponseError(request_info=None, history=(), status=403)
+
+    monkeypatch.setattr(CloudflareClient, "run", permanent_403)
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.embed("model", ["a"], max_batch=4)
+
+
+async def test_cloudflare_encoder_embeds_real_clause_text_at_1024_dims(db):
+    """
+    Acceptance: real clause text, through the live Workers AI endpoint, asserting
+    dimension and row count — not a mock of the response shape.
+    """
+    import asyncio
+    import os
+
+    import numpy as np
+
+    if not os.environ.get("CLOUDFLARE_ACCOUNT_ID") or not os.environ.get("CLOUDFLARE_AUTH_TOKEN"):
+        pytest.skip("CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_AUTH_TOKEN not set in this environment")
+
+    from policydesk.retrieval.vectors import DIM, CloudflareEncoder
+
+    rows = await db.fetch("SELECT verbatim FROM contract_clause WHERE verbatim IS NOT NULL LIMIT $1", [5])
+    texts = [row["verbatim"] for row in rows]
+    assert texts, "contract_clause has no verbatim text in this database"
+
+    vectors_out = await asyncio.to_thread(CloudflareEncoder().encode, texts)
+
+    assert vectors_out.shape == (len(texts), DIM)
+    assert np.isfinite(vectors_out).all()
+    assert np.allclose(np.linalg.norm(vectors_out, axis=1), 1, atol=1e-4)
+
+
+async def test_suitable_products_retrieves_only_sql_eligible_contracts():
+    from unittest.mock import AsyncMock
+
+    from policydesk.agent.tools import DOCUMENT_CHARS, suitable_products
+    from policydesk.retrieval.base import CLAUSE, Hit
+
+    db = AsyncMock()
+    evidence = {"product_id": "hospital", "clause_id": "art.9", "heading": "住院保障",
+                "verbatim": "不相干內容" * DOCUMENT_CHARS + "契約原文"}
+    full_text = evidence["heading"] + "\n" + evidence["verbatim"]
+    db.fetch.side_effect = [
+        [{"product_id": "cheap", "requires_main": False}, {"product_id": "hospital", "requires_main": True}],
+        [{"product_id": "hospital", "clause_id": "waiting", "kind": "waiting", "verbatim": "等待期原文"}],
+        [evidence],
+    ]
+
+    class ScopedRetriever:
+        def search(self, query, **kwargs):
+            assert query == "住院保障"
+            assert kwargs["scope"] == ["cheap", "hospital"]
+            return [Hit(corpus=CLAUSE, scope_id="ineligible", doc_id="art.1", score=1),
+                    Hit(corpus=CLAUSE, scope_id="hospital", doc_id="art.9", score=0.9,
+                        start=len(full_text) - 4, end=len(full_text))]
+
+    rows = await suitable_products(db, insurance_age=35, occupation_class=1, budget=20000,
+                                   line="health", limit=1, need="住院保障", index=ScopedRetriever())
+    assert [row["product_id"] for row in rows] == ["hospital"]
+    assert rows[0]["requires_main"] is True
+    assert rows[0]["selection_basis"] == "eligibility and contract retrieval"
+    assert {row["clause_id"] for row in rows[0]["contract_evidence"]} == {"art.9", "waiting"}
+    matched = next(row for row in rows[0]["contract_evidence"] if row["clause_id"] == "art.9")
+    assert matched["verbatim"] == "…契約原文"

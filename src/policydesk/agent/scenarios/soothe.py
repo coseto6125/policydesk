@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute
 from policydesk.agent.scenario_base import Param, Scenario, gather_tools
+from policydesk.agent.tools import public
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
 STATUTE_SCOPE: list[str] = ["insurance_act", "insurance_act_rules", "financial_consumer_protection_act"]
 """Which statutes a complaint may be answered from."""
 
+@public
 async def statute_reference(
     db: Database, concern: str, limit: int = 4, *, retriever: Any | None = None
 ) -> list[dict[str, Any]]:
@@ -102,6 +104,7 @@ saying it has talked him out of a right.
 """
 
 
+@public
 async def complaint_channel(db: Database) -> dict[str, str]:
     """
     State the escalation route, with the provision it rests on.
@@ -203,7 +206,7 @@ SOOTHE = Scenario(
         "不是就跳過，全部都不是就承接情緒之後直接講申訴管道與期限，"
         "並說這件事需要進一步查證。硬湊一條比不引更傷害保戶。\n"
         "不要提到保戶名下任何一張保單的內容，這個情境沒有查他的資料。"
-        "他問到自己的保單時，告訴他你可以為他查，並請他完成身分核對。"
+        "他問到自己的保單時，說明查詢需要核對身分，並依本連線的核對狀態引導下一步。"
     ),
     tools=("statute_reference", "complaint_channel"),
     tools_module="policydesk.agent.scenarios.soothe",

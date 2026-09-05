@@ -94,7 +94,7 @@ def _instalments(start: date, mode: str, until: date) -> list[date]:
         year, month = at.year + month // 12, month % 12 + 1
         # The 31st of a month the next one does not have falls back to its last day, the
         # same way a real billing anniversary does.
-        day = min(at.day, [31, 29 if year % 4 == 0 and (year % 100 or year % 400 == 0) else 28,
+        day = min(start.day, [31, 29 if year % 4 == 0 and (year % 100 or year % 400 == 0) else 28,
                            31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
         at = date(year, month, day)
     return dates
@@ -181,15 +181,17 @@ async def furnish(db: Database, member_id: int, *, today: date, seed: int | None
         # had stopped for non-payment that they owed nothing. The missed instalment is the
         # last one before the lapse, which is the due date §116's thirty days ran from.
         owes = in_grace or (lapsed is not None and len(due) > 1)
-        # Most missed instalments have their 催告 on record, a few days after the due date;
-        # some do not. Both states exist in a real book, and the desk answers them
-        # differently: a recorded arrival gives a deadline it can compute, an absent one
-        # gives a question it has to ask.
-        notice = (
-            min(due[-1] + timedelta(days=rng.randint(3, 12)), today)
-            if owes and rng.random() < NOTICE_ON_RECORD
-            else None
-        )
+        # The portfolio already fixes whether and when this contract lapsed. A notice
+        # invented independently made payment and reinstatement give different dates
+        # for the same policy. Unknown delivery stays unknown; a recorded one must
+        # agree with that state, including an active policy still inside its window.
+        notice = None
+        if owes and rng.random() < NOTICE_ON_RECORD:
+            notice = (
+                lapsed - timedelta(days=GRACE_DAYS)
+                if lapsed is not None
+                else max(due[-1], today - timedelta(days=rng.randint(0, GRACE_DAYS - 1)))
+            )
         rows = [
             (policy["policy_id"], d, None if owes and d == due[-1] else d, instalment,
              notice if owes and d == due[-1] else None)

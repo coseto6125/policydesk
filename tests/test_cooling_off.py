@@ -12,7 +12,6 @@ on-sale product's own contract states fourteen. The tests assert that property d
 against the corpus, not against a fixture that only ever says ten.
 """
 
-import pytest
 
 from policydesk.agent import tools
 from policydesk.agent.scenarios.cooling_off import (
@@ -22,18 +21,6 @@ from policydesk.agent.scenarios.cooling_off import (
     gather,
     member_rescission,
 )
-from policydesk.core.db import Database
-
-
-@pytest.fixture(scope="module")
-async def db():
-    pool = Database()
-    try:
-        await pool.fetch_val("SELECT 1")
-    except Exception:
-        pytest.skip("policydesk-pg is not up")
-    yield pool
-    await pool.close()
 
 
 async def test_insurance_act_rules_article_4_is_not_a_cooling_off_clause(db):

@@ -20,12 +20,15 @@ are traceable" are not in conflict: the model decides, the store adjudicates whe
 the model was reading the same documents everyone else can read.
 """
 
+from copy import deepcopy
 from typing import Any
 
 from msgspec import DecodeError, Struct, json
 
 from policydesk.bootloader import logger
 from policydesk.llm.provider import Completion, Phase, Provider, ProviderError
+
+_WIDTH_PUNCTUATION = str.maketrans({ord(char) + 0xFEE0: char for char in "!(),.:;?[]{}"})
 
 # Strict schema, so the reply is parseable or the call fails. A validator that has to
 # guess at malformed output has already lost the property it exists for.
@@ -128,12 +131,12 @@ def recheck(verdict: Verdict, *, subject: dict[str, str], allowed_clauses: froze
     faults: list[str] = [f"引用了不存在的條款 {c}" for c in verdict.cited_clauses if c not in allowed_clauses]
 
     for quoted in verdict.quoted_fields:
-        if (source := subject.get(quoted.field)) is None:
+        if not (quoted_text := _squash(quoted.text)):
+            faults.append(f"欄位 {quoted.field} 的引文為空")
+        elif (source := subject.get(quoted.field)) is None:
             faults.append(f"引用了不存在的欄位 {quoted.field}")
-        # Compared with whitespace removed: PDF extraction inserts spaces between
-        # glyphs that a model will not echo back, and a quote present verbatim is
-        # present with the spaces stripped too, so this one comparison covers both.
-        elif _squash(quoted.text) not in _squash(source):
+        # Compare derived keys while retaining the original source and quote.
+        elif quoted_text not in _squash(source):
             faults.append(f"欄位 {quoted.field} 中查無所引原文")
 
     return Checked(verdict=verdict, trustworthy=not faults, faults=tuple(faults))
@@ -165,12 +168,26 @@ async def validate(
     """
     body = "\n\n".join(f"## {name}\n{text}" for name, text in subject.items())
     user_input = f"# 規則\n{rule}\n\n# 待判斷內容\n{body}"
+    schema = deepcopy(VERDICT_SCHEMA)
+    citations = schema["properties"]["cited_clauses"]
+    if allowed_clauses:
+        citations["items"]["enum"] = sorted(allowed_clauses)
+    else:
+        citations["maxItems"] = 0
+    quotes = schema["properties"]["quoted_fields"]
+    if subject:
+        fields = quotes["items"]["properties"]
+        fields["field"]["enum"] = list(subject)
+        fields["text"]["minLength"] = 1
+    else:
+        quotes["maxItems"] = 0
 
     try:
         completion = await provider.complete(
+            phase=Phase.VALIDATE,
             instructions=INSTRUCTIONS,
             user_input=user_input,
-            schema=VERDICT_SCHEMA,
+            schema=schema,
             model=model,
         )
     except ProviderError as exc:
@@ -205,16 +222,20 @@ async def validate(
 
 def _squash(text: str) -> str:
     """
-    Remove whitespace, so a quote is compared on its characters.
+    Build a comparison-only key for whitespace and explicit punctuation width.
+
+    Source and displayed text remain unchanged. Only the listed punctuation folds;
+    letters, digits and other compatibility characters retain their original codepoints.
+    Never write this key back to database clauses or use it as embedding input.
 
     Args:
         text: Any text.
 
     Returns:
-        The text with every space, tab and newline removed.
+        A new comparison string with whitespace removed and punctuation width folded.
 
     """
-    return "".join(text.split())
+    return "".join(text.translate(_WIDTH_PUNCTUATION).split())
 
 
 VALIDATE_PHASE = Phase.VALIDATE

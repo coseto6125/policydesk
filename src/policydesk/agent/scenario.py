@@ -8,9 +8,9 @@ emits its answer.
 
 `emit` is the important one here. Set to `Emit.TEMPLATE` the executor renders the
 scenario's own template from the tool rows and never reaches a model. Everything that states a figure, a
-clause or a document requirement runs that way, so the sentence a customer reads about
-their own policy is assembled from database rows rather than generated. The model's
-job is the conversation around those sentences, not the sentences themselves.
+clause or a document requirement can use that path. Document guidance uses the model
+to explain current tool state; commands alone change that state. Its wording is not
+a condition for accepting an upload or advancing a case.
 
 The parameters carry a trap enoract's own comments flag: they must reach the tool
 schema's `properties` AND its `required`. Omit that and the model calls the scenario
@@ -27,7 +27,7 @@ ASKED_ALREADY = (
     "When the previous turn already asked for the national ID number and the customer asks "
     "the same thing again, answer differently. "
     "Finish the public material that is still unsaid, or name the first thing you will look "
-    "up once the check passes. Then bring the ID number in with one sentence. "
+    "up once the check passes. Use the connection's identity verification state for the next step. "
     "A reply that is only the request, repeated, tells the customer the last answer did not land.\n"
 )
 """What to do when the refusal has already been given once.
@@ -38,10 +38,19 @@ again drew the same request in fewer words. A customer who repeats a question is
 desk the last answer did not land, and repeating it more briefly is the desk saying less each
 time it is asked.
 
-Read by both paths that can refuse — the scenario one through `IDENTITY_PENDING`, and the
-router's free answer through `executor`'s own unverified block, which is where the third of
-those three turns was written.
+Read in the unverified context shared by the router and answering phases.
 """
+
+
+IDENTITY_NEXT_STEP = (
+    "Use the connection's identity verification state for the next step.\n"
+    "When pending, request the national ID number only when personal records are needed.\n"
+    "When locked, explain that verification is paused for this connection and offer staff assistance; "
+    "request no identity information and offer no further automated verification attempt.\n"
+    "Public insurance information remains available in either state; answer it from the returned material.\n"
+)
+
+IDENTITY_LOCKED_REPLY = "本次線上核對已暫停，請改由專人與您確認身分。"
 
 
 IDENTITY_PENDING = (
@@ -52,8 +61,7 @@ IDENTITY_PENDING = (
     "When the material holds no public information, say that this question reads the "
     "customer's own records, and name what you will be able to look up once identity is "
     "checked. A product description from memory is not an answer here.\n"
-    "Then ask for the national ID number.\n"
-    + ASKED_ALREADY +
+    "Use the connection's identity verification state for the next step.\n"
     "Every statement about their policies, premiums, sums insured or claims comes from the "
     "material. What this company sells comes from the catalogue in the material and from "
     "nowhere else."
@@ -96,6 +104,23 @@ POLICY_OVERVIEW = Scenario(
     transitions=("explain_cover", "recommend", "claim_checklist"),
 )
 
+POLICY_CHOICE = Param(
+    name="policy",
+    description=(
+        "只在客戶限定特定保單時填保單號碼或商品名稱；指定描述不明時保留原描述供核對。"
+        "明確追問同一張時沿用已選保單；改問整體保障或要求全部時填「全部」。"
+        "疾病、事故、保障主題不是保單指定。"
+    ),
+    when_unsaid="未限定特定保單或不確定哪張適用時填空字串，工具會查名下所有保單，不需要先請客戶選一張。",
+)
+
+POLICY_CLARIFICATION = """你正在確認客戶要查詢哪張既有保單，尚未查詢任何契約條款。
+policy_scope.candidates 來自已核對身分的客戶名下保單。
+status 為 ambiguous 時，列出候選商品名稱與保單號碼，請客戶選擇。
+status 為 not_found 時，說明指定描述未能匹配名下保單，列出現有候選供核對；不代表客戶沒有保單。
+這一回合只確認查詢對象，不說明保障、不推測給付、不代選商品。"""
+
+
 EXPLAIN_COVER = Scenario(
     name="explain_cover",
     display_name="查詢保障內容",
@@ -113,6 +138,7 @@ EXPLAIN_COVER = Scenario(
     ),
     tools=("find_clause", "list_policies"),
     params=(
+        POLICY_CHOICE,
         Param(
             name="topic",
             description="保戶想了解的保障主題",
@@ -141,13 +167,13 @@ BROWSE_PRODUCTS = Scenario(
         "line 是空字串則代表保戶還沒挑險種——這時候不可以說任何險種沒有商品，"
         "他根本還沒提到哪一種。兩種情況都一樣：說明本公司目前有哪幾個險種可以看"
         "（壽險、醫療、意外、年金、投資型），請他挑一個。\n"
-        "你正在介紹目錄上公開販售的商品，這些資訊對任何人都可以說。\n"
+        "你正在介紹目錄所列的商品，這些資訊對任何人都可以說。\n"
         "**工具回傳的是保費最低的前幾項，不是全部。** on_sale_in_line 是這條商品線實際在售的"
         "數量，先照那個數字說「這條線目前有 N 項在售，以下是保費最低的幾項」，"
         "再逐項介紹。不可以把手上這幾項寫成完整清單——保戶會在被砍過的選項裡做比較。\n"
         "逐項說明商品名稱、每單位年繳保費與計價單位、可投保年齡範圍，並註明附約需附加於主約。"
         "說完之後告訴保戶：要判斷哪一張適合他，需要看他的年齡、職業等級與既有保障，"
-        "因此請他提供身分證字號完成核對，核對後就能為他篩選並試算。"
+        "依本連線的核對狀態引導下一步，核對後就能為他篩選並試算。"
         "不要說任何關於這位保戶自身條件或既有保單的內容，你還看不到。"
     ),
     tools=("catalogue_sample",),
@@ -203,20 +229,77 @@ RECOMMEND = Scenario(
     transitions=("issue_documents",),
 )
 
+DOCUMENT_GUIDANCE = IDENTITY_PENDING + """
+
+Guide the document demonstration from pending_signatures, not from earlier replies.
+Here signed counts completed MOCK signatures because simulation_only is true.
+The simulated signers are exactly signing_parties; 展示人員 is an operator, not an additional signer.
+identity_verified states whether this case has a successful mock check on record.
+submitted_for_review distinguishes a completed check from a submitted case.
+Explain completed work from these facts; only unfinished steps remain for the operator.
+Document titles and button labels identify UI choices: copy their full names exactly.
+This scenario reads progress; it does not issue documents, verify identity or submit cases.
+When document_action.refusal is present, explain why that attempt failed before describing the remaining work.
+A rejected attempt leaves existing progress unchanged; only pending_signatures.missing determines missing files.
+A rejection is not receipt or completed signing.
+
+Choose the current state and next step ONLY from pending_signatures.stage:
+- inquiry/proposed: files are not ready; list unissued and ask 展示人員 to prepare them first.
+- issued: identify this as a simulation with no real files or signatures, then state signed/total and missing titles.
+  Guide the customer to 右上角「應簽署文件」;「下載」views a form but does not sign it.
+  Recommend「一鍵完整」to finish remaining mock signatures, run mock identity verification, and submit for human review.
+  It runs these steps automatically; the customer need not upload each file or ask staff to advance them.
+  On first guidance, also explain the optional tests:
+  「一鍵缺漏測試」leaves one file unsigned. With only one missing file, it changes nothing.
+  「一鍵錯誤」demonstrates rejection of an unrelated sample and changes no records.
+  Individual-file controls remain available for inspecting the detailed flow.
+  These two tests are optional, not prerequisites for completing the demo.
+  Progress updates after each choice; read the resulting missing list instead of assuming a fixed file.
+  A successful complete action ends at review, where a human decides approval or rejection.
+- signed: documents are complete only when missing is empty. Say there are no missing files and no more uploads.
+  Automatic mock verification has not completed. Explain any recorded refusal and use「一鍵完整」to retry without re-signing.
+- verified: mock identity verification is complete, submission is still pending, and manual review has not started.
+  Explain any missing submission requirements. Ask staff to supply missing case data before retrying「一鍵完整」.
+  With no missing requirement reported,「一鍵完整」retries submission without repeating signatures or verification.
+- review: already submitted for 人工審核. A real staff member uses the desk to approve or reject this demo case.
+  The system records that person's decision; neither the model nor the system chooses the outcome.
+  Tell the customer to wait for that human decision, even though signatures and identity checks are simulated.
+- approved: the recorded demo decision is approval; this ends the demo, not a real policy issuance process.
+- rejected: report 本示範案件已退件. Ask 展示人員 about the next step; do not ask the customer to sign again.
+If unissued is nonempty, report those unavailable files separately; never call an incomplete set ready.
+Reporting a recorded demo decision does not establish real coverage or promise an outcome.
+
+Explain the actual state, remaining documents and next action in natural language.
+Keep the demonstration boundary clear, including in completion and rejection replies:
+this flow accepts no real files, and completed signing records are simulations, not genuine signatures.
+Demo limits are user-facing operating instructions, not technical failure details.
+The samples use fixed demo rules, NOT model verification. The「！」beside the UI notice explains
+planned local-model data checks for a future real setting; that capability is not active today.
+"""
+
+DOCUMENT_QUESTIONS = ("我還缺哪幾份文件？", "模擬上傳會記錄什麼？", "文件完成後下一步是什麼？")
+
+
 ISSUE_DOCUMENTS = Scenario(
     name="issue_documents",
     display_name="交付應簽署文件",
     summary="保戶決定投保後，交出應簽署的文件",
     description="保戶決定投保，要求文件或表示要簽約時使用。",
-    emit=Emit.TEMPLATE,
-    template=(
-        "已為您備妥應簽署文件共 {count} 份：\n{names}\n\n"
-        "請點選右上角「應簽署文件」逐份下載、簽名後上傳。\n"
-        "要保人與被保險人均須親自簽名，不得由他人代簽。"
-    ),
+    injection=DOCUMENT_GUIDANCE,
     tools=("pending_signatures",),
     transitions=("verify_identity",),
     requires_stage="proposed",
+    quick_replies=DOCUMENT_QUESTIONS,
+)
+
+DOCUMENT_PROGRESS = Scenario(
+    name="document_progress",
+    display_name="文件示範進度",
+    summary="說明本案文件示範的缺件、操作及下一步",
+    description="查詢本案目前進度、核對或送審狀態、下一步，以及投保文件怎麼操作或還缺什麼時使用。每次讀取最新紀錄，不沿用先前對話；不處理理賠應備文件。",
+    injection=DOCUMENT_GUIDANCE,
+    tools=("pending_signatures",),
+    quick_replies=DOCUMENT_QUESTIONS,
 )
 
 VERIFY_IDENTITY = Scenario(
@@ -224,12 +307,12 @@ VERIFY_IDENTITY = Scenario(
     display_name="身分驗證",
     summary="文件簽署後核對身分證字號與生日",
     description="文件簽署完成後進行身分驗證時使用。",
-    emit=Emit.TEMPLATE,
-    template="請輸入身分證字號完成驗證。驗證通過後，本案才會送交核保人員審核。",
-    tools=(),
+    injection=DOCUMENT_GUIDANCE,
+    tools=("pending_signatures",),
     params=(Param(name="national_id", description="身分證字號", example="A123456789"),),
     transitions=("submit",),
     requires_stage="signed",
+    quick_replies=DOCUMENT_QUESTIONS,
 )
 
 CLAIM_CHECKLIST = Scenario(
@@ -260,6 +343,7 @@ CLAIM_CHECKLIST = Scenario(
     quick_replies=("診斷證明書要寫到什麼程度？", "我想了解手術給付倍數怎麼算", "送出後大概多久會有結果？"),
     tools=("required_documents", "list_policies", "find_multiplier"),
     params=(
+        POLICY_CHOICE,
         Param(name="event", description="事故或就醫情形", example="住院四天接受手術"),
         Param(name="event_date", description="事故或就醫日期", example="2026-08-01"),
     ),
@@ -315,6 +399,7 @@ from policydesk.agent.scenarios.cooling_off import COOLING_OFF
 from policydesk.agent.scenarios.disclosure import DISCLOSURE
 from policydesk.agent.scenarios.occupation import OCCUPATION
 from policydesk.agent.scenarios.payment import PAYMENT
+from policydesk.agent.scenarios.product_clauses import PRODUCT_CLAUSES
 from policydesk.agent.scenarios.quote import QUOTE
 from policydesk.agent.scenarios.reinstate import REINSTATE
 from policydesk.agent.scenarios.review import REVIEW
@@ -323,9 +408,11 @@ from policydesk.agent.scenarios.soothe import SOOTHE
 CATALOGUE: tuple[Scenario, ...] = (
     POLICY_OVERVIEW,
     EXPLAIN_COVER,
+    PRODUCT_CLAUSES,
     BROWSE_PRODUCTS,
     RECOMMEND,
     ISSUE_DOCUMENTS,
+    DOCUMENT_PROGRESS,
     VERIFY_IDENTITY,
     CLAIM_CHECKLIST,
     BILLING,
@@ -360,10 +447,27 @@ them up reads as an offer to do them — 本櫃台可以協助您辦理受益人
 counter cannot keep, and the next turn can only take it back."""
 
 
+LOOKUP_SCOPE = """**Preserve the subject and lookup scope across follow-ups.** Resolve an omitted product
+from the conversation. Asking another question about a previously identified public product
+continues a public product lookup; it does not establish that the customer owns that policy.
+Call product_clauses for that product's contractual terms, including a follow-up that names
+only a condition or refers to the same product. Pass the known product name even when its
+version is ambiguous; the lookup returns candidates rather than choosing a version for them.
+Call personal-policy scenarios when the customer asks to inspect their own holdings or
+individual contract data. The scenario's gate enforces authentication, not the routing choice.
+
+"""
+
+
 ROUTER_INSTRUCTIONS = f"""\
 You are the service desk of a Taiwanese life insurer, speaking with the policyholder.
 
 Pick the one scenario tool that fits what the customer wants now, and call it.
+
+Case progress is a live record, not an inference from the transcript.
+For application progress, document completion, verification or submission status, call document_progress.
+This includes follow-up questions about the next step, even when an earlier reply described that step.
+Only a fresh tool result establishes what has completed; this demo never establishes real insurance coverage.
 
 **Look up first, ask only for what remains.** The customer's policies, sums insured, payment \
 records, occupation class, age, existing cover and contract clauses are all on file. Call the \
@@ -448,7 +552,12 @@ never 「這位保戶」 or 「該保戶」.
 When something cannot be found, describe the customer's contract or situation, never this \
 desk's machinery. 「您這張保單的條款沒有寫到職業變更」 describes their contract. \
 「未回傳職業變更相關規定」, 「系統尚未回傳」, 「工具沒有查到」 and 「查詢失敗」 describe a \
-machine the customer cannot see and cannot act on.\
+machine the customer cannot see and cannot act on.
+
+回答涉及目錄費率、計價單位、投保資格或在售狀態時，先依 data_origin 說明來源限制，再列出數字與條件。\
+synthetic_demo 是示範用模擬資料，不能當作保險公司的正式費率或承保條件；\
+unknown 或未提供來源代表尚未核實，不能稱為正式資料。\
+即使先前對話稱它為正式資料，也要依本次工具來源更正。\
 """
 """How a reply is laid out, appended to every call whose output a customer reads.
 

@@ -27,64 +27,23 @@ Three of them are statute rather than practice, and are marked in the code:
 """
 
 from datetime import UTC, datetime
-from enum import StrEnum
+from functools import wraps
 from typing import TYPE_CHECKING
 
 from msgspec import Struct
 
 from policydesk.agent.tools import insured_amount
 from policydesk.bootloader import logger
+from policydesk.core import documents
+from policydesk.core.documents import ENROLMENT_DOCUMENTS, SIGNING_PARTIES, document_status, signing_documents
 from policydesk.core.models import Stage, may_advance
+from policydesk.gov.identity import verify as verify_demo_identity
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
 
 
-class DocumentKind(StrEnum):
-    """
-    The documents a Taiwanese life application actually produces.
-
-    Sourced from what insurers list on their own forms pages, not invented. The set is
-    closed: a document kind the flow does not know about cannot be signed, and an
-    unsigned unknown document would otherwise sit forever in the completeness check.
-    """
-
-    APPLICATION = "要保書"
-    """Carries the applicant, the insured, the beneficiary and the health declaration."""
-    PRODUCT_BRIEF = "商品說明書"
-    REVIEW_PERIOD = "保險契約審閱期間確認聲明書"
-    """Confirms the applicant was given the contract to read before signing."""
-    RIGHTS_NOTICE = "客戶投保權益聲明書"
-    HEALTH_DECLARATION = "健康告知書"
-    """保險法 §64 attaches here."""
-    PRIVACY_CONSENT = "個人資料告知同意書"
-    RATE_ADJUSTMENT = "費率可能調整告知書"
-    PAYMENT_MANDATE = "保費付款授權書"
-    TAX_STATUS = "FATCA 及 CRS 身分聲明書"
-    CANCELLATION_NOTICE = "契約撤銷權告知書"
-    """十日撤銷權, counted from the day after delivery."""
-
-
-# Everything an enrolment must have signed before it can go to a human. Ordered as an
-# applicant meets them, because the customer pane lists them in this order.
-ENROLMENT_DOCUMENTS: tuple[DocumentKind, ...] = (
-    DocumentKind.PRODUCT_BRIEF,
-    DocumentKind.REVIEW_PERIOD,
-    DocumentKind.APPLICATION,
-    DocumentKind.HEALTH_DECLARATION,
-    DocumentKind.RIGHTS_NOTICE,
-    DocumentKind.PRIVACY_CONSENT,
-    DocumentKind.RATE_ADJUSTMENT,
-    DocumentKind.PAYMENT_MANDATE,
-    DocumentKind.TAX_STATUS,
-    DocumentKind.CANCELLATION_NOTICE,
-)
-
-# 要保人 and 被保險人 must each sign personally. In this demo one person is both, so
-# the pair is recorded rather than collapsed — an application signed by one party on
-# the other's behalf is the defect this records the shape of.
-SIGNING_PARTIES: tuple[str, ...] = ("要保人", "被保險人")
-
+DocumentKind = documents.DocumentKind
 
 class Refusal(Struct, frozen=True):
     """A command that could not run, and the reason a customer can read."""
@@ -102,6 +61,40 @@ class Applied(Struct, frozen=True):
 
 
 Outcome = Applied | Refusal
+
+
+def _atomic_case(operation):
+    """
+    Serialize each case before checking it; document locks follow in ID order.
+
+    Refusal can report persisted partial signatures or an unsuccessful identity check.
+    Rollback follows exceptions, not the outcome type. True refusals precede writes.
+    """
+    @wraps(operation)
+    async def run(db: Database, case_id: int, *args, **kwargs):
+        async with db.transaction() as session:
+            await session.fetch_one('SELECT case_id FROM "case" WHERE case_id = $1::bigint FOR UPDATE', [case_id])
+            await session.fetch(
+                "SELECT document_id FROM case_document WHERE case_id = $1::bigint ORDER BY document_id FOR UPDATE",
+                [case_id],
+            )
+            outcome = await operation(session, case_id, *args, **kwargs)
+        if isinstance(outcome, Applied):
+            logger.info("case_moved", case_id=case_id, stage=outcome.stage.value, version=outcome.case_version)
+        return outcome
+
+    return run
+
+
+def _atomic_member(operation):
+    """Lock the member before looking for a case: a missing case has no row to lock."""
+    @wraps(operation)
+    async def run(db: Database, member_id: int, *args, **kwargs):
+        async with db.transaction() as session:
+            await session.fetch_one("SELECT member_id FROM member WHERE member_id = $1::bigint FOR UPDATE", [member_id])
+            return await operation(session, member_id, *args, **kwargs)
+
+    return run
 
 
 async def _bump(db: Database, case_id: int, stage: Stage, actor: str, action: str, detail: dict) -> Applied:
@@ -131,10 +124,10 @@ async def _bump(db: Database, case_id: int, stage: Stage, actor: str, action: st
         # psqlpy binds jsonb from a dict. An encoded string raises PyToRustValueMappingError.
         [case_id, actor, action, detail, version],
     )
-    logger.info("case_moved", case_id=case_id, stage=stage.value, version=version, actor=actor)
     return Applied(case_id=case_id, stage=stage, case_version=version)
 
 
+@_atomic_member
 async def open_case(db: Database, member_id: int, kind: str = "enrolment") -> Applied:
     """
     Start a case for a member, or return the one already open.
@@ -157,7 +150,7 @@ async def open_case(db: Database, member_id: int, kind: str = "enrolment") -> Ap
     live = await db.fetch_one(
         """SELECT case_id, stage, case_version FROM "case"
            WHERE member_id = $1::bigint AND kind = $2::text AND stage NOT IN ('approved','rejected')
-           ORDER BY case_version DESC, case_id DESC LIMIT 1""",
+           ORDER BY case_version DESC, case_id DESC LIMIT 1 FOR UPDATE""",
         [member_id, kind],
     )
     if live is not None:
@@ -177,6 +170,7 @@ async def open_case(db: Database, member_id: int, kind: str = "enrolment") -> Ap
     return Applied(case_id=case_id, stage=Stage.INQUIRY, case_version=1)
 
 
+@_atomic_case
 async def propose(db: Database, case_id: int, *, product_ids: list[str], adviser: str, licence: str) -> Outcome:
     """
     Record a recommendation, under the adviser who answers for it.
@@ -215,6 +209,7 @@ async def propose(db: Database, case_id: int, *, product_ids: list[str], adviser
     )
 
 
+@_atomic_case
 async def issue_documents(db: Database, case_id: int) -> Outcome:
     """
     Put the signing set in front of the applicant.
@@ -244,6 +239,7 @@ async def issue_documents(db: Database, case_id: int) -> Outcome:
     )
 
 
+@_atomic_case
 async def record_signature(db: Database, case_id: int, *, document_id: int, party: str, document_sha: str) -> Outcome:
     """
     Record one signature on one document.
@@ -253,65 +249,177 @@ async def record_signature(db: Database, case_id: int, *, document_id: int, part
         case_id: The case.
         document_id: Which document was signed.
         party: 要保人 or 被保險人.
-        document_sha: The bytes that were signed.
+        document_sha: The version identifier recorded for the signed document.
 
     Returns:
         Applied when this signature completes the set and the case moves to SIGNED;
         otherwise a Refusal naming what is still outstanding.
 
-    A signature binds to the document's hash. Amending a document after it was signed
-    changes the hash, which invalidates the signature rather than silently replacing it.
+    A grant must match the current document version. Both roles must sign that version.
+    These checks validate demo records; they do not verify uploaded bytes or cryptographic signatures.
 
     """
     if party not in SIGNING_PARTIES:
         return Refusal(reason=f"{party} 非要保人或被保險人，不得代簽")
 
+    return await _record_signatures(db, case_id, document_id=document_id, parties=(party,), document_sha=document_sha)
+
+
+@_atomic_case
+async def upload_document(
+    db: Database, case_id: int, *, document_id: int, filename: str = "", sample: str | None = None,
+    advance_demo: bool = False,
+) -> Outcome:
+    """
+    Record the verified session's demo upload and both roles atomically, without writing file bytes.
+
+    The caller supplies the case from the confirmed session, never from the message.
+    A filename is display metadata, not a filesystem path or proof of a real signature.
+    Fixed samples exercise matching and mismatched document kinds by demo rules only.
+    They do not call a local model or inspect a real file.
+    The confirmed demo socket opts into verification and submission after the last document.
+    """
+    if sample is not None and sample not in ("matching", "mismatched"):
+        return Refusal(reason="請選擇有效的示範文件")
+    if sample is None:
+        filename = filename.strip()
+        if not filename or len(filename) > 255:
+            return Refusal(reason="請提供 1 至 255 字元的文件名稱")
+    document = await db.fetch_one(
+        "SELECT sha, kind FROM case_document WHERE case_id = $1::bigint AND document_id = $2::bigint",
+        [case_id, document_id],
+    )
+    if document is None:
+        return Refusal(reason="無法處理這份文件。")
+    if sample is not None:
+        stage = await db.fetch_val('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
+        if stage != Stage.ISSUED.value:
+            return Refusal(reason="案件狀態不允許進行簽署")
+        if sample == "mismatched":
+            return Refusal(reason=f"示範規則檢查：所選樣本是空白便條紙，不是本欄需要的「{document['kind']}」，未記錄模擬簽署。")
+        filename = f"示範-{document['kind']}.pdf"
+    outcome = await _record_signatures(
+        db, case_id, document_id=document_id, parties=SIGNING_PARTIES,
+        document_sha=document["sha"] or "", filename=filename,
+    )
+    if advance_demo and isinstance(outcome, Applied):
+        return await _finish_document_demo(db, case_id)
+    return outcome
+
+
+@_atomic_case
+async def demonstrate_documents(db: Database, case_id: int, *, mode: str) -> Outcome:
+    """
+    Apply one demo preset to the confirmed session's case, never real documents.
+
+    Missing leaves one pending document without erasing prior progress. Wrong writes
+    nothing. Complete records pending documents, then runs mock verification and submission.
+    All selected documents share one case transaction, including cancellation rollback.
+    """
+    if mode not in ("missing", "wrong", "complete"):
+        return Refusal(reason="請選擇有效的文件示範操作")
+    stage = await db.fetch_val('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
+    if mode == "complete" and stage in (Stage.SIGNED.value, Stage.VERIFIED.value, Stage.REVIEW.value):
+        return await _finish_document_demo(db, case_id)
+    if stage != Stage.ISSUED.value:
+        return Refusal(reason="案件狀態不允許進行簽署")
+    documents = await signing_documents(db, case_id)
+    status = document_status(documents)
+    if status["unissued"]:
+        return Refusal(reason="應備文件尚未全部產生，請先由櫃台補齊")
+    pending = [document for document in documents if document["signed_at"] is None]
+    if not pending:
+        return Refusal(reason="目前沒有待完成模擬簽署的文件")
+    if mode == "wrong":
+        return Refusal(reason=f"示範規則檢查：空白便條紙不是所需的「{pending[0]['title']}」，未記錄模擬簽署。")
+    selected = pending[:-1] if mode == "missing" else pending
+    if any(not document["sha"] for document in selected):
+        return Refusal(reason="文件缺少目前版本，請先由櫃台重新產生")
+    outcome = Refusal(reason="尚有文件未完成模擬簽署", missing=status["missing"])
+    for document in selected:
+        outcome = await _record_signatures(
+            db, case_id, document_id=document["document_id"], parties=SIGNING_PARTIES,
+            document_sha=document["sha"], filename=f"示範-{document['kind']}.pdf",
+        )
+    if mode == "complete" and isinstance(outcome, Applied):
+        return await _finish_document_demo(db, case_id)
+    return outcome
+
+
+async def _finish_document_demo(db: Database, case_id: int) -> Outcome:
+    """
+    Resume guarded demo steps in the caller's transaction; leave decisions to humans.
+
+    Refusals preserve completed steps and their evidence for a retry. Exceptions roll
+    the whole command back. A completed submission is read-only on repeated clicks.
+    """
+    case = await db.fetch_one(
+        'SELECT c.stage, c.case_version, m.national_id FROM "case" c JOIN member m USING (member_id) WHERE c.case_id = $1::bigint',
+        [case_id],
+    )
+    if case["stage"] == Stage.REVIEW.value:
+        return Applied(case_id=case_id, stage=Stage.REVIEW, case_version=case["case_version"])
+    if case["stage"] == Stage.SIGNED.value:
+        result = verify_demo_identity(case["national_id"])
+        outcome = await _verify_identity(
+            db, case_id, national_id=case["national_id"], verified=result.verified,
+            reason="示範身分核對（非地端模型驗證）" if result.verified else result.reason, latency_ms=0,
+        )
+        if isinstance(outcome, Refusal):
+            return outcome
+    return await _submit_for_review(db, case_id)
+
+
+async def _record_signatures(
+    db: Database, case_id: int, *, document_id: int, parties: tuple[str, ...],
+    document_sha: str, filename: str | None = None,
+) -> Outcome:
+    """Run inside the caller's case transaction; validate everything before the first write."""
     # Ownership first. Without this the UPDATE below silently affects no row for a
     # document belonging to another case, and the grant is written anyway — an
     # authorisation record pointing at a document the case does not contain.
-    owner = await db.fetch_val(
-        "SELECT case_id FROM case_document WHERE document_id = $1::bigint", [document_id]
+    document = await db.fetch_one(
+        "SELECT case_id, sha FROM case_document WHERE document_id = $1::bigint", [document_id]
     )
-    if owner is None:
+    if document is None:
         return Refusal(reason="查無此文件")
-    if int(owner) != int(case_id):
+    if int(document["case_id"]) != int(case_id):
         return Refusal(reason="該文件不屬於本案件，不得簽署")
-
-    await db.execute(
-        """INSERT INTO authorization_grant (case_id, stage, scope, document_sha)
-           VALUES ($1::bigint,$2::text,$3::text,$4::text)""",
-        [case_id, Stage.SIGNED.value, f"{party} 簽署文件 {document_id}", document_sha],
-    )
-
-    # 要保人 and 被保險人 must each sign personally or the contract may be void, so a
-    # document counts as signed only once both grants exist. Marking it on the first
-    # signature let a case reach SIGNED on one party's, with the other's absence
-    # visible nowhere: the party was recorded only inside a grant's scope text, which
-    # nothing read.
-    signed_parties = await db.fetch_val(
-        """SELECT count(DISTINCT split_part(scope, ' ', 1)) FROM authorization_grant
-           WHERE case_id = $1::bigint AND scope LIKE '%' || $2::text""",
-        [case_id, f"簽署文件 {document_id}"],
-    )
-    if int(signed_parties or 0) >= len(SIGNING_PARTIES):
-        await db.execute(
-            "UPDATE case_document SET signed_at = now() WHERE document_id = $1::bigint AND case_id = $2::bigint",
-            [document_id, case_id],
-        )
-
-    outstanding = await db.fetch(
-        "SELECT kind FROM case_document WHERE case_id = $1::bigint AND signed_at IS NULL",
-        [case_id],
-    )
-    if outstanding:
-        return Refusal(reason="尚有文件未經要保人及被保險人雙方簽署", missing=tuple(r["kind"] for r in outstanding))
-
+    if not document["sha"] or document_sha != document["sha"]:
+        return Refusal(reason="簽署的文件版本與目前文件不符，請重新確認文件")
     case = await db.fetch_one('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
     if case is None or not may_advance(Stage(case["stage"]), Stage.SIGNED):
-        return Refusal(reason="案件狀態不允許進入已簽署")
-    return await _bump(db, case_id, Stage.SIGNED, "customer", "documents_signed", {"party": party})
+        return Refusal(reason="案件狀態不允許進行簽署")
+
+    if filename is not None:
+        await db.execute(
+            "UPDATE case_document SET uploaded_name = $2::text WHERE document_id = $1::bigint AND case_id = $3::bigint",
+            [document_id, filename, case_id],
+        )
+    await db.execute_many(
+        """INSERT INTO authorization_grant (case_id, stage, scope, document_sha, provider)
+           VALUES ($1::bigint,$2::text,$3::text,$4::text,'mock')""",
+        [(case_id, Stage.SIGNED.value, f"{party} 簽署文件 {document_id}", document_sha) for party in parties],
+    )
+
+    documents = await signing_documents(db, case_id)
+    current = next(row for row in documents if row["document_id"] == document_id)
+    if current["signed_parties"] == len(SIGNING_PARTIES):
+        await db.execute(
+            """UPDATE case_document SET signed_at = now()
+               WHERE document_id = $1::bigint AND case_id = $2::bigint AND sha = $3::text""",
+            [document_id, case_id, document_sha],
+        )
+
+    outstanding = document_status(await signing_documents(db, case_id))["missing"]
+    if outstanding:
+        return Refusal(reason="尚有文件未經要保人及被保險人雙方簽署", missing=outstanding)
+
+    detail = {"party": parties[0]} if len(parties) == 1 else {"parties": list(parties)}
+    return await _bump(db, case_id, Stage.SIGNED, "customer", "documents_signed", detail)
 
 
+@_atomic_case
 async def verify_identity(db: Database, case_id: int, *, national_id: str, verified: bool, reason: str, latency_ms: int) -> Outcome:
     """
     Record an identity check and advance if it passed.
@@ -331,6 +439,13 @@ async def verify_identity(db: Database, case_id: int, *, national_id: str, verif
     leave no trace cannot be audited.
 
     """
+    return await _verify_identity(
+        db, case_id, national_id=national_id, verified=verified, reason=reason, latency_ms=latency_ms,
+    )
+
+
+async def _verify_identity(db: Database, case_id: int, *, national_id: str, verified: bool, reason: str, latency_ms: int) -> Outcome:
+    """Apply the identity guard inside the caller's case transaction."""
     case = await db.fetch_one(
         """SELECT c.stage, m.national_id AS member_national_id
            FROM "case" c JOIN member m USING (member_id) WHERE c.case_id = $1::bigint""",
@@ -363,6 +478,7 @@ async def verify_identity(db: Database, case_id: int, *, national_id: str, verif
     return await _bump(db, case_id, Stage.VERIFIED, "gov:mock", "identity_verified", {"national_id": national_id})
 
 
+@_atomic_case
 async def submit_for_review(db: Database, case_id: int) -> Outcome:
     """
     Hand a complete file to a human.
@@ -378,6 +494,11 @@ async def submit_for_review(db: Database, case_id: int) -> Outcome:
     application is accepted, and nothing in this function looks at the answer.
 
     """
+    return await _submit_for_review(db, case_id)
+
+
+async def _submit_for_review(db: Database, case_id: int) -> Outcome:
+    """Apply the completeness guard inside the caller's case transaction."""
     case = await db.fetch_one('SELECT stage, adviser_licence FROM "case" WHERE case_id = $1::bigint', [case_id])
     if case is None:
         return Refusal(reason="查無此案件")
@@ -386,10 +507,7 @@ async def submit_for_review(db: Database, case_id: int) -> Outcome:
     if not case["adviser_licence"]:
         missing.append("責任業務員登錄字號")
 
-    unsigned = await db.fetch(
-        "SELECT kind FROM case_document WHERE case_id = $1::bigint AND signed_at IS NULL", [case_id]
-    )
-    missing.extend(r["kind"] for r in unsigned)
+    missing.extend(document_status(await signing_documents(db, case_id))["missing"])
 
     verified = await db.fetch_val(
         "SELECT bool_or(verified) FROM identity_check WHERE case_id = $1::bigint", [case_id]
@@ -405,6 +523,7 @@ async def submit_for_review(db: Database, case_id: int) -> Outcome:
     return await _bump(db, case_id, Stage.REVIEW, "agent", "submitted_for_review", {})
 
 
+@_atomic_case
 async def decide(db: Database, case_id: int, *, approved: bool, reason: str, by: str) -> Outcome:
     """
     Record a caseworker's decision.
@@ -438,6 +557,7 @@ async def decide(db: Database, case_id: int, *, approved: bool, reason: str, by:
     return await _bump(db, case_id, target, by, "decided", {"approved": approved, "reason": reason})
 
 
+@_atomic_case
 async def snapshot(db: Database, case_id: int) -> dict | None:
     """
     Read the case as both panes render it.
@@ -462,10 +582,8 @@ async def snapshot(db: Database, case_id: int) -> dict | None:
     if case is None:
         return None
 
-    case["documents"] = await db.fetch(
-        "SELECT document_id, kind, title, signed_at, uploaded_name FROM case_document WHERE case_id = $1::bigint ORDER BY document_id",
-        [case_id],
-    )
+    case["documents"] = await signing_documents(db, case_id)
+    case["document_status"] = document_status(case["documents"])
     case["identity_checks"] = await db.fetch(
         "SELECT verified, reason, latency_ms, checked_at FROM identity_check WHERE case_id = $1::bigint ORDER BY check_id",
         [case_id],

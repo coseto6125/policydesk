@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute, tools
 from policydesk.agent.scenario_base import Param, Scenario, gather_tools
+from policydesk.agent.tools import public
 
 if TYPE_CHECKING:
     from datetime import date
@@ -174,6 +175,7 @@ async def payment_history(db: Database, member_id: int, limit: int = 8) -> list[
     )
 
 
+@public
 async def grace_rule(db: Database, *, retriever: Any | None = None) -> list[dict[str, Any]]:
     """
     Read what the law says about a premium that was not paid.
@@ -240,7 +242,7 @@ async def mode_change_rule(db: Database, member_id: int) -> list[dict[str, Any]]
         """SELECT po.policy_number, c.product_id, c.clause_id, c.heading, c.verbatim, c.page,
                   pr.name AS product_name
            FROM policy po
-           JOIN clause c USING (product_id)
+           JOIN contract_clause c USING (product_id)
            JOIN product pr USING (product_id)
            WHERE po.member_id = $1::bigint AND po.lapsed_at IS NULL AND c.heading ~ $2::text
            ORDER BY po.policy_number, c.clause_id""",

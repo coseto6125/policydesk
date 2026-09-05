@@ -61,7 +61,7 @@ from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute, tools
 from policydesk.agent.scenario_base import Param, Scenario, gather_tools
-from policydesk.agent.tools import requires_identity
+from policydesk.agent.tools import public, requires_identity
 
 if TYPE_CHECKING:
     from datetime import date
@@ -123,6 +123,7 @@ def _as_rows(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+@public
 async def designation_rules(
     db: Database, concern: str, *, limit: int = 2, retriever: Any | None = None
 ) -> list[dict[str, Any]]:
@@ -144,6 +145,7 @@ async def designation_rules(
     return _as_rows(await statute.search_statute(db, topic, STATUTE_SCOPE, limit=limit, retriever=retriever))
 
 
+@public
 async def undesignated_fallback(db: Database, *, retriever: Any | None = None) -> list[dict[str, Any]]:
     """
     Find §112-113's provisions on what happens when nobody was named.
@@ -173,6 +175,7 @@ async def undesignated_fallback(db: Database, *, retriever: Any | None = None) -
     return _as_rows([hit for hit in hits if hit["article"] == _UNDESIGNATED])
 
 
+@public
 async def designated_protection(db: Database, *, retriever: Any | None = None) -> list[dict[str, Any]]:
     """
     Find §112's provision on what designating a beneficiary protects.
@@ -362,7 +365,7 @@ BENEFICIARY = Scenario(
         "與名下保單。此時照工具回傳的公開規定，把受益人可以怎麼指定或變更、通知才生效、"
         "以及沒有指定時的法定結果完整說一次——這部分不需要身分就能答，先把能答的答完，"
         "不要因為缺一半資料就整段都不答。答完再說明：要看他目前紀錄上的受益人是誰、"
-        "以及會影響哪幾張保單，需要先核對身分，請他提供身分證字號。"
+        "以及會影響哪幾張保單，需要先核對身分，並依本連線的核對狀態引導下一步。"
         "不要憑空講任何關於他保單或受益人的內容。"
     ),
     tools=(

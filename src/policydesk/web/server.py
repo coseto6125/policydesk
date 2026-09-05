@@ -30,7 +30,7 @@ from sanic import Request, Sanic, Websocket, html, response
 from policydesk.agent import i18n, memory
 from policydesk.agent import locale as lang
 from policydesk.agent.executor import Turn, run_turn
-from policydesk.agent.scenario import OPENERS
+from policydesk.agent.scenario import IDENTITY_LOCKED_REPLY, OPENERS
 from policydesk.bootloader import logger
 from policydesk.core import commands as cmd
 from policydesk.core.db import Database
@@ -116,8 +116,9 @@ async def _open_db(application: Sanic, _loop) -> None:
     """Open the pool once, before the first request."""
     application.ctx.db = Database()
     # One seam, and which implementation sits behind it is a deployment choice: the
-    # HTTP API when a key is set, the locally signed-in codex CLI otherwise. Neither
-    # one answers when it cannot reach a model — a desk that invents an answer about
+    # OpenAI HTTP API when a key is set, the Anthropic subscription token when its
+    # credential file is readable, the locally signed-in codex CLI otherwise. None of
+    # them answers when it cannot reach a model — a desk that invents an answer about
     # someone's policy is worse than one that admits it is down.
     application.ctx.provider = build_provider()
     logger.info("provider_ready", provider=application.ctx.provider.name)
@@ -138,6 +139,14 @@ async def _open_db(application: Sanic, _loop) -> None:
     )
     channels = [r for r in (lexical, semantic) if r is not None]
     application.ctx.clauses = HybridRetriever(channels, reranker=encoder) if channels else None
+    application.ctx.retrieval_status = {
+        "channels": [r.name for r in channels],
+        "vector_generation": semantic.manifest["generation"] if semantic is not None and semantic.manifest else None,
+        "vector_rows": semantic.size if semantic is not None else 0,
+        "source_documents": {row["document_kind"]: row["count"] for row in await application.ctx.db.fetch(
+            "SELECT document_kind,count(*) AS count FROM product GROUP BY document_kind"
+        )},
+    }
     logger.info("retrieval_ready", channels=[r.name for r in channels], rerank=encoder is not None)
     if not os.environ.get("POLICYDESK_DESK_TOKEN"):
         logger.warning("desk_token_generated", token=DESK_TOKEN, hint="set POLICYDESK_DESK_TOKEN to fix it across restarts")
@@ -254,7 +263,7 @@ async def alias(request: Request):
 async def health(request: Request):
     """Report whether the desk can reach its database."""
     products = await request.app.ctx.db.fetch_val("SELECT count(*) FROM product")
-    return response.json({"ok": True, "products": products})
+    return response.json({"ok": True, "products": products, "retrieval": request.app.ctx.retrieval_status})
 
 
 async def _broadcast_desk(application: Sanic, payload: dict[str, Any]) -> None:
@@ -268,9 +277,19 @@ async def _broadcast_desk(application: Sanic, payload: dict[str, Any]) -> None:
     A caseworker watching a case must see it move as the customer moves it. Polling
     would show them a version behind, which is exactly the drift that makes two panes
     into two stories.
+
+    Only the panes scoped to this case's member receive it. The socket's `?member=`
+    was read at connect and then dropped, so every pane received every snapshot — and
+    a snapshot carries `national_id`, `display_name`, `occupation` and the member's
+    whole policy book, which the browser renders without a check of its own. Two
+    visitors with the demo open at once was enough: one confirming their identity
+    pushed their record into the other's pane. The `open` branch twenty lines below
+    already compared `member_id` against the viewer; this exit did not, and two halves
+    of one handler drifting apart is how it stayed invisible.
     """
+    owner = payload.get("member_id")
     body = json.encode(payload).decode()
-    sockets = list(application.ctx.desk_sockets)
+    sockets = [ws for ws, viewer in application.ctx.desk_sockets if viewer == owner]
     if not sockets:
         return
 
@@ -279,9 +298,8 @@ async def _broadcast_desk(application: Sanic, payload: dict[str, Any]) -> None:
     # and the customer's own turn — the except clause anticipated dead sockets, not
     # slow ones.
     results = await asyncio.gather(*(socket.send(body) for socket in sockets), return_exceptions=True)
-    application.ctx.desk_sockets -= {
-        socket for socket, outcome in zip(sockets, results, strict=True) if isinstance(outcome, BaseException)
-    }
+    dead = {socket for socket, outcome in zip(sockets, results, strict=True) if isinstance(outcome, BaseException)}
+    application.ctx.desk_sockets -= {entry for entry in application.ctx.desk_sockets if entry[0] in dead}
 
 
 async def _next_serial(db: Database) -> int:
@@ -345,6 +363,8 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
     Dropped to 0 the moment 資料核對 passes, because the session has then proved it is the
     customer and the case's own history is theirs to read."""
 
+    returning_profile: dict | None = None
+
     try:
         async for raw in ws:
             if (message := _decode(raw)) is None:
@@ -352,11 +372,11 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                 continue
             match message.get("type"):
                 case "hello":
-                    name = (message.get("name") or "").strip()
-                    if not name:
+                    requested_name = (message.get("name") or "").strip()
+                    if not requested_name:
                         await ws.send(json.encode({"type": "notice", "text": "請輸入姓名", "level": "warn"}).decode())
                         continue
-                    if len(name) > MAX_NAME:
+                    if len(requested_name) > MAX_NAME:
                         await ws.send(json.encode({
                             "type": "notice", "text": f"姓名請勿超過 {MAX_NAME} 字", "level": "warn",
                         }).decode())
@@ -367,8 +387,14 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     # a socket that has since renamed itself, and the finally below
                     # only releases the last name — so the first is held until the
                     # process restarts and nobody can claim it again.
-                    if session is not None and name != previous_name:
+                    if session is not None:
                         registry.release(previous_name, session)
+                    name = requested_name
+                    confirmed = False
+                    case_id = member_id = None
+                    pending_question = returning_profile = None
+                    floor = 0
+                    # Attempts and lockout belong to the socket, not the selected name.
                     session = await registry.claim(name, ws.send, ws.close)
                     previous_name = name
 
@@ -391,12 +417,10 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         # Everything already on this case belongs to the connection that
                         # wrote it, not to this one.
                         floor = await _last_message(db, case_id)
-                        await ws.send(json.encode({
+                        returning_profile = {
                             "type": "profile",
                             "name": name,
-                            # Masked. A returning session has proved nothing yet, and
-                            # sending the number to the browser before the check is
-                            # sending the answer along with the question.
+                            # Sent only after this connection completes the check.
                             "national_id": _mask(existing["national_id"]),
                             "sex": existing["sex"],
                             "birth_date": existing["birth_date"].isoformat(),
@@ -405,8 +429,11 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                             "occupation": existing["occupation"],
                             "occupation_class": existing["occupation_class"],
                             "returning": True,
+                        }
+                        await ws.send(json.encode({
+                            "type": "profile", "name": name, "returning": True,
+                            "identity_required": True,
                         }).decode())
-                        await _push_case(db, ws, request.app, case_id)
                         continue
 
                     draft = generate(name, await _next_serial(db))
@@ -456,7 +483,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         "email": person.email,
                         "policies": written,
                     }).decode())
-                    await _push_case(db, ws, request.app, case_id)
+                    await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
 
                 case "say" if case_id is not None and not confirmed and NATIONAL_ID.fullmatch(
                     (message.get("text") or "").strip()
@@ -476,7 +503,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         # at all — even with a refusal that varies — is the oracle.
                         await ws.send(json.encode({
                             "type": "reply",
-                            "text": "本次線上核對已暫停，請改由專人與您確認身分。",
+                            "text": IDENTITY_LOCKED_REPLY,
                             "scenario": None, "citations": [], "faults": [], "params": {}, "quick": [],
                         }).decode())
                         continue
@@ -527,10 +554,20 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     # theirs — including what they said before the reload.
                     floor = 0
                     logger.info("identity_confirmed", case_id=case_id, attempts=attempts)
+                    if returning_profile is not None:
+                        await ws.send(json.encode(returning_profile).decode())
+                        returning_profile = None
                     await ws.send(json.encode({"type": "confirmed"}).decode())
-                    await _push_case(db, ws, request.app, case_id)
+                    await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
 
                     if not pending_question:
+                        stage = await db.fetch_val('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
+                        if stage in ("proposed", "issued", "signed", "verified", "review"):
+                            await _answer(
+                                request, ws, db, case_id=case_id, text="", confirmed=True,
+                                floor=floor, document_event=True,
+                            )
+                            continue
                         await ws.send(json.encode({
                             "type": "reply",
                             "text": "感謝您的耐心核對，身分已確認。請問需要什麼協助？",
@@ -541,13 +578,26 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
 
                     # Answer what they actually asked, before the check interrupted them.
                     text, pending_question = pending_question, None
-                    await _answer(request, ws, db, case_id=case_id, text=text, confirmed=True, floor=floor)
+                    turn = await _answer(
+                        request, ws, db, case_id=case_id, text=text,
+                        confirmed=True, floor=floor, identity_locked=locked,
+                    )
+                    if turn.scenario not in ("issue_documents", "document_progress", "verify_identity"):
+                        stage = await db.fetch_val('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
+                        if stage in ("proposed", "issued", "signed", "verified", "review"):
+                            await _answer(
+                                request, ws, db, case_id=case_id, text="", confirmed=True,
+                                floor=floor, document_event=True,
+                            )
 
                 case "say" if case_id is not None:
                     text = (message.get("text") or "").strip()
                     if not text:
                         continue
-                    await _answer(request, ws, db, case_id=case_id, text=text, confirmed=confirmed, floor=floor)
+                    await _answer(
+                        request, ws, db, case_id=case_id, text=text,
+                        confirmed=confirmed, floor=floor, identity_locked=locked,
+                    )
                     if not confirmed:
                         # The latest question, not the first. Keeping the first replayed
                         # 嗨 after the check passed; the thing worth coming back to is
@@ -555,29 +605,51 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         # attempts cannot overwrite it — they never reach this branch.
                         pending_question = text
 
-                case "upload" if case_id is not None:
+                case "upload" | "verify" | "document_demo" if case_id is not None and not confirmed:
+                    await ws.send(json.encode({
+                        "type": "notice", "text": IDENTITY_LOCKED_REPLY if locked else "請先完成身分核對。", "level": "warn",
+                    }).decode())
+
+                case "document_demo" if case_id is not None and confirmed:
+                    outcome = await cmd.demonstrate_documents(db, case_id, mode=message.get("mode"))
+                    refusal = isinstance(outcome, cmd.Refusal)
+                    if refusal:
+                        await ws.send(json.encode({
+                            "type": "notice", "text": "；".join((outcome.reason, *outcome.missing)),
+                            "level": "info" if outcome.missing else "warn",
+                            "pending_reply": True,
+                        }).decode())
+                    await _push_case(db, ws, request.app, case_id, confirmed=True)
+                    await _answer(
+                        request, ws, db, case_id=case_id,
+                        text="；".join((outcome.reason, *outcome.missing)) if refusal else "",
+                        confirmed=True, floor=floor, document_event=True,
+                    )
+
+                case "upload" if case_id is not None and confirmed:
                     document_id = int(message.get("document_id") or 0)
-                    filename = (message.get("filename") or "").strip()
-                    await db.execute(
-                        "UPDATE case_document SET uploaded_name = $2::text WHERE document_id = $1::bigint",
-                        [document_id, filename],
-                    )
-                    sha = await db.fetch_val(
-                        "SELECT sha FROM case_document WHERE document_id = $1::bigint", [document_id]
-                    )
-                    for party in cmd.SIGNING_PARTIES:
-                        outcome = await cmd.record_signature(
-                            db, case_id, document_id=document_id, party=party, document_sha=sha or ""
-                        )
-                    if isinstance(outcome, cmd.Refusal) and outcome.missing:
+                    sample = message.get("sample")
+                    if sample is not None:
+                        outcome = await cmd.upload_document(db, case_id, document_id=document_id, sample=sample, advance_demo=True)
+                    else:
+                        filename = (message.get("filename") or "").strip()
+                        outcome = await cmd.upload_document(db, case_id, document_id=document_id, filename=filename, advance_demo=True)
+                    if isinstance(outcome, cmd.Refusal):
                         await ws.send(json.encode({
                             "type": "notice",
-                            "text": f"尚有 {len(outcome.missing)} 份文件未簽署",
-                            "level": "info",
+                            "text": "；".join((outcome.reason, *outcome.missing)),
+                            "level": "info" if outcome.missing else "warn",
+                            "pending_reply": True,
                         }).decode())
-                    await _push_case(db, ws, request.app, case_id)
+                    await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
+                    await _answer(
+                        request, ws, db, case_id=case_id,
+                        text="；".join((outcome.reason, *outcome.missing)) if isinstance(outcome, cmd.Refusal) else "",
+                        confirmed=True,
+                        floor=floor, document_event=True,
+                    )
 
-                case "verify" if case_id is not None:
+                case "verify" if case_id is not None and confirmed:
                     national_id = (message.get("national_id") or "").strip()
                     started = datetime.now(UTC)
                     result = verify(national_id)
@@ -588,7 +660,12 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     )
                     if isinstance(outcome, cmd.Refusal):
                         await ws.send(json.encode({"type": "notice", "text": outcome.reason, "level": "warn"}).decode())
-                    await _push_case(db, ws, request.app, case_id)
+                    await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
+                    if not isinstance(outcome, cmd.Refusal):
+                        await _answer(
+                            request, ws, db, case_id=case_id, text="", confirmed=True,
+                            floor=floor, document_event=True,
+                        )
 
     except (ConnectionError, asyncio.CancelledError):
         logger.info("customer_socket_closed", name=name)
@@ -597,7 +674,9 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
             registry.release(name, session)
 
 
-async def _push_case(db: Database, ws: Websocket, application: Sanic, case_id: int) -> None:
+async def _push_case(
+    db: Database, ws: Websocket, application: Sanic, case_id: int, *, confirmed: bool = False,
+) -> None:
     """
     Send the case to the customer and to every desk pane.
 
@@ -606,8 +685,11 @@ async def _push_case(db: Database, ws: Websocket, application: Sanic, case_id: i
         ws: The customer's socket.
         application: The running app.
         case_id: Which case.
+        confirmed: Whether this connection may receive the case.
 
     """
+    if not confirmed:
+        return
     snap = await cmd.snapshot(db, case_id)
     if snap is None:
         return
@@ -640,7 +722,8 @@ async def _last_message(db: Database, case_id: int) -> int:
 
 async def _answer(
     request: Request, ws: Websocket, db: Database, *, case_id: int, text: str,
-    confirmed: bool, floor: int = 0,
+    confirmed: bool, floor: int = 0, identity_locked: bool = False,
+    document_event: bool = False,
 ) -> Turn:
     """
     Run one turn and send it, recording both halves of the exchange.
@@ -653,6 +736,9 @@ async def _answer(
         text: What the customer said.
         confirmed: Whether this session has passed 資料核對.
         floor: The message this connection started above. 0 reads the whole case.
+        identity_locked: Whether this connection has exhausted its verification attempts.
+        document_event: A server-originated state update. Records the reply but never
+            invents a customer message or changes their detected language.
 
     Returns:
         The turn, so the caller can read whether the identity gate stopped it.
@@ -660,30 +746,38 @@ async def _answer(
     """
     # The language is read off the message before it is stored, so the row records what
     # was detected and the reply is written in what the conversation resolves to.
-    found, spoken = await lang.resolve(db, case_id, text)
-    await db.execute(
-        """INSERT INTO conversation_message (case_id, speaker, text, locale)
-           VALUES ($1::bigint,'customer',$2::text,$3::text)""",
-        [case_id, text, found],
-    )
-    # The profile freezes on the first message, as specified.
-    await db.execute(
-        """UPDATE member SET profile_frozen_at = coalesce(profile_frozen_at, now())
-           WHERE member_id = (SELECT member_id FROM "case" WHERE case_id = $1::bigint)""",
-        [case_id],
-    )
+    found, spoken = await lang.resolve(db, case_id, "" if document_event else text)
+    if not document_event:
+        await db.execute(
+            """INSERT INTO conversation_message (case_id, speaker, text, locale)
+               VALUES ($1::bigint,'customer',$2::text,$3::text)""",
+            [case_id, text, found],
+        )
+        # Only a customer message freezes the profile, not a server event.
+        await db.execute(
+            """UPDATE member SET profile_frozen_at = coalesce(profile_frozen_at, now())
+               WHERE member_id = (SELECT member_id FROM "case" WHERE case_id = $1::bigint)""",
+            [case_id],
+        )
     member_id = await db.fetch_val('SELECT member_id FROM "case" WHERE case_id = $1::bigint', [case_id])
     turn = await run_turn(
         request.app.ctx.provider, db,
         case_id=case_id, member_id=member_id, text=text, confirmed=confirmed,
+        identity_locked=identity_locked,
         index=request.app.ctx.clauses, since=floor, locale=spoken,
+        document_event=document_event,
     )
     # The clause ids go in with the reply, so the console's transcript can show a
     # caseworker what the answer stood on after the socket that carried it is gone.
+    citation_keys = [
+        f"{product}|{clause}"
+        for product, clause in turn.cited_sources
+        if not turn.faults
+    ]
     await db.execute(
         """INSERT INTO conversation_message (case_id, speaker, text, turn_id, citations)
            VALUES ($1::bigint,'agent',$2::text,$3::text,$4::text[])""",
-        [case_id, turn.reply, turn.turn_id, list(turn.citations)],
+        [case_id, turn.reply, turn.turn_id, citation_keys],
     )
     await ws.send(json.encode({
         "type": "reply",
@@ -691,10 +785,10 @@ async def _answer(
         "scenario": turn.scenario,
         "params": turn.params,
         "quick": list(await i18n.translate(db, spoken, turn.quick_replies)),
-        "citations": _jsonable(await cited(db, member_id, turn.citations)),
+        "citations": _jsonable(await cited(db, member_id, citation_keys)),
         "faults": list(turn.faults),
     }).decode())
-    await _push_case(db, ws, request.app, case_id)
+    await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
     return turn
 
 
@@ -729,7 +823,8 @@ async def desk_socket(request: Request, ws: Websocket) -> None:
         await ws.close()
         return
 
-    request.app.ctx.desk_sockets.add(ws)
+    entry = (ws, viewer)
+    request.app.ctx.desk_sockets.add(entry)
     try:
         await ws.send(json.encode({"type": "queue", "cases": _jsonable(await _queue(db, viewer))}).decode())
         async for raw in ws:
@@ -737,6 +832,17 @@ async def desk_socket(request: Request, ws: Websocket) -> None:
                 continue
             match message.get("type"):
                 case "decide":
+                    # Same check the `open` branch makes below, and for a stronger
+                    # reason: this one writes. `cmd.decide` reads the stage and nothing
+                    # about who owns the case, so a pane scoped to one member could
+                    # reject another member's case by naming its id — bigserial, so
+                    # counting up from 1 finds them — and the broadcast then returned
+                    # that case's snapshot, national ID included, to the caller.
+                    scoped = await cmd.snapshot(db, int(message["case_id"]))
+                    if scoped is None or scoped["member_id"] != viewer:
+                        logger.warning("decide_out_of_scope", case_id=message.get("case_id"), viewer=viewer)
+                        await ws.send(json.encode({"type": "notice", "text": "查無此案", "level": "warn"}).decode())
+                        continue
                     outcome = await cmd.decide(
                         db, int(message["case_id"]),
                         approved=bool(message.get("approved")),
@@ -761,7 +867,7 @@ async def desk_socket(request: Request, ws: Websocket) -> None:
     except (ConnectionError, asyncio.CancelledError):
         pass
     finally:
-        request.app.ctx.desk_sockets.discard(ws)
+        request.app.ctx.desk_sockets.discard(entry)
 
 
 async def _queue(db: Database, member_id: int) -> list[dict[str, Any]]:
@@ -814,10 +920,15 @@ async def clause_page(request: Request, product_id: str, clause_id: str):
 
     row = await request.app.ctx.db.fetch_one(
         """SELECT c.heading, c.verbatim, c.page, c.kind, p.name AS product_name, p.doc_sha
-           FROM clause c JOIN product p USING (product_id)
+           FROM contract_clause c JOIN product p USING (product_id)
            WHERE c.product_id = $1::text AND c.clause_id = $2::text
-             AND EXISTS (SELECT 1 FROM policy po
-                         WHERE po.product_id = c.product_id AND po.member_id = $3::bigint)""",
+             AND (EXISTS (SELECT 1 FROM policy po
+                          WHERE po.product_id = c.product_id AND po.member_id = $3::bigint)
+                  OR EXISTS (
+                      SELECT 1 FROM conversation_message cm JOIN "case" ca USING (case_id)
+                      WHERE ca.member_id = $3::bigint AND cm.speaker = 'agent'
+                        AND (c.product_id || '|' || c.clause_id) = ANY(cm.citations)
+                  ))""",
         [product_id, clause_id, viewer],
     )
     if row is None:
@@ -1242,6 +1353,8 @@ def _render_document(row: dict[str, Any]) -> str:
     return f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
 <title>{kind}</title><style>{_DOC_STYLE}</style></head><body>
 <h1>{kind}</h1>
+<p><strong>內部示範文件：不收真實文件，不具法律效力。</strong>
+選擇「正確示範文件」只記錄示範檔名，不上傳內容；系統記錄雙方角色的模擬簽署，不是真實簽署。</p>
 <div class="meta">案號 #{_esc(row["case_id"])} · 文件編號 {_esc(row["document_id"])} · 文件雜湊 {_esc(row["sha"])}</div>
 <p>{_DOC_BODY.get(kind, "")}</p>
 <dl>
@@ -1266,7 +1379,7 @@ def _render_document(row: dict[str, Any]) -> str:
 </div>
 <div class="note">
   本文件為 policydesk 示範系統產生，非真實保險文件，不具法律效力。
-  簽署後請以「上傳簽署本」回傳，系統將以本文件雜湊 {_esc(row["sha"])} 綁定該次簽署。
+  請以固定示範文件體驗正確與錯誤樣本。文件識別碼只用於示範紀錄，不證明文件內容或簽署真偽。
 </div>
 </body></html>"""
 

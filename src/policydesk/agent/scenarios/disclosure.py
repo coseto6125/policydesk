@@ -49,7 +49,7 @@ from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute
 from policydesk.agent.scenario_base import Param, Scenario, gather_tools
-from policydesk.agent.tools import requires_identity
+from policydesk.agent.tools import public, requires_identity
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
@@ -88,6 +88,7 @@ a scenario that hands the model 'hypertension' gets a reply that says 'hypertens
 
 
 
+@public
 async def disclosure_duty(
     db: Database, concern: str, *, limit: int = 2, retriever: Any | None = None
 ) -> list[dict[str, Any]]:
@@ -226,7 +227,7 @@ DISCLOSURE = Scenario(
         "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，這次只有公開的條文可以用，"
         "拿不到他的健康告知紀錄。此時照工具回傳的條文把據實說明義務、解除契約的後果與除斥期間"
         "完整說一次——這部分不需要身分就能答，先把能答的答完，不要因為缺一半資料就整段都不答。"
-        "答完再說明：要對照他自己紀錄上寫了什麼，需要先核對身分，請他提供身分證字號。"
+        "答完再說明：要對照他自己紀錄上寫了什麼，需要先核對身分，並依本連線的核對狀態引導下一步。"
         "不要憑空講任何關於他保單或紀錄的內容，也不要說紀錄上有沒有某一項——這件事你現在還查不到。"
     ),
     tools=("disclosure_duty", "medical_declaration"),
