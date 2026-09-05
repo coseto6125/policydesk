@@ -27,64 +27,21 @@ Three of them are statute rather than practice, and are marked in the code:
 """
 
 from datetime import UTC, datetime
-from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from msgspec import Struct
 
 from policydesk.agent.tools import insured_amount
 from policydesk.bootloader import logger
+from policydesk.core import documents
+from policydesk.core.documents import ENROLMENT_DOCUMENTS, SIGNING_PARTIES, document_status, signing_documents
 from policydesk.core.models import Stage, may_advance
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
 
 
-class DocumentKind(StrEnum):
-    """
-    The documents a Taiwanese life application actually produces.
-
-    Sourced from what insurers list on their own forms pages, not invented. The set is
-    closed: a document kind the flow does not know about cannot be signed, and an
-    unsigned unknown document would otherwise sit forever in the completeness check.
-    """
-
-    APPLICATION = "要保書"
-    """Carries the applicant, the insured, the beneficiary and the health declaration."""
-    PRODUCT_BRIEF = "商品說明書"
-    REVIEW_PERIOD = "保險契約審閱期間確認聲明書"
-    """Confirms the applicant was given the contract to read before signing."""
-    RIGHTS_NOTICE = "客戶投保權益聲明書"
-    HEALTH_DECLARATION = "健康告知書"
-    """保險法 §64 attaches here."""
-    PRIVACY_CONSENT = "個人資料告知同意書"
-    RATE_ADJUSTMENT = "費率可能調整告知書"
-    PAYMENT_MANDATE = "保費付款授權書"
-    TAX_STATUS = "FATCA 及 CRS 身分聲明書"
-    CANCELLATION_NOTICE = "契約撤銷權告知書"
-    """十日撤銷權, counted from the day after delivery."""
-
-
-# Everything an enrolment must have signed before it can go to a human. Ordered as an
-# applicant meets them, because the customer pane lists them in this order.
-ENROLMENT_DOCUMENTS: tuple[DocumentKind, ...] = (
-    DocumentKind.PRODUCT_BRIEF,
-    DocumentKind.REVIEW_PERIOD,
-    DocumentKind.APPLICATION,
-    DocumentKind.HEALTH_DECLARATION,
-    DocumentKind.RIGHTS_NOTICE,
-    DocumentKind.PRIVACY_CONSENT,
-    DocumentKind.RATE_ADJUSTMENT,
-    DocumentKind.PAYMENT_MANDATE,
-    DocumentKind.TAX_STATUS,
-    DocumentKind.CANCELLATION_NOTICE,
-)
-
-# 要保人 and 被保險人 must each sign personally. In this demo one person is both, so
-# the pair is recorded rather than collapsed — an application signed by one party on
-# the other's behalf is the defect this records the shape of.
-SIGNING_PARTIES: tuple[str, ...] = ("要保人", "被保險人")
-
+DocumentKind = documents.DocumentKind
 
 class Refusal(Struct, frozen=True):
     """A command that could not run, and the reason a customer can read."""
@@ -253,14 +210,14 @@ async def record_signature(db: Database, case_id: int, *, document_id: int, part
         case_id: The case.
         document_id: Which document was signed.
         party: 要保人 or 被保險人.
-        document_sha: The bytes that were signed.
+        document_sha: The version identifier recorded for the signed document.
 
     Returns:
         Applied when this signature completes the set and the case moves to SIGNED;
         otherwise a Refusal naming what is still outstanding.
 
-    A signature binds to the document's hash. Amending a document after it was signed
-    changes the hash, which invalidates the signature rather than silently replacing it.
+    A grant must match the current document version. Both roles must sign that version.
+    These checks validate demo records; they do not verify uploaded bytes or cryptographic signatures.
 
     """
     if party not in SIGNING_PARTIES:
@@ -269,13 +226,18 @@ async def record_signature(db: Database, case_id: int, *, document_id: int, part
     # Ownership first. Without this the UPDATE below silently affects no row for a
     # document belonging to another case, and the grant is written anyway — an
     # authorisation record pointing at a document the case does not contain.
-    owner = await db.fetch_val(
-        "SELECT case_id FROM case_document WHERE document_id = $1::bigint", [document_id]
+    document = await db.fetch_one(
+        "SELECT case_id, sha FROM case_document WHERE document_id = $1::bigint", [document_id]
     )
-    if owner is None:
+    if document is None:
         return Refusal(reason="查無此文件")
-    if int(owner) != int(case_id):
+    if int(document["case_id"]) != int(case_id):
         return Refusal(reason="該文件不屬於本案件，不得簽署")
+    if not document["sha"] or document_sha != document["sha"]:
+        return Refusal(reason="簽署的文件版本與目前文件不符，請重新確認文件")
+    case = await db.fetch_one('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
+    if case is None or not may_advance(Stage(case["stage"]), Stage.SIGNED):
+        return Refusal(reason="案件狀態不允許進行簽署")
 
     await db.execute(
         """INSERT INTO authorization_grant (case_id, stage, scope, document_sha)
@@ -283,28 +245,18 @@ async def record_signature(db: Database, case_id: int, *, document_id: int, part
         [case_id, Stage.SIGNED.value, f"{party} 簽署文件 {document_id}", document_sha],
     )
 
-    # 要保人 and 被保險人 must each sign personally or the contract may be void, so a
-    # document counts as signed only once both grants exist. Marking it on the first
-    # signature let a case reach SIGNED on one party's, with the other's absence
-    # visible nowhere: the party was recorded only inside a grant's scope text, which
-    # nothing read.
-    signed_parties = await db.fetch_val(
-        """SELECT count(DISTINCT split_part(scope, ' ', 1)) FROM authorization_grant
-           WHERE case_id = $1::bigint AND scope LIKE '%' || $2::text""",
-        [case_id, f"簽署文件 {document_id}"],
-    )
-    if int(signed_parties or 0) >= len(SIGNING_PARTIES):
+    documents = await signing_documents(db, case_id)
+    current = next(row for row in documents if row["document_id"] == document_id)
+    if current["signed_parties"] == len(SIGNING_PARTIES):
         await db.execute(
-            "UPDATE case_document SET signed_at = now() WHERE document_id = $1::bigint AND case_id = $2::bigint",
-            [document_id, case_id],
+            """UPDATE case_document SET signed_at = now()
+               WHERE document_id = $1::bigint AND case_id = $2::bigint AND sha = $3::text""",
+            [document_id, case_id, document_sha],
         )
 
-    outstanding = await db.fetch(
-        "SELECT kind FROM case_document WHERE case_id = $1::bigint AND signed_at IS NULL",
-        [case_id],
-    )
+    outstanding = document_status(await signing_documents(db, case_id))["missing"]
     if outstanding:
-        return Refusal(reason="尚有文件未經要保人及被保險人雙方簽署", missing=tuple(r["kind"] for r in outstanding))
+        return Refusal(reason="尚有文件未經要保人及被保險人雙方簽署", missing=outstanding)
 
     case = await db.fetch_one('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
     if case is None or not may_advance(Stage(case["stage"]), Stage.SIGNED):
@@ -386,10 +338,7 @@ async def submit_for_review(db: Database, case_id: int) -> Outcome:
     if not case["adviser_licence"]:
         missing.append("責任業務員登錄字號")
 
-    unsigned = await db.fetch(
-        "SELECT kind FROM case_document WHERE case_id = $1::bigint AND signed_at IS NULL", [case_id]
-    )
-    missing.extend(r["kind"] for r in unsigned)
+    missing.extend(document_status(await signing_documents(db, case_id))["missing"])
 
     verified = await db.fetch_val(
         "SELECT bool_or(verified) FROM identity_check WHERE case_id = $1::bigint", [case_id]
@@ -462,10 +411,8 @@ async def snapshot(db: Database, case_id: int) -> dict | None:
     if case is None:
         return None
 
-    case["documents"] = await db.fetch(
-        "SELECT document_id, kind, title, signed_at, uploaded_name FROM case_document WHERE case_id = $1::bigint ORDER BY document_id",
-        [case_id],
-    )
+    case["documents"] = await signing_documents(db, case_id)
+    case["document_status"] = document_status(case["documents"])
     case["identity_checks"] = await db.fetch(
         "SELECT verified, reason, latency_ms, checked_at FROM identity_check WHERE case_id = $1::bigint ORDER BY check_id",
         [case_id],

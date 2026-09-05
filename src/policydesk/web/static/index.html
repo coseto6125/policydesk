@@ -1639,13 +1639,13 @@ let lastBoard = {};
 
 function renderBoard(c) {
   const docs = c.documents ?? [], checks = c.identity_checks ?? [];
-  const signed = docs.filter(d => d.signed_at).length;
+  const {signed, total, pending} = c.document_status;
   const rank = (stage) => STAGES.findIndex(([k]) => k === stage);
   const decided = c.stage === "approved" || c.stage === "rejected";
   const tiles = [
     ["方案", decided || rank(c.stage) >= rank("proposed") ? ["done", "已提出"] : ["open", "詢問中"]],
     ["文件", !docs.length ? ["open", "尚未交付"]
-           : signed === docs.length ? ["done", `${signed} 份已簽署`] : ["wait", `${signed}/${docs.length} 已簽署`]],
+           : pending === 0 ? ["done", `${signed} 份已簽署`] : ["wait", `${signed}/${total} 已簽署`]],
     ["身分", checks.some(k => k.verified) ? ["done", "已核對"] : checks.length ? ["bad", "未通過"] : ["open", "尚未核對"]],
     ["審核", c.stage === "review" ? ["flag", "待人工審核"]
            : c.stage === "approved" ? ["done", "已核准"]
@@ -1701,13 +1701,14 @@ function renderCase(c) {
   renderPolicies(c.policies ?? [], c, fresh);
 
   const docs = c.documents ?? [];
-  const signed = docs.filter(d => d.signed_at).length;
-  $("docCount").textContent = docs.length ? `${signed}/${docs.length}` : "";
-  $("docTable").innerHTML = docs.length ? docs.map(d => `
+  const {signed, total, unissued} = c.document_status;
+  $("docCount").textContent = total ? `${signed}/${total}` : "";
+  $("docTable").innerHTML = (docs.map(d => `
     <tr><td>${esc(d.kind)}</td>
         <td>${d.signed_at ? PILLS.ok("已簽署") : PILLS.wait("待簽署")}</td>
         <td class="mono">${shortTime(d.signed_at) || "—"}</td></tr>`).join("")
-    : `<tr><td colspan="3" class="empty">尚未交付</td></tr>`;
+    + unissued.map(kind => `<tr><td>${esc(kind)}</td><td>${PILLS.wait("尚未交付")}</td><td>—</td></tr>`).join(""))
+    || `<tr><td colspan="3" class="empty">尚未交付</td></tr>`;
 
   const checks = c.identity_checks ?? [];
   $("idTable").innerHTML = checks.length ? checks.map(k => `
@@ -1726,8 +1727,8 @@ function renderCase(c) {
   if (fresh) for (const id of ["docTable", "idTable", "trail"]) reveal($(id));
 
   $("decideBox").hidden = c.stage !== "review";
-  renderModalDocs(docs);
-  $("docsBtn").hidden = docs.length === 0;
+  renderModalDocs(docs, unissued);
+  $("docsBtn").hidden = total === 0;
   markQueue();
 }
 
@@ -1759,7 +1760,7 @@ function renderPolicies(policies, c, fresh = false) {
   const lapsed = policies.length - active.length;
   countTo($("kpiLapsed"), lapsed, "張", String);
   $("kpiLapsedBox").classList.toggle("alert", lapsed > 0);
-  const todo = (c.documents ?? []).filter(d => !d.signed_at).length;
+  const todo = c.document_status.pending;
   countTo($("kpiTodo"), todo, "項", String);
   $("kpiTodoBox").classList.toggle("alert", todo > 0);
 
@@ -1778,8 +1779,8 @@ function renderPolicies(policies, c, fresh = false) {
   if (fresh) reveal($("policyTable"));
 }
 
-function renderModalDocs(docs) {
-  $("modalDocs").innerHTML = docs.length ? docs.map(d => `
+function renderModalDocs(docs, unissued = []) {
+  $("modalDocs").innerHTML = (docs.map(d => `
     <div class="doc-row">
       <span class="name">${esc(d.kind)}</span>
       ${d.signed_at
@@ -1787,7 +1788,8 @@ function renderModalDocs(docs) {
         : `<button data-doc="${d.document_id}" class="dl">${icon("download")}下載</button>
            <button data-doc="${d.document_id}" class="up primary">${icon("upload")}上傳簽署本</button>`}
     </div>`).join("")
-    : `<div class="empty">目前沒有待簽署文件。</div>`;
+    + unissued.map(kind => `<div class="doc-row"><span class="name">${esc(kind)}</span>${PILLS.wait("尚未交付，請由專人補齊")}</div>`).join(""))
+    || `<div class="empty">目前沒有待簽署文件。</div>`;
 }
 
 function markQueue() {

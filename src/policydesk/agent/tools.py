@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from unicodedata import normalize
 
 from policydesk.bootloader import logger
+from policydesk.core.documents import document_status, signing_documents
 from policydesk.retrieval.base import CLAUSE, Hit, Retriever
 from policydesk.skills.calculator import calculate
 from policydesk.synthetic.person import insurance_age
@@ -896,13 +897,8 @@ async def pending_signatures(db: Database, case_id: int) -> dict[str, Any]:
     insurer.
 
     """
-    rows = await db.fetch(
-        """SELECT title FROM case_document
-           WHERE case_id = $1::bigint AND signed_at IS NULL
-           ORDER BY document_id""",
-        [case_id],
-    )
-    return {"count": len(rows), "names": "\n".join(f"　{r['title']}" for r in rows)}
+    missing = document_status(await signing_documents(db, case_id))["missing"]
+    return {"count": len(missing), "names": "\n".join(f"　{title}" for title in missing)}
 
 
 @requires_identity

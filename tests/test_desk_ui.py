@@ -5,6 +5,9 @@ The page is one file with no build step, so these read it as text. Each one guar
 defect that was visible on screen and invisible in the code.
 """
 
+import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -128,3 +131,56 @@ def test_a_folded_card_keeps_its_header_on_screen():
     assert ".card.shut > .body { grid-template-rows: 0fr; }" in PAGE
     assert 'classList.toggle("folded"' not in PAGE
     assert ".folded { display: none;" in PAGE, "the enrolment summary line still owns that name"
+
+
+@pytest.mark.parametrize("issued", [0, 9, 10])
+def test_render_case_required_missing_documents_remain_visible_and_pending(issued):
+    """Execute the page's renderers; a missing form must not turn nine signatures into 9/9."""
+    node = shutil.which("node")
+    assert node is not None, "UI renderer tests require Node.js on PATH"
+    functions = []
+    for name in ("renderBoard", "renderCase", "renderPolicies", "renderModalDocs"):
+        start = PAGE.index(f"function {name}(")
+        end = PAGE.index("\n}\n", start) + len("\n}\n")
+        functions.append(PAGE[start:end])
+    snapshot = {
+        "case_id": 1, "case_version": 1, "stage": "verified", "policies": [],
+        "documents": [{"document_id": index + 1, "kind": f"文件{index + 1}", "signed_at": "2026-09-05"} for index in range(issued)],
+        "document_status": {
+            "signed": issued, "total": 10, "pending": 10 - issued,
+            "unissued": [f"文件{index + 1}" for index in range(issued, 10)],
+        },
+    }
+    harness = r"""
+const fs = require('node:fs');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const nodes = {};
+const $ = id => nodes[id] ??= {classList: {toggle() {}}, dataset: {}};
+let caseId = null, lastSnapshot = null, lastStage = null, lastBoard = {};
+const STAGES = ['inquiry','proposed','issued','signed','verified','review','approved','rejected'].map(s => [s, s]);
+const STAGE_NAMES = Object.fromEntries(STAGES);
+const TILE_GLYPH = {done:'',wait:'',flag:'',bad:'',open:''};
+const PILLS = Object.fromEntries(['ok','no','wait','flag'].map(k => [k, s => s]));
+const esc = s => String(s ?? '');
+const shortTime = s => s ?? '';
+const money = n => String(n);
+const countTo = (node, n) => { node.value = n; };
+const flash = () => {}, resetDecide = () => {}, reveal = () => {}, markQueue = () => {};
+eval(input.functions.join('\n') + '\nrenderCase(input.snapshot);');
+process.stdout.write(JSON.stringify(nodes));
+"""
+    rendered = subprocess.run(  # noqa: S603 (only local source and generated fixtures reach Node)
+        [node, "-e", harness], input=json.dumps({"functions": functions, "snapshot": snapshot}),
+        capture_output=True, text=True, check=False, timeout=10,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    nodes = json.loads(rendered.stdout)
+    assert nodes["docCount"]["textContent"] == f"{issued}/10"
+    assert nodes["kpiTodo"]["value"] == 10 - issued
+    if 0 < issued < 10:
+        assert f"{issued}/10 已簽署" in nodes["board"]["innerHTML"]
+    for name in snapshot["document_status"]["unissued"]:
+        assert name in nodes["docTable"]["innerHTML"]
+        assert name in nodes["modalDocs"]["innerHTML"]
+    assert 'data-doc="undefined"' not in nodes["modalDocs"]["innerHTML"]
+    assert 'data-doc="null"' not in nodes["modalDocs"]["innerHTML"]
