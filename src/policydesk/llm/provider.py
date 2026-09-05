@@ -24,6 +24,7 @@ import os
 import shutil
 import tempfile
 import time
+from hashlib import sha256
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -74,6 +75,58 @@ class Completion(Struct, frozen=True):
     latency_ms: int = 0
     provider: str = ""
     raw: dict[str, Any] | None = None
+    request: dict[str, Any] | None = None
+    """What the trace records about the call that produced this, built from the payload
+    that actually went out. See `audit_request`."""
+
+
+def audit_request(body: dict[str, Any]) -> dict[str, Any]:
+    """
+    Describe the request that actually went out, without copying the customer.
+
+    Args:
+        body: The payload handed to the provider's API, after every rewrite it makes.
+
+    Returns:
+        What an auditor needs: the tools this call was offered, the reply format it was
+        held to, and digests plus lengths of the brief and the input.
+
+    Read from the built body rather than from the arguments the executor passed, because
+    the two differ. `_anthropic_schema` rewrites `maxItems: 0` into `{"type": "null"}`,
+    so a record built from the arguments says a field was available on a call where the
+    model could not fill it — the field names match and the constraint does not. Reading
+    the body means a future rewrite is recorded without anyone remembering to describe
+    it here.
+
+    The brief is digested rather than stored. It carries names, national IDs and
+    policies, and a second copy of those in a table with no retention rule is a worse
+    trade than the gap it closes. A digest still proves two rows shared a prompt, and
+    matches a prompt someone still holds.
+    """
+    schema = (body.get("output_config") or {}).get("format", {}).get("schema") or {}
+    system = body.get("system") or ""
+    messages = body.get("messages") or []
+    user_input = "".join(
+        part.get("text", "") if isinstance(part, dict) else str(part)
+        for message in messages
+        for part in ([message.get("content")] if isinstance(message.get("content"), str) else message.get("content", []))
+    ) if messages else ""
+    return {
+        "model": body.get("model", ""),
+        "tools": sorted(tool.get("name", "") for tool in body.get("tools") or ()),
+        "response_fields": sorted(schema.get("properties", {})),
+        # A field the schema pinned to null is one the model could not fill, whatever
+        # its name suggests. Naming them is the difference between "citations were
+        # available" and "citations were forbidden on this call".
+        "emptied_fields": sorted(
+            name for name, spec in schema.get("properties", {}).items()
+            if isinstance(spec, dict) and spec.get("type") == "null"
+        ),
+        "system_sha256": sha256(system.encode()).hexdigest(),
+        "system_chars": len(system),
+        "input_sha256": sha256(user_input.encode()).hexdigest(),
+        "input_chars": len(user_input),
+    }
 
 
 class Provider(Protocol):
@@ -875,6 +928,7 @@ class AnthropicProvider:
             latency_ms=latency_ms,
             provider=self.name,
             raw={"stop_reason": message.stop_reason, "usage": usage.model_dump(mode="json"), "text": text[:4000]},
+            request=audit_request(body),
         )
 
 

@@ -112,7 +112,13 @@ async def test_customer_socket_correct_identity_releases_profile_and_replays_que
     first, replay = answer.await_args_list
     assert first.kwargs["confirmed"] is False
     assert first.kwargs["floor"] == 19
-    assert replay.kwargs == {"case_id": 1, "text": "查我的保單", "confirmed": True, "floor": 0, "identity_locked": False}
+    # `pending_reply` says whether a second reply about documents follows this one, so
+    # the pane stays disabled until the whole turn has spoken. This case sits at a stage
+    # with no documents to report, so nothing follows and the pane is free to reopen.
+    assert replay.kwargs == {
+        "case_id": 1, "text": "查我的保單", "confirmed": True, "floor": 0,
+        "identity_locked": False, "pending_reply": False,
+    }
 
 
 @pytest.mark.parametrize("next_name", ["fixture-owner", "fixture-other"])

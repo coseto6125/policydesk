@@ -365,3 +365,38 @@ process.stdout.write(JSON.stringify({sent, before, busy, after:button.disabled, 
     assert result["closed"] is allowed
     if allowed:
         assert result["busy"]["status"] == "示範處理中，請等候櫃台說明結果。"
+
+
+def test_a_reply_with_another_one_coming_keeps_the_customer_waiting():
+    """
+    The pane reopens when the turn ends, not when the first reply lands.
+
+    An identity check answers the question it interrupted and then speaks again about
+    documents. Both arrived as plain replies and the pane released on the first, so a
+    question typed into that gap was answered before the guidance already on its way —
+    the guidance then appeared under the new question and read as a non-sequitur.
+    Observed on case 7033: identity-correct, then claim-documents received
+    document_progress and the two turns after it each carried the previous question's
+    answer.
+
+    `pending_reply` already existed on notices for this reason. This pins that replies
+    carry it too, and that the pane reads it.
+    """
+    from pathlib import Path
+
+    page = Path("src/policydesk/web/static/index.html").read_text()
+    reply_branch = page[page.index('case "reply":'):page.index('case "notice":')]
+    assert "if (!m.pending_reply) waiting(false);" in reply_branch, (
+        "a reply that promises another one must not release the pane"
+    )
+
+    server = Path("src/policydesk/web/server.py").read_text()
+    assert '"pending_reply": pending_reply,' in server, "the reply payload carries the flag"
+
+    # The stage decides whether a second reply follows, so it must be read before the
+    # first one is sent — after it, the pane has already reopened.
+    handler = server[server.index("# Answer what they actually asked"):server.index('case "say" if case_id is not None:')]
+    assert handler.index("documents_follow = stage in") < handler.index("turn = await _answer("), (
+        "the stage read must precede the first answer"
+    )
+    assert "pending_reply=documents_follow," in handler
