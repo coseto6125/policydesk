@@ -589,27 +589,17 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                 case "upload" if case_id is not None and confirmed:
                     document_id = int(message.get("document_id") or 0)
                     filename = (message.get("filename") or "").strip()
-                    document = await db.fetch_one(
-                        """UPDATE case_document SET uploaded_name = $2::text
-                           WHERE document_id = $1::bigint AND case_id = $3::bigint RETURNING sha""",
-                        [document_id, filename, case_id],
+                    outcome = await cmd.upload_document(
+                        db, case_id, document_id=document_id, filename=filename,
                     )
-                    if document is None:
-                        await ws.send(json.encode({
-                            "type": "notice", "text": "無法處理這份文件。", "level": "warn",
-                        }).decode())
-                        continue
-                    sha = document["sha"]
-                    for party in cmd.SIGNING_PARTIES:
-                        outcome = await cmd.record_signature(
-                            db, case_id, document_id=document_id, party=party, document_sha=sha or ""
-                        )
-                    if isinstance(outcome, cmd.Refusal) and outcome.missing:
+                    if isinstance(outcome, cmd.Refusal):
                         await ws.send(json.encode({
                             "type": "notice",
-                            "text": f"尚有 {len(outcome.missing)} 份文件未簽署",
-                            "level": "info",
+                            "text": f"尚有 {len(outcome.missing)} 份文件未簽署" if outcome.missing else outcome.reason,
+                            "level": "info" if outcome.missing else "warn",
                         }).decode())
+                        if not outcome.missing:
+                            continue
                     await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
 
                 case "verify" if case_id is not None and confirmed:

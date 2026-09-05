@@ -11,7 +11,9 @@ would ever reach — a codebase where one query builds SQL by formatting teaches
 one to.
 """
 
+import asyncio
 import os
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -23,9 +25,10 @@ from stamina.instrumentation import RetryDetails, get_on_retry_hooks, set_on_ret
 from policydesk.bootloader import logger
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncIterator, Sequence
     from contextlib import AbstractContextManager
 
+    from psqlpy import Transaction
     from stamina.instrumentation import RetryHook
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgres://policydesk:policydesk@localhost:5434/policydesk")
@@ -95,6 +98,48 @@ def _no_rows(exc: Exception) -> bool:
     return "unexpected number of rows" in str(exc)
 
 
+class TransactionSession:
+    """One transaction's query helpers. Never retry an individual write or acquire another connection."""
+
+    def __init__(self, transaction: Transaction) -> None:
+        self._transaction = transaction
+
+    async def fetch(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
+        return (await self._transaction.fetch(sql, params or [])).result()
+
+    async def fetch_one(self, sql: str, params: Sequence[Any] | None = None) -> dict[str, Any] | None:
+        rows = await self.fetch(sql, params)
+        return rows[0] if rows else None
+
+    async def fetch_val(self, sql: str, params: Sequence[Any] | None = None) -> Any:
+        row = await self.fetch_one(sql, params)
+        return next(iter(row.values())) if row else None
+
+    async def execute(self, sql: str, params: Sequence[Any] | None = None) -> None:
+        await self._transaction.execute(sql, params or [])
+
+    async def execute_many(self, sql: str, rows: Sequence[Sequence[Any]]) -> None:
+        if rows:
+            chunk = max(1, 60_000 // max(1, len(rows[0])))
+            for start in range(0, len(rows), chunk):
+                await self._transaction.execute_many(sql, [list(row) for row in rows[start : start + chunk]])
+
+
+async def _settle(awaitable):
+    """Finish transaction control before releasing its connection, even after repeated cancellation."""
+    task = asyncio.ensure_future(awaitable)
+    cancelled = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+    result = task.result()
+    if cancelled is not None:
+        raise cancelled
+    return result
+
+
 class Database:
     """One pool, with the fetch helpers the rest of the code uses."""
 
@@ -106,6 +151,28 @@ class Database:
     async def close(self) -> None:
         """Close the pool."""
         self._pool.close()
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[TransactionSession]:
+        """
+        Commit normal outcomes; body failures roll back, including partial writes.
+
+        Finish BEGIN and cleanup before returning the connection to the pool.
+        Cancellation after COMMIT starts can still commit; callers must read back,
+        not blindly retry. No individual transaction statement is retried.
+        """
+        async with self._pool.acquire() as conn:
+            transaction = conn.transaction()
+            begin = asyncio.ensure_future(transaction.begin())
+            try:
+                await _settle(begin)
+                yield TransactionSession(transaction)
+            except BaseException:
+                if begin.done() and not begin.cancelled() and begin.exception() is None:
+                    await _settle(transaction.rollback())
+                raise
+            else:
+                await _settle(transaction.commit())
 
     @stamina.retry(on=_is_transport_failure, attempts=3, timeout=20)
     async def fetch(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
