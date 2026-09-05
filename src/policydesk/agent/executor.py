@@ -694,7 +694,7 @@ async def run_turn(
             "Every statement about their policies comes from the material.\n"
             + ASKED_ALREADY + "\n"
         )
-    past = f"{known}{profile}{memory.transcript(messages[:-1])}"
+    past = f"{known}{memory.transcript(messages[:-1])}{profile}"
 
     started = time.perf_counter()
     try:
@@ -779,7 +779,7 @@ async def run_turn(
     material = etoon.dumps(visible_facts)
     clarifying_policy = "policy_scope" in facts
     instructions = POLICY_CLARIFICATION if clarifying_policy else (
-        f"{ROUTER_INSTRUCTIONS}\n\n{scenario.injection}\n\n{WRITING}"
+        f"{ROUTER_INSTRUCTIONS}\n\n{WRITING}\n\n{scenario.injection}"
     )
     answering = time.perf_counter()
     try:
