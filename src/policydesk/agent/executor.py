@@ -935,7 +935,7 @@ CHARS = 400
 """How much of a string reaches the model. A clause runs to 442,649 characters, so the
 whole tool result is trimmed rather than trusted."""
 
-LONGER: dict[str, int] = {"verbatim": 1200}
+LONGER: dict[str, int] = {"verbatim": tools.DOCUMENT_CHARS}
 """Keys whose text the reply reads out rather than reads around, with the room they need.
 
 `verbatim` is here because `required_documents` returns the enumeration itself — 一、二、
@@ -974,7 +974,13 @@ def _short(value: Any, limit: int = 12, chars: int = CHARS) -> Any:
         case list():
             return [_short(v, limit, chars) for v in value[:limit]]
         case dict():
-            return {k: _short(v, limit, LONGER.get(k, chars)) for k, v in value.items()}
+            shortened = {k: _short(v, limit, LONGER.get(k, chars)) for k, v in value.items()}
+            clipped = [k for k, v in value.items() if isinstance(v, str) and len(v) > LONGER.get(k, chars)]
+            if clipped:
+                shortened["truncated_fields"] = clipped
+                if "verbatim" in clipped:
+                    shortened["excerpt"] = True
+            return shortened
         case str():
             return value[:chars]
         case datetime() | date():

@@ -7,6 +7,7 @@ phrases is a substring of anything in the corpus, so the `kind IN (exclusion, ca
 waiting)` arm of the WHERE fired every time and the topic was ignored.
 """
 
+import itertools
 from pathlib import Path
 
 import pytest
@@ -98,7 +99,7 @@ def test_one_index_holds_both_corpora():
     from policydesk.retrieval.index import _SOURCES
 
     assert set(_SOURCES) == {CLAUSE, STATUTE}
-    assert "FROM clause" in _SOURCES[CLAUSE]
+    assert "FROM contract_clause" in _SOURCES[CLAUSE]
     assert "FROM statute_article" in _SOURCES[STATUTE]
 
 
@@ -326,3 +327,241 @@ def test_a_limit_of_zero_returns_nothing_rather_than_everything(index):
     from policydesk.retrieval.base import STATUTE
 
     assert index.search("復效", corpus=STATUTE, limit=0) == []
+
+
+@pytest.mark.parametrize("overlap", [0, 4, 8])
+def test_passages_long_document_covers_tail_and_every_character(overlap):
+    from tokenizers import Tokenizer, models, pre_tokenizers
+
+    from policydesk.retrieval.vectors import passages
+
+    tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))  # noqa: S106
+    tokenizer.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+    text = "契約標題\n" + "給付條件 不同條件 " * 80 + "只有尾段才有的權利。\n"
+    spans = passages(text, tokenizer, tokens=24, overlap=overlap)
+    assert len(spans) > 1
+    assert spans[0][0] == 0
+    assert spans[-1][1] == len(text)
+    assert all(left < right for left, right in spans)
+    assert all(next_left <= right for (_, right), (next_left, _) in itertools.pairwise(spans))
+    assert all(len(tokenizer.encode(text[left:right]).ids) <= 24 for left, right in spans)
+    assert "只有尾段才有的權利。" in text[spans[-1][0]:spans[-1][1]]
+
+
+def test_rrf_shared_hit_keeps_semantic_excerpt():
+    from policydesk.retrieval.base import CLAUSE, Hit, rrf
+
+    lexical = Hit(corpus=CLAUSE, scope_id="p", doc_id="art.1", score=8)
+    semantic = Hit(corpus=CLAUSE, scope_id="p", doc_id="art.1", score=0.8, start=2000, end=2400)
+    for rankings in ([lexical], [semantic]), ([semantic], [lexical]):
+        result = rrf(rankings, limit=1)
+        assert (result[0].start, result[0].end) == (2000, 2400)
+
+
+async def test_find_clause_semantic_tail_reaches_tool_output():
+    from unittest.mock import AsyncMock
+
+    from policydesk.agent.tools import DOCUMENT_CHARS, find_clause
+    from policydesk.retrieval.base import CLAUSE, Hit
+
+    body = "無關開頭。" * DOCUMENT_CHARS + "尾端給付條件。"
+    heading = "保障範圍"
+    full_text = heading + "\n" + body
+    start = full_text.index("尾端")
+    db = AsyncMock()
+    db.fetch.return_value = [{"product_id": "p", "clause_id": "art.1", "heading": heading, "verbatim": body}]
+
+    class TailRetriever:
+        def search(self, query, **kwargs):
+            assert kwargs["scope"] == ["p"]
+            return [Hit(corpus=CLAUSE, scope_id="p", doc_id="art.1", score=1, start=start, end=len(full_text))]
+
+    result = await find_clause(db, ["p"], "尾端條件", index=TailRetriever())
+    assert result[0]["verbatim"] == "尾端給付條件。"
+    assert result[0]["excerpt"] is True
+
+
+async def test_find_clause_short_article_preserves_proviso_outside_match():
+    from unittest.mock import AsyncMock
+
+    from policydesk.agent.executor import _short
+    from policydesk.agent.tools import find_clause
+    from policydesk.retrieval.base import CLAUSE, Hit
+
+    body = "美容手術不予給付。但為重建基本功能所作之必要整型，不在此限。"
+    heading = "除外責任"
+    db = AsyncMock()
+    db.fetch.return_value = [{"product_id": "p", "clause_id": "art.1", "heading": heading, "verbatim": body}]
+
+    class NarrowRetriever:
+        def search(self, query, **kwargs):
+            return [Hit(corpus=CLAUSE, scope_id="p", doc_id="art.1", score=1,
+                        start=len(heading) + 1, end=len(heading) + 11)]
+
+    result = _short(await find_clause(db, ["p"], "美容手術", index=NarrowRetriever()))
+    assert result[0]["verbatim"] == body
+
+
+@pytest.mark.parametrize("size", [1398, 1436, 4000])
+async def test_find_clause_bounded_article_preserves_tail_exception(size):
+    from unittest.mock import AsyncMock
+
+    from policydesk.agent.executor import _short
+    from policydesk.agent.tools import find_clause
+    from policydesk.retrieval.base import CLAUSE, Hit
+
+    proviso = "但為重建基本功能所作之必要整型，不在此限。"
+    body = "條" * (size - len(proviso)) + proviso
+    heading = "除外責任"
+    db = AsyncMock()
+    db.fetch.return_value = [{"product_id": "p", "clause_id": "art.1", "heading": heading, "verbatim": body}]
+
+    class NarrowRetriever:
+        def search(self, query, **kwargs):
+            return [Hit(corpus=CLAUSE, scope_id="p", doc_id="art.1", score=1,
+                        start=len(heading) + 1, end=len(heading) + 100)]
+
+    result = _short(await find_clause(db, ["p"], "除外責任", index=NarrowRetriever()))
+    assert result[0]["verbatim"] == body
+    assert not result[0].get("excerpt", False)
+
+
+def test_short_long_clause_marks_text_truncation():
+    from policydesk.agent.executor import _short
+    from policydesk.agent.tools import DOCUMENT_CHARS
+
+    result = _short({"verbatim": "條件" * DOCUMENT_CHARS, "heading": "保障範圍"})
+    assert result["excerpt"] is True
+    assert result["truncated_fields"] == ["verbatim"]
+    assert len(result["verbatim"]) == DOCUMENT_CHARS
+
+
+async def test_build_failed_encoder_keeps_active_generation(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from tokenizers import Tokenizer, models
+
+    from policydesk.retrieval import vectors
+
+    tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))  # noqa: S106
+    tokenizer.save(str(tmp_path / "tokenizer.json"))
+    (tmp_path / "current.json").write_text('{"generation":"previous"}')
+    monkeypatch.setattr(vectors, "documents", AsyncMock(return_value=[{"key": "clause|p|a", "text": "合約"}]))
+
+    class BrokenEncoder:
+        model = "test-model"
+
+        def __init__(self, url):
+            pass
+
+        def encode(self, *args, **kwargs):
+            raise OSError("server disconnected")
+
+    monkeypatch.setattr(vectors, "ServerEmbedder", BrokenEncoder)
+    with pytest.raises(OSError, match="disconnected"):
+        await vectors.build(AsyncMock(), path=tmp_path, model_dir=tmp_path, server_url="http://localhost:8090")
+    assert (tmp_path / "current.json").read_text() == '{"generation":"previous"}'
+
+
+@pytest.mark.parametrize(("covered", "unchanged"), [(True, True), (False, True), (True, False)])
+async def test_audit_passage_coverage_serializable_and_source_sensitive(tmp_path, monkeypatch, covered, unchanged):
+    from unittest.mock import AsyncMock
+
+    import numpy as np
+    from msgspec import json
+
+    from policydesk.retrieval import vectors
+
+    source = [{"key": "clause|p|art.1", "text": "保障條件與限制"}]
+    root = tmp_path / "snapshot"
+    root.mkdir()
+    matrix = np.zeros((2, vectors.DIM), dtype=np.float32)
+    matrix[:, 0] = 1
+    np.save(root / "vectors.npy", matrix)
+    np.save(root / "keys.npy", np.array([source[0]["key"]] * 2))
+    np.save(root / "spans.npy", np.array([(0, 3), (3 if covered else 4, len(source[0]["text"]))]))
+    manifest = {"generation": "snapshot", "source_sha256": vectors.fingerprint(source)}
+    (tmp_path / "current.json").write_bytes(json.encode(manifest))
+    if not unchanged:
+        source[0]["text"] = "另有條件與限制"
+    monkeypatch.setattr(vectors, "documents", AsyncMock(return_value=source))
+
+    result = await vectors.audit(AsyncMock(), path=tmp_path)
+    decoded = json.decode(json.encode(result))
+    assert decoded["complete"] is (covered and unchanged)
+    assert decoded["uncovered"] == (0 if covered else 1)
+    assert decoded["source_matches"] is unchanged
+
+
+async def test_audit_identical_sources_in_different_order_remain_current(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import numpy as np
+    from msgspec import json
+
+    from policydesk.retrieval import vectors
+
+    source = [{"key": "statute|s|art.1", "text": "原文甲"}, {"key": "statute|s|art.1.1", "text": "原文乙"}]
+    root = tmp_path / "snapshot"
+    root.mkdir()
+    matrix = np.zeros((2, vectors.DIM), dtype=np.float32)
+    matrix[:, 0] = 1
+    np.save(root / "vectors.npy", matrix)
+    np.save(root / "keys.npy", np.array([row["key"] for row in source]))
+    np.save(root / "spans.npy", np.array([(0, 3), (0, 3)]))
+    (tmp_path / "current.json").write_bytes(json.encode({
+        "generation": "snapshot", "source_sha256": vectors.fingerprint(source),
+    }))
+    monkeypatch.setattr(vectors, "documents", AsyncMock(return_value=source[::-1]))
+    result = await vectors.audit(AsyncMock(), path=tmp_path)
+    assert result["complete"] is True
+
+
+def test_server_embedder_invalid_rows_rejects_response(monkeypatch):
+    import numpy as np
+
+    from policydesk.retrieval.vectors import DIM, ServerEmbedder
+
+    def response(self, route, payload=None):
+        if route == "/v1/models":
+            return {"data": [{"id": "bge"}]}
+        return {"data": [{"index": 1, "embedding": np.ones(DIM).tolist()}]}
+
+    monkeypatch.setattr(ServerEmbedder, "_request", response)
+    with pytest.raises(ValueError, match="indices"):
+        ServerEmbedder("http://localhost:8090").encode(["一筆輸入"])
+
+
+async def test_suitable_products_retrieves_only_sql_eligible_contracts():
+    from unittest.mock import AsyncMock
+
+    from policydesk.agent.tools import DOCUMENT_CHARS, suitable_products
+    from policydesk.retrieval.base import CLAUSE, Hit
+
+    db = AsyncMock()
+    evidence = {"product_id": "hospital", "clause_id": "art.9", "heading": "住院保障",
+                "verbatim": "不相干內容" * DOCUMENT_CHARS + "契約原文"}
+    full_text = evidence["heading"] + "\n" + evidence["verbatim"]
+    db.fetch.side_effect = [
+        [{"product_id": "cheap", "requires_main": False}, {"product_id": "hospital", "requires_main": True}],
+        [{"product_id": "hospital", "clause_id": "waiting", "kind": "waiting", "verbatim": "等待期原文"}],
+        [evidence],
+    ]
+
+    class ScopedRetriever:
+        def search(self, query, **kwargs):
+            assert query == "住院保障"
+            assert kwargs["scope"] == ["cheap", "hospital"]
+            return [Hit(corpus=CLAUSE, scope_id="ineligible", doc_id="art.1", score=1),
+                    Hit(corpus=CLAUSE, scope_id="hospital", doc_id="art.9", score=0.9,
+                        start=len(full_text) - 4, end=len(full_text))]
+
+    rows = await suitable_products(db, insurance_age=35, occupation_class=1, budget=20000,
+                                   line="health", limit=1, need="住院保障", index=ScopedRetriever())
+    assert [row["product_id"] for row in rows] == ["hospital"]
+    assert rows[0]["requires_main"] is True
+    assert rows[0]["selection_basis"] == "eligibility and contract retrieval"
+    assert {row["clause_id"] for row in rows[0]["contract_evidence"]} == {"art.9", "waiting"}
+    matched = next(row for row in rows[0]["contract_evidence"] if row["clause_id"] == "art.9")
+    assert matched["verbatim"] == "契約原文"
+    assert matched["excerpt"] is True

@@ -24,10 +24,16 @@ one corpus and one process.
 import asyncio
 import os
 from functools import partial
+from hashlib import sha256
+from operator import itemgetter
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.request import Request, urlopen
+from uuid import uuid4
 
 import numpy as np
+from msgspec import json
+from tokenizers import Tokenizer
 
 from policydesk.bootloader import logger
 from policydesk.retrieval.base import CLAUSE, STATUTE, Hit
@@ -39,7 +45,7 @@ if TYPE_CHECKING:
 
     from policydesk.core.db import Database
 
-VECTOR_DIR = Path("data/vectors")
+VECTOR_DIR = Path(os.environ.get("POLICYDESK_VECTOR_DIR", "data/vectors"))
 """Beside the BM25 index, and a cache in exactly the same way: rebuilt from Postgres."""
 
 MODEL_DIR = Path(os.environ.get("POLICYDESK_EMBED_MODEL", "/home/enor/enoract/tmp/bge-m3-int8-pkg"))
@@ -48,8 +54,8 @@ MODEL_DIR = Path(os.environ.get("POLICYDESK_EMBED_MODEL", "/home/enor/enoract/tm
 MODEL_FILE = "onnx/model_quantized.onnx"
 DIM = 1024
 MAX_TOKENS = 512
-"""bge-m3 accepts 8192, but a clause is a paragraph and the cost is quadratic in the
-attention. 512 covers every clause in this corpus with room to spare."""
+"""Token budget per passage. Longer documents are split, never discarded."""
+OVERLAP = 64
 
 BATCH = 16
 
@@ -120,7 +126,139 @@ class Embedder:
         return stacked / np.linalg.norm(stacked, axis=1, keepdims=True).clip(min=1e-12)
 
 
-async def build(db: Database, *, path: Path = VECTOR_DIR, model_dir: Path = MODEL_DIR) -> int:
+class ServerEmbedder:
+    """The operator-configured llama-server, used for both documents and queries."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url.rstrip("/")
+        self.model = self._request("/v1/models")["data"][0]["id"]
+
+    def _request(self, route: str, payload: dict | None = None) -> dict:
+        request = Request(  # noqa: S310
+            self.url + route,
+            data=json.encode(payload) if payload is not None else None,
+            headers={"Content-Type": "application/json"},
+        )
+        # This endpoint is deployment configuration, never supplied by a customer or model.
+        with urlopen(request, timeout=60) as response:  # noqa: S310
+            return json.decode(response.read())
+
+    def encode(self, texts: Sequence[str], *, progress: int = 0) -> NDArray:
+        if not texts:
+            return np.zeros((0, DIM), dtype=np.float32)
+        batches = []
+        for start in range(0, len(texts), BATCH):
+            if progress and start and not start % progress:
+                logger.info("vectors_encoding", done=start, total=len(texts))
+            batch = texts[start : start + BATCH]
+            result = self._request("/v1/embeddings", {"input": list(batch), "model": self.model})
+            ordered = sorted(result["data"], key=itemgetter("index"))
+            if [row["index"] for row in ordered] != list(range(len(batch))):
+                raise ValueError("embedding response has missing or duplicate input indices")
+            matrix = np.asarray([row["embedding"] for row in ordered], dtype=np.float32)
+            if matrix.shape != (len(batch), DIM) or not np.isfinite(matrix).all():
+                raise ValueError("embedding response has invalid dimensions or non-finite values")
+            norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+            if (norms == 0).any():
+                raise ValueError("embedding response contains a zero vector")
+            batches.append(matrix / norms)
+        return np.vstack(batches)
+
+
+def passages(text: str, tokenizer: Tokenizer, *, tokens: int = MAX_TOKENS, overlap: int = OVERLAP) -> list[tuple[int, int]]:
+    """Return overlapping character spans covering the entire original text."""
+    if not 0 <= overlap < tokens - 2:
+        raise ValueError("overlap must fit inside the passage token budget")
+    encoded = tokenizer.encode(text, add_special_tokens=False)
+    positions = encoded.offsets
+    count = len(positions)
+    if not count:
+        return [(0, len(text))]
+    spans = []
+    start = 0
+    while start < count:
+        stop = min(start + tokens - 2, count)
+        left = 0 if start == 0 else positions[start][0]
+        right = len(text) if stop == count else positions[stop][0]
+        # A substring can tokenize differently at its leading boundary. Check the
+        # exact text submitted to the encoder, including its special tokens.
+        while len(tokenizer.encode(text[left:right]).ids) > tokens:
+            stop -= 1
+            right = positions[stop][0]
+        spans.append((left, right))
+        if stop == count:
+            break
+        start = max(start + 1, stop - overlap)
+    return spans
+
+
+async def documents(db: Database) -> list[dict[str, str]]:
+    """Read all retrieval sources in their stable build order."""
+    from policydesk.retrieval.index import _SOURCES
+
+    result = []
+    for corpus, sql in _SOURCES.items():
+        offset = 0
+        while rows := await db.fetch(sql, [2000, offset]):
+            result.extend({"key": f"{corpus}|{row['scope_id']}|{row['doc_id']}",
+                           "text": f"{row['heading'] or ''}\n{row['verbatim'] or ''}"} for row in rows)
+            offset += 2000
+    return result
+
+
+def fingerprint(rows: list[dict[str, str]]) -> str:
+    """Include text changes, not only additions or removals of document IDs."""
+    digest = sha256()
+    for row in rows:
+        digest.update(json.encode(row))
+    return digest.hexdigest()
+
+
+async def audit(db: Database, *, path: Path = VECTOR_DIR) -> dict:
+    """Check source identity, matrix integrity and uninterrupted passage coverage."""
+    source = await documents(db)
+
+    def inspect() -> dict:
+        manifest = json.decode((path / "current.json").read_bytes()) if (path / "current.json").is_file() else None
+        root = path / manifest["generation"] if manifest else path
+        keys = np.load(root / "keys.npy", allow_pickle=manifest is None)
+        matrix = np.load(root / "vectors.npy", mmap_mode="r")
+        expected = {row["key"]: row["text"] for row in source}
+        held = set(keys)
+        missing, stale = set(expected) - held, held - set(expected)
+        valid = matrix.shape == (len(keys), DIM) and bool(np.isfinite(matrix).all())
+        if valid:
+            valid = bool(np.allclose(np.linalg.norm(matrix, axis=1), 1, atol=1e-4))
+        uncovered = len(source)
+        # SQL rows can arrive in a different order without a text change. Hash in
+        # the snapshot's original document order, retaining exact content checks.
+        indexed_source = [{"key": str(key), "text": expected[key]} for key in dict.fromkeys(keys) if key in expected]
+        fresh = (manifest is not None and not missing and not stale
+                 and manifest["source_sha256"] == fingerprint(indexed_source))
+        if manifest:
+            spans = np.load(root / "spans.npy", allow_pickle=False)
+            covered: dict[str, list[tuple[int, int]]] = {}
+            for key, (left, right) in zip(keys, spans, strict=True):
+                covered.setdefault(str(key), []).append((int(left), int(right)))
+            uncovered = 0
+            for key, text in expected.items():
+                until = 0
+                for left, right in sorted(covered.get(key, [])):
+                    if left > until or left < 0 or right < left or right > len(text):
+                        break
+                    until = max(until, right)
+                uncovered += until != len(text)
+        return {"documents": len(source), "vectors": len(keys), "missing": len(missing), "stale": len(stale),
+                "uncovered": uncovered, "source_matches": fresh, "matrix_valid": valid, "manifest": manifest,
+                "complete": not missing and not stale and not uncovered and fresh and valid}
+
+    return await asyncio.to_thread(inspect)
+
+
+async def build(
+    db: Database, *, path: Path = VECTOR_DIR, model_dir: Path = MODEL_DIR,
+    server_url: str | None = None, tokens: int = MAX_TOKENS, overlap: int = OVERLAP,
+) -> int:
     """
     Embed every document and write the matrix.
 
@@ -139,34 +277,48 @@ async def build(db: Database, *, path: Path = VECTOR_DIR, model_dir: Path = MODE
     Runs on a thread. It is minutes of CPU, and the event loop has sockets to serve.
 
     """
-    from policydesk.retrieval.index import _SOURCES
-
-    documents: list[tuple[str, str, str]] = []
+    source = await documents(db)
+    if not source:
+        raise ValueError("refusing to publish an empty vector index")
+    tokenizer = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
+    tokenizer.no_truncation()
+    tokenizer.no_padding()
+    keys = []
+    offsets = []
     texts: list[str] = []
-    for corpus, sql in _SOURCES.items():
-        offset = 0
-        while True:
-            rows = await db.fetch(sql, [2000, offset])
-            if not rows:
-                break
-            for row in rows:
-                documents.append((corpus, row["scope_id"], row["doc_id"]))
-                texts.append(f"{row['heading'] or ''}\n{row['verbatim'] or ''}"[: MAX_TOKENS * 3])
-            offset += 2000
-    if not documents:
-        return 0
-
-    embedder = await asyncio.to_thread(Embedder, model_dir)
+    for number, row in enumerate(source, 1):
+        for left, right in passages(row["text"], tokenizer, tokens=tokens, overlap=overlap):
+            keys.append(row["key"])
+            offsets.append((left, right))
+            texts.append(row["text"][left:right])
+        if number % PROGRESS_EVERY == 0:
+            logger.info("vectors_splitting", documents=number, total=len(source), passages=len(texts))
+    url = server_url or os.environ.get("POLICYDESK_EMBED_URL")
+    if url:
+        embedder = await asyncio.to_thread(ServerEmbedder, url)
+        encoder = {"backend": "llama-server", "url": url, "model": embedder.model}
+    else:
+        if tokens > MAX_TOKENS:
+            raise ValueError(f"ONNX encoder supports passages up to {MAX_TOKENS} tokens")
+        embedder = await asyncio.to_thread(Embedder, model_dir)
+        encoder = {"backend": "onnx", "model": str(await asyncio.to_thread(model_dir.resolve))}
+    logger.info("vectors_building", documents=len(source), passages=len(texts), encoder=encoder["backend"])
     matrix = await asyncio.to_thread(partial(embedder.encode, texts, progress=PROGRESS_EVERY))
-
-    await asyncio.to_thread(path.mkdir, parents=True, exist_ok=True)
-    await asyncio.to_thread(np.save, path / "vectors.npy", matrix)
-    # Keys as one array of strings rather than three: the row order is the join, and one
-    # file cannot fall out of step with itself.
-    keys = np.array([f"{c}|{s}|{d}" for c, s, d in documents], dtype=object)
-    await asyncio.to_thread(np.save, path / "keys.npy", keys, allow_pickle=True)
-    logger.info("vectors_built", documents=len(documents), dim=matrix.shape[1], path=str(path))
-    return len(documents)
+    generation = uuid4().hex
+    destination = path / generation
+    await asyncio.to_thread(destination.mkdir, parents=True, exist_ok=True)
+    await asyncio.to_thread(np.save, destination / "vectors.npy", matrix)
+    await asyncio.to_thread(np.save, destination / "keys.npy", np.array(keys), allow_pickle=False)
+    await asyncio.to_thread(np.save, destination / "spans.npy", np.array(offsets, dtype=np.int64))
+    manifest = {"generation": generation, "encoder": encoder, "documents": len(source), "passages": len(texts),
+                "source_sha256": fingerprint(source), "tokens": tokens, "overlap": overlap}
+    pending = path / f"{generation}.json"
+    await asyncio.to_thread(pending.write_bytes, json.encode(manifest))
+    # Publish one pointer only after all immutable files exist. Existing mmap readers
+    # keep their generation; failed builds leave the active generation untouched.
+    await asyncio.to_thread(pending.replace, path / "current.json")
+    logger.info("vectors_built", **manifest, path=str(path))
+    return len(source)
 
 
 class EmbeddingRetriever:
@@ -181,10 +333,21 @@ class EmbeddingRetriever:
     name = "embedding"
 
     def __init__(self, path: Path = VECTOR_DIR, *, model_dir: Path = MODEL_DIR) -> None:
-        self._vectors = np.lib.format.open_memmap(path / "vectors.npy", mode="r")
-        keys = np.load(path / "keys.npy", allow_pickle=True)
+        self.manifest = json.decode((path / "current.json").read_bytes()) if (path / "current.json").is_file() else None
+        root = path / self.manifest["generation"] if self.manifest else path
+        self._vectors = np.lib.format.open_memmap(root / "vectors.npy", mode="r")
+        keys = np.load(root / "keys.npy", allow_pickle=self.manifest is None)
         self._keys = [str(k).split("|", 2) for k in keys]
-        self._embedder = Embedder(model_dir)
+        self._spans = np.load(root / "spans.npy", allow_pickle=False) if self.manifest else None
+        if len(keys) != len(self._vectors) or (self._spans is not None and len(self._spans) != len(keys)):
+            raise ValueError("vector generation has inconsistent row counts")
+        encoder = self.manifest["encoder"] if self.manifest else {"backend": "onnx"}
+        if encoder["backend"] == "llama-server":
+            self._embedder = ServerEmbedder(os.environ.get("POLICYDESK_EMBED_URL") or encoder["url"])
+            if self._embedder.model != encoder["model"]:
+                raise ValueError("query encoder differs from the indexed model; rebuild the vectors")
+        else:
+            self._embedder = Embedder(model_dir)
         # Row lookup by corpus, built once. A boolean mask per query would be a scan of
         # the whole key list on the path the customer waits on.
         self._by_corpus: dict[str, NDArray] = {
@@ -238,13 +401,23 @@ class EmbeddingRetriever:
             # arbitrary order rather than nothing. No caller passes 0 today; the negation
             # of a slice bound is not a thing the next one should have to notice.
             return []
-        # argpartition finds the k largest in O(n); argsort then orders just those k.
-        top = np.argpartition(scores, -take)[-take:]
-        top = top[np.argsort(scores[top])[::-1]]
-        return [
-            Hit(corpus=corpus, doc_id=self._keys[rows[i]][2], scope_id=self._keys[rows[i]][1], score=float(scores[i]))
-            for i in top
-        ]
+        # Several passages may belong to one clause. Each clause gets one result,
+        # carrying its best passage, so a long appendix cannot consume every slot.
+        hits = []
+        seen = set()
+        for i in np.argsort(scores)[::-1]:
+            row = rows[i]
+            key = tuple(self._keys[row])
+            if key in seen:
+                continue
+            seen.add(key)
+            span = self._spans[row] if self._spans is not None else (None, None)
+            hits.append(Hit(corpus=corpus, doc_id=key[2], scope_id=key[1], score=float(scores[i]),
+                            start=int(span[0]) if span[0] is not None else None,
+                            end=int(span[1]) if span[1] is not None else None))
+            if len(hits) == take:
+                break
+        return hits
 
 
 async def open_vectors(
@@ -275,10 +448,10 @@ async def open_vectors(
     """
     del db
     try:
-        if not await asyncio.to_thread((path / "vectors.npy").is_file):
+        if not await asyncio.to_thread((path / "vectors.npy").is_file) and not (path / "current.json").is_file():
             logger.info("vectors_absent", path=str(path), hint="build them with: policydesk-index")
             return None
-        if not await asyncio.to_thread((model_dir / MODEL_FILE).is_file):
+        if not (path / "current.json").is_file() and not await asyncio.to_thread((model_dir / MODEL_FILE).is_file):
             # Checked separately from the matrix, because the two go missing separately.
             # A built matrix with no model to embed a query against raised out of
             # `before_server_start` and the desk did not come up at all — a channel that
@@ -291,4 +464,3 @@ async def open_vectors(
         return None
     logger.info("vectors_ready", documents=retriever.size)
     return retriever
-
