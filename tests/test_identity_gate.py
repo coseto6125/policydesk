@@ -226,6 +226,84 @@ async def test_customer_socket_upload_passes_confirmed_case_to_core_command(cust
         assert socket.sent[-1] == {"type": "notice", "text": "無法處理這份文件。", "level": "warn"}
 
 
+@pytest.mark.parametrize("remaining", [(), ("健康告知書",)])
+async def test_customer_socket_upload_accepted_runs_document_guidance(customer_handler, monkeypatch, remaining):
+    server, request, members, answer = customer_handler
+    outcome = server.cmd.Refusal("尚有文件", remaining) if remaining else SimpleNamespace()
+    monkeypatch.setattr(server.cmd, "upload_document", AsyncMock(return_value=outcome))
+    socket = _CustomerSocket([
+        {"type": "hello", "name": "fixture-owner"},
+        {"type": "say", "text": members["fixture-owner"]["national_id"]},
+        {"type": "upload", "case_id": 999, "document_id": 22, "filename": "demo.pdf"},
+    ])
+    await server.customer_socket(request, socket)
+    answer.assert_awaited_once()
+    assert answer.call_args.kwargs["document_event"] is True
+    assert answer.call_args.kwargs["case_id"] == 1
+    assert answer.call_args.kwargs["confirmed"] is True
+
+
+async def test_answer_document_event_does_not_invent_customer_speech(customer_handler, monkeypatch):
+    server, request, _, _ = customer_handler
+    request.app.ctx.provider = AsyncMock()
+    request.app.ctx.clauses = None
+    turn = executor.Turn(1, 1)
+    turn.reply = "模擬簽署紀錄已更新。"
+    turn.scenario = "document_progress"
+    runner = AsyncMock(return_value=turn)
+    monkeypatch.setattr(server, "run_turn", runner)
+    monkeypatch.setattr(server.lang, "resolve", AsyncMock(return_value=("und", "zh-TW")))
+    monkeypatch.setattr(server.i18n, "translate", AsyncMock(return_value=[]))
+    monkeypatch.setattr(server, "cited", AsyncMock(return_value=[]))
+    db = request.app.ctx.db
+    await answer_customer(request, _CustomerSocket([]), db, case_id=1, text="", confirmed=True, document_event=True)
+    sql = [call.args[0] for call in db.execute.await_args_list]
+    assert not any("'customer'" in statement for statement in sql)
+    assert any("'agent'" in statement for statement in sql)
+    assert runner.call_args.kwargs["document_event"] is True
+
+
+@pytest.mark.parametrize("previous_scenario", [None, "policy_overview", "document_progress"])
+async def test_customer_socket_confirmation_replays_question_then_guides_documents(customer_handler, previous_scenario):
+    server, request, members, answer = customer_handler
+    answer.return_value = SimpleNamespace(scenario=previous_scenario)
+    db = request.app.ctx.db
+    db.fetch_val.side_effect = lambda sql, params: (
+        "issued" if "SELECT stage" in sql else members["fixture-owner"]["national_id"]
+    )
+    socket = _CustomerSocket([
+        {"type": "hello", "name": "fixture-owner"},
+        {"type": "say", "text": "你好"},
+        {"type": "say", "text": members["fixture-owner"]["national_id"]},
+    ])
+    await server.customer_socket(request, socket)
+    calls = [call.kwargs for call in answer.await_args_list]
+    assert calls[1]["text"] == "你好"
+    assert calls[1]["confirmed"]
+    if previous_scenario == "document_progress":
+        assert len(calls) == 2
+    else:
+        assert len(calls) == 3
+        assert calls[2]["document_event"] is True
+
+
+async def test_customer_socket_wrong_sample_guides_without_claiming_success(customer_handler, monkeypatch):
+    server, request, members, answer = customer_handler
+    refusal = server.cmd.Refusal("示範規則檢查：空白便條紙不符合要保書，未記錄模擬簽署。")
+    upload = AsyncMock(return_value=refusal)
+    monkeypatch.setattr(server.cmd, "upload_document", upload)
+    socket = _CustomerSocket([
+        {"type": "hello", "name": "fixture-owner"},
+        {"type": "say", "text": members["fixture-owner"]["national_id"]},
+        {"type": "upload", "case_id": 999, "document_id": 22, "sample": "mismatched"},
+    ])
+    await server.customer_socket(request, socket)
+    upload.assert_awaited_once_with(request.app.ctx.db, 1, document_id=22, sample="mismatched")
+    assert answer.call_args.kwargs["document_event"] is True
+    assert answer.call_args.kwargs["text"] == refusal.reason
+    assert any(frame.get("level") == "warn" for frame in socket.sent)
+
+
 async def test_push_case_without_confirmation_reads_and_sends_nothing(customer_handler):
     server, request, _, _ = customer_handler
     socket = _CustomerSocket([])

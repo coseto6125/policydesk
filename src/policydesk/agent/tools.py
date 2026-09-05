@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from unicodedata import normalize
 
 from policydesk.bootloader import logger
-from policydesk.core.documents import document_status, signing_documents
+from policydesk.core.documents import SIGNING_PARTIES, document_status, signing_documents
 from policydesk.retrieval.base import CLAUSE, Hit, Retriever
 from policydesk.skills.calculator import calculate
 from policydesk.synthetic.person import insurance_age
@@ -872,24 +872,40 @@ async def standing_brief(db: Database, member_id: int, *, today: date) -> dict[s
 @requires_identity
 async def pending_signatures(db: Database, case_id: int) -> dict[str, Any]:
     """
-    List the documents this case still needs signed.
+    Read this case's enrolment document progress, not claim submission requirements.
 
     Args:
         db: The database.
         case_id: Which case.
 
     Returns:
-        `count` and `names` — the two the 交付文件 template asks for.
-
-    The template had asked for them since it was written and nothing supplied them, so
-    `_render` fell through to its default branch and the customer read the literal
-    「已為您備妥應簽署文件共 {count} 份」. A placeholder is a promise the renderer makes on
-    the tool's behalf, and an unmade one reaches the customer looking like a bug in their
-    insurer.
+        Current stage, issued documents and missing kinds, with demo-only intake semantics.
+        `count` and `names` remain available to existing callers.
 
     """
-    missing = document_status(await signing_documents(db, case_id))["missing"]
-    return {"count": len(missing), "names": "\n".join(f"　{title}" for title in missing)}
+    # Uploads lock this same case before writing grants, documents or stage.
+    async with db.transaction() as session:
+        stage = await session.fetch_val(
+            'SELECT stage FROM "case" WHERE case_id = $1::bigint FOR SHARE', [case_id],
+        )
+        identity_verified = await session.fetch_val(
+            "SELECT EXISTS(SELECT 1 FROM identity_check WHERE case_id = $1::bigint AND verified)", [case_id],
+        )
+        documents = await signing_documents(session, case_id)
+    status = document_status(documents)
+    return {
+        **status, "stage": stage, "simulation_only": True,
+        "identity_verified": identity_verified,
+        "submitted_for_review": stage in ("review", "approved", "rejected"),
+        "signing_parties": SIGNING_PARTIES,
+        "count": len(status["missing"]),
+        "names": "\n".join(f"　{title}" for title in status["missing"]),
+        "documents": [
+            {"title": doc["title"], "signed": doc["signed_at"] is not None,
+             "signature_simulated": doc["signature_simulated"]}
+            for doc in documents
+        ],
+    }
 
 
 @requires_identity

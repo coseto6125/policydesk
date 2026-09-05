@@ -1,8 +1,15 @@
-"""Document command lifecycle; SHA values here identify versions, not verified bytes."""
+"""
+Document lifecycle: state tests prove workflow correctness, not truthful model prose.
+
+Assert state transitions and persisted data changes, never reply keyword matches.
+Evaluate whether replies faithfully explain those states separately by meaning.
+SHA values here identify versions, not verified bytes.
+"""
 
 import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -185,6 +192,51 @@ async def test_record_signature_wrong_version_refuses_without_mutating_records(d
     assert await _state(db, case["case_id"]) == before
 
 
+async def test_signing_documents_mock_marker_tracks_current_document_and_scope(document_cases):
+    db, (case, other) = document_cases
+    document = case["documents"][0]
+
+    async def current_document():
+        rows = await commands.signing_documents(db, case["case_id"])
+        return next(row for row in rows if row["document_id"] == document["document_id"])
+
+    assert (await current_document())["signature_simulated"] is False
+    await commands.record_signature(
+        db, case["case_id"], document_id=document["document_id"], party="要保人", document_sha=document["sha"],
+    )
+    partial = await current_document()
+    assert partial["signature_simulated"] is True
+    assert partial["signed_at"] is None
+    await db.execute(
+        "UPDATE case_document SET sha = $2::text WHERE document_id = $1::bigint",
+        [document["document_id"], f"{document['sha']}-new"],
+    )
+    assert (await current_document())["signature_simulated"] is False
+    await db.execute_many(
+        """INSERT INTO authorization_grant (case_id, stage, scope, document_sha, provider)
+           VALUES ($1::bigint, 'signed', $2::text, $3::text, 'mock')""",
+        [
+            (other["case_id"], f"要保人 簽署文件 {document['document_id']}", f"{document['sha']}-new"),
+            (case["case_id"], "unrelated permission", f"{document['sha']}-new"),
+        ],
+    )
+    assert (await current_document())["signature_simulated"] is False
+    await commands.upload_document(db, case["case_id"], document_id=document["document_id"], filename="demo.pdf")
+    complete = await current_document()
+    assert complete["signature_simulated"] is True
+    assert complete["signed_at"] is not None
+    providers = await db.fetch(
+        """SELECT provider FROM authorization_grant
+           WHERE case_id = $1::bigint AND document_sha = $2::text AND scope <> 'unrelated permission'""",
+        [case["case_id"], f"{document['sha']}-new"],
+    )
+    assert providers == [{"provider": "mock"}, {"provider": "mock"}]
+    await db.execute(
+        "UPDATE authorization_grant SET provider = 'external-test' WHERE case_id = $1::bigint", [case["case_id"]],
+    )
+    assert (await current_document())["signature_simulated"] is False
+
+
 async def test_record_signature_split_versions_do_not_complete_a_document(document_cases):
     db, (case, _) = document_cases
     document = case["documents"][0]
@@ -319,11 +371,13 @@ async def test_record_signature_other_cases_document_refuses_without_mutating_ei
 
 
 @pytest.mark.parametrize("stage", [Stage.PROPOSED, Stage.VERIFIED])
-async def test_customer_socket_upload_illegal_stage_reports_refusal_without_writes(document_cases, stage):
+async def test_customer_socket_upload_illegal_stage_reports_refusal_without_writes(document_cases, stage, monkeypatch):
     db, (case, _) = document_cases
     await db.execute('UPDATE "case" SET stage = $2::text WHERE case_id = $1::bigint', [case["case_id"], stage.value])
     member = await db.fetch_one("SELECT display_name, national_id FROM member WHERE member_id = $1::bigint", [case["member_id"]])
     frames, before = [], {}
+    guidance = AsyncMock()
+    monkeypatch.setattr(server, "_answer", guidance)
 
     class Socket:
         async def __aiter__(self):
@@ -344,6 +398,116 @@ async def test_customer_socket_upload_illegal_stage_reports_refusal_without_writ
     assert before, "the upload must follow actual identity confirmation"
     assert await _state(db, case["case_id"]) == before, "a refused upload changed document metadata or signatures"
     assert any(frame["type"] == "notice" and frame["level"] == "warn" and frame["text"] for frame in frames)
+    guidance.assert_awaited_once()  # Confirmation guides; the refused upload does not.
+
+
+async def test_pending_signatures_progress_uses_actual_current_documents(document_cases):
+    db, (case, _) = document_cases
+    initial = await tools.pending_signatures(db, case["case_id"])
+    assert initial["stage"] == "issued"
+    assert initial["simulation_only"] is True
+    assert initial["signing_parties"] == commands.SIGNING_PARTIES
+    assert initial["identity_verified"] is False
+    assert initial["submitted_for_review"] is False
+    assert initial["signed"] == 0
+    assert initial["count"] == len(case["documents"])
+    assert {doc["title"] for doc in initial["documents"]} == set(initial["missing"])
+    for index, document in enumerate(case["documents"], 1):
+        await commands.upload_document(db, case["case_id"], document_id=document["document_id"], sample="matching")
+        current = await tools.pending_signatures(db, case["case_id"])
+        assert current["stage"] == ("signed" if index == len(case["documents"]) else "issued")
+        assert current["signed"] == index
+        assert current["count"] == len(case["documents"]) - index
+        assert document["kind"] not in current["missing"]
+        assert sum(doc["signature_simulated"] for doc in current["documents"]) == index
+    assert current["stage"] == "signed"
+    assert current["missing"] == ()
+
+
+async def test_document_demo_requires_explicit_verification_and_submission(document_cases):
+    """Progress queries cannot advance a case; commands must satisfy each state gate."""
+    db, (case, other) = document_cases
+    other_before = await _state(db, other["case_id"])
+
+    async def read_only_progress(stage):
+        before = await _state(db, case["case_id"])
+        progress = await tools.pending_signatures(db, case["case_id"])
+        assert progress["stage"] == stage
+        assert progress["identity_verified"] is (stage in ("verified", "review"))
+        assert progress["submitted_for_review"] is (stage == "review")
+        assert await _state(db, case["case_id"]) == before
+        return progress
+
+    await read_only_progress("issued")
+    initial = await _state(db, case["case_id"])
+    refused = await commands.submit_for_review(db, case["case_id"])
+    assert isinstance(refused, commands.Refusal)
+    assert await _state(db, case["case_id"]) == initial
+    for document in case["documents"]:
+        await commands.upload_document(
+            db, case["case_id"], document_id=document["document_id"], sample="matching",
+        )
+    complete = await read_only_progress("signed")
+    assert complete["signed"] == complete["total"] == len(case["documents"])
+    assert not complete["missing"]
+    signed = await _state(db, case["case_id"])
+    assert not signed["identity_checks"]
+    assert len(signed["grants"]) == len(case["documents"]) * len(commands.SIGNING_PARTIES)
+    refused = await commands.submit_for_review(db, case["case_id"])
+    assert isinstance(refused, commands.Refusal)
+    assert await _state(db, case["case_id"]) == signed
+
+    await _verify(db, case)
+    await read_only_progress("verified")
+    verified = await _state(db, case["case_id"])
+    assert verified["identity_checks"] == [{"verified": True, "reason": "fixture provider"}]
+    assert verified["documents"] == signed["documents"]
+    assert verified["grants"] == signed["grants"]
+    submitted = await commands.submit_for_review(db, case["case_id"])
+    assert isinstance(submitted, commands.Applied)
+    await read_only_progress("review")
+    reviewed = await _state(db, case["case_id"])
+    assert reviewed["case"]["case_version"] == verified["case"]["case_version"] + 1
+    assert reviewed["audit_events"] == verified["audit_events"] + 1
+    assert reviewed["documents"] == verified["documents"]
+    assert reviewed["grants"] == verified["grants"]
+    assert await _state(db, other["case_id"]) == other_before
+
+
+@pytest.mark.parametrize("sample", ["mismatched", "unknown", True, []])
+async def test_upload_document_wrong_or_invalid_sample_keeps_all_records(document_cases, sample):
+    db, (case, _) = document_cases
+    before = await _state(db, case["case_id"])
+    outcome = await commands.upload_document(
+        db, case["case_id"], document_id=case["documents"][0]["document_id"], sample=sample,
+    )
+    assert isinstance(outcome, commands.Refusal)
+    assert not outcome.missing  # A rejection, not persisted partial progress.
+    assert await _state(db, case["case_id"]) == before
+
+
+async def test_upload_document_matching_sample_records_only_owned_mock_document(document_cases):
+    db, (case, other) = document_cases
+    before = await _state(db, other["case_id"])
+    document = case["documents"][0]
+    outcome = await commands.upload_document(db, case["case_id"], document_id=document["document_id"], sample="matching")
+    assert isinstance(outcome, commands.Refusal)
+    assert outcome.missing
+    row = await db.fetch_one("SELECT uploaded_name FROM case_document WHERE document_id = $1::bigint", [document["document_id"]])
+    assert row["uploaded_name"] == f"示範-{document['kind']}.pdf"
+    progress = await tools.pending_signatures(db, case["case_id"])
+    assert progress["signed"] == 1
+    assert progress["documents"][0]["signature_simulated"] is True
+    own_before = await _state(db, case["case_id"])
+    wrong_after_correct = await commands.upload_document(db, case["case_id"], document_id=document["document_id"], sample="mismatched")
+    assert isinstance(wrong_after_correct, commands.Refusal)
+    assert not wrong_after_correct.missing
+    assert await _state(db, case["case_id"]) == own_before
+    assert document["kind"] not in (await tools.pending_signatures(db, case["case_id"]))["missing"]
+    rejected = await commands.upload_document(db, case["case_id"], document_id=other["documents"][0]["document_id"], sample="matching")
+    assert isinstance(rejected, commands.Refusal)
+    assert not rejected.missing
+    assert await _state(db, other["case_id"]) == before
 
 
 async def test_upload_document_partial_set_commits_metadata_and_both_roles(document_cases):
@@ -620,6 +784,52 @@ async def test_transaction_repeated_cancellation_settles_control_before_pool_reu
         release.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("operation", ["upload", "verify"])
+async def test_pending_signatures_waits_for_writer_and_reads_one_state(document_cases, monkeypatch, operation):
+    db, (case, _) = document_cases
+    for document in case["documents"][:-1]:
+        await commands.upload_document(db, case["case_id"], document_id=document["document_id"], sample="matching")
+    if operation == "verify":
+        await commands.upload_document(
+            db, case["case_id"], document_id=case["documents"][-1]["document_id"], sample="matching",
+        )
+    reached, release = asyncio.Event(), asyncio.Event()
+    original = commands._bump
+    pid = None
+
+    async def pause_before_stage(session, *args, **kwargs):
+        nonlocal pid
+        pid = await session.fetch_val("SELECT pg_backend_pid()")
+        reached.set()
+        await release.wait()
+        return await original(session, *args, **kwargs)
+
+    monkeypatch.setattr(commands, "_bump", pause_before_stage)
+    tasks = []
+    async with connected_database() as reader:
+        try:
+            writing = commands.upload_document(
+                db, case["case_id"], document_id=case["documents"][-1]["document_id"], sample="matching",
+            ) if operation == "upload" else _verify(db, case)
+            tasks.append(asyncio.create_task(writing))
+            await asyncio.wait_for(reached.wait(), timeout=5)
+            tasks.append(asyncio.create_task(tools.pending_signatures(reader, case["case_id"])))
+            await _wait_for_blocked_connection(db, pid, tasks[1])
+            release.set()
+            _, progress = await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+            assert progress["stage"] == ("signed" if operation == "upload" else "verified")
+            assert progress["identity_verified"] is (operation == "verify")
+            assert progress["submitted_for_review"] is False
+            assert progress["signed"] == 10
+            assert progress["pending"] == 0
+            assert progress["missing"] == ()
+        finally:
+            release.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.parametrize("operation", ["issue_documents", "upload_document", "decide"])

@@ -265,22 +265,36 @@ async def record_signature(db: Database, case_id: int, *, document_id: int, part
 
 
 @_atomic_case
-async def upload_document(db: Database, case_id: int, *, document_id: int, filename: str) -> Outcome:
+async def upload_document(
+    db: Database, case_id: int, *, document_id: int, filename: str = "", sample: str | None = None,
+) -> Outcome:
     """
     Record the verified session's demo upload and both roles atomically, without writing file bytes.
 
     The caller supplies the case from the confirmed session, never from the message.
     A filename is display metadata, not a filesystem path or proof of a real signature.
+    Fixed samples exercise matching and mismatched document kinds by demo rules only.
+    They do not call a local model or inspect a real file.
     """
-    filename = filename.strip()
-    if not filename or len(filename) > 255:
-        return Refusal(reason="請提供 1 至 255 字元的文件名稱")
+    if sample is not None and sample not in ("matching", "mismatched"):
+        return Refusal(reason="請選擇有效的示範文件")
+    if sample is None:
+        filename = filename.strip()
+        if not filename or len(filename) > 255:
+            return Refusal(reason="請提供 1 至 255 字元的文件名稱")
     document = await db.fetch_one(
-        "SELECT sha FROM case_document WHERE case_id = $1::bigint AND document_id = $2::bigint",
+        "SELECT sha, kind FROM case_document WHERE case_id = $1::bigint AND document_id = $2::bigint",
         [case_id, document_id],
     )
     if document is None:
         return Refusal(reason="無法處理這份文件。")
+    if sample is not None:
+        stage = await db.fetch_val('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
+        if stage != Stage.ISSUED.value:
+            return Refusal(reason="案件狀態不允許進行簽署")
+        if sample == "mismatched":
+            return Refusal(reason=f"示範規則檢查：所選樣本是空白便條紙，不是本欄需要的「{document['kind']}」，未記錄模擬簽署。")
+        filename = f"示範-{document['kind']}.pdf"
     return await _record_signatures(
         db, case_id, document_id=document_id, parties=SIGNING_PARTIES,
         document_sha=document["sha"] or "", filename=filename,
@@ -314,8 +328,8 @@ async def _record_signatures(
             [document_id, filename, case_id],
         )
     await db.execute_many(
-        """INSERT INTO authorization_grant (case_id, stage, scope, document_sha)
-           VALUES ($1::bigint,$2::text,$3::text,$4::text)""",
+        """INSERT INTO authorization_grant (case_id, stage, scope, document_sha, provider)
+           VALUES ($1::bigint,$2::text,$3::text,$4::text,'mock')""",
         [(case_id, Stage.SIGNED.value, f"{party} 簽署文件 {document_id}", document_sha) for party in parties],
     )
 

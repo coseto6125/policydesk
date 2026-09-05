@@ -134,7 +134,9 @@ def test_a_folded_card_keeps_its_header_on_screen():
 
 
 @pytest.mark.parametrize("issued", [0, 9, 10])
-def test_render_case_required_missing_documents_remain_visible_and_pending(issued):
+@pytest.mark.parametrize("simulated", [False, True])
+@pytest.mark.parametrize("completed", [False, True])
+def test_render_case_required_missing_documents_remain_visible_and_pending(issued, simulated, completed):
     """Execute the page's renderers; a missing form must not turn nine signatures into 9/9."""
     node = shutil.which("node")
     assert node is not None, "UI renderer tests require Node.js on PATH"
@@ -143,11 +145,18 @@ def test_render_case_required_missing_documents_remain_visible_and_pending(issue
         start = PAGE.index(f"function {name}(")
         end = PAGE.index("\n}\n", start) + len("\n}\n")
         functions.append(PAGE[start:end])
+    signed = issued if completed else 0
     snapshot = {
         "case_id": 1, "case_version": 1, "stage": "verified", "policies": [],
-        "documents": [{"document_id": index + 1, "kind": f"文件{index + 1}", "signed_at": "2026-09-05"} for index in range(issued)],
+        "documents": [
+            {
+                "document_id": index + 1, "kind": f"文件{index + 1}",
+                "signed_at": "2026-09-05" if completed else None, "signature_simulated": simulated,
+            }
+            for index in range(issued)
+        ],
         "document_status": {
-            "signed": issued, "total": 10, "pending": 10 - issued,
+            "signed": signed, "total": 10, "pending": 10 - signed,
             "unissued": [f"文件{index + 1}" for index in range(issued, 10)],
         },
     }
@@ -162,6 +171,7 @@ const STAGE_NAMES = Object.fromEntries(STAGES);
 const TILE_GLYPH = {done:'',wait:'',flag:'',bad:'',open:''};
 const PILLS = Object.fromEntries(['ok','no','wait','flag'].map(k => [k, s => s]));
 const esc = s => String(s ?? '');
+const icon = s => s;
 const shortTime = s => s ?? '';
 const money = n => String(n);
 const countTo = (node, n) => { node.value = n; };
@@ -175,12 +185,70 @@ process.stdout.write(JSON.stringify(nodes));
     )
     assert rendered.returncode == 0, rendered.stderr
     nodes = json.loads(rendered.stdout)
-    assert nodes["docCount"]["textContent"] == f"{issued}/10"
-    assert nodes["kpiTodo"]["value"] == 10 - issued
+    assert nodes["docCount"]["textContent"] == f"{signed}/10"
+    assert nodes["kpiTodo"]["value"] == 10 - signed
     if 0 < issued < 10:
-        assert f"{issued}/10 已簽署" in nodes["board"]["innerHTML"]
+        label = "模擬簽署" if simulated else "已簽署"
+        assert f"{signed}/10 {label}" in nodes["board"]["innerHTML"]
+    if signed:
+        for panel in ("docTable", "modalDocs"):
+            label = "模擬簽署完成" if simulated else "已簽署"
+            assert nodes[panel]["innerHTML"].count(label) == issued
+        if simulated:
+            assert "模擬簽署" in nodes["board"]["innerHTML"]
+    elif issued:
+        label = "模擬簽署未齊" if simulated else "待模擬簽署"
+        assert nodes["docTable"]["innerHTML"].count(label) == issued
+        assert nodes["modalDocs"]["innerHTML"].count("正確示範文件") == issued
+        assert nodes["modalDocs"]["innerHTML"].count("錯誤示範文件") == issued
+        assert nodes["modalDocs"]["innerHTML"].count('data-sample="matching"') == issued
+        assert nodes["modalDocs"]["innerHTML"].count('data-sample="mismatched"') == issued
+        assert nodes["modalDocs"]["innerHTML"].count('aria-describedby="documentDemoNotice"') == issued * 2
+        assert "簽署完成" not in nodes["modalDocs"]["innerHTML"]
     for name in snapshot["document_status"]["unissued"]:
         assert name in nodes["docTable"]["innerHTML"]
         assert name in nodes["modalDocs"]["innerHTML"]
     assert 'data-doc="undefined"' not in nodes["modalDocs"]["innerHTML"]
     assert 'data-doc="null"' not in nodes["modalDocs"]["innerHTML"]
+
+
+def test_document_modal_explains_fixed_samples_and_future_local_verification():
+    modal = PAGE[PAGE.index('<dialog id="docModal"'):PAGE.index("<script>", PAGE.index('<dialog id="docModal"'))]
+    assert "示範流程" in modal
+    assert "固定示範樣本" in modal
+    assert "示範規則" in modal
+    assert "不會上傳文件內容" in modal
+    assert "不是真實簽署" in modal
+    assert 'aria-describedby="documentDemoNotice"' in modal
+    assert '<details class="document-demo-help">' in modal
+    assert '<summary aria-label="正式場景驗證說明">' in modal
+    assert 'aria-hidden="true">！</span>' in modal
+    assert "正式場景規劃以地端模型檢查文件資料正確性" in modal
+    assert "尚未執行地端模型驗證" in modal
+    assert "資料檢查不等同身分或簽署效力認證" in modal
+
+
+@pytest.mark.parametrize("sample", ["matching", "mismatched"])
+def test_document_sample_click_sends_choice_without_file_payload(sample):
+    node = shutil.which("node")
+    assert node is not None, "UI renderer tests require Node.js on PATH"
+    start = PAGE.index('$("modalDocs").addEventListener("click",')
+    end = PAGE.index("\n});", start) + len("\n});")
+    harness = r"""
+const fs = require('node:fs');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+let clicked;
+const $ = id => ({addEventListener: (event, callback) => { clicked = callback; }});
+const sent = [];
+const customerWs = {send: value => sent.push(JSON.parse(value))};
+eval(input.listener);
+const button = {dataset: {doc:'17', sample:input.sample}, classList: {contains: () => false}};
+clicked({target:{closest: () => button}});
+process.stdout.write(JSON.stringify(sent));
+"""
+    clicked = subprocess.run(  # noqa: S603 (only local source and fixed sample names reach Node)
+        [node, "-e", harness], input=json.dumps({"listener": PAGE[start:end], "sample": sample}),
+        capture_output=True, text=True, check=False, timeout=10,
+    )
+    assert clicked.returncode == 0, clicked.stderr
+    assert json.loads(clicked.stdout) == [{"type": "upload", "document_id": 17, "sample": sample}]
