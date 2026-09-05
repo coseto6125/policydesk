@@ -1034,6 +1034,36 @@ async def test_router_fences_the_customer_message_with_a_tag_it_mints_per_turn(d
     assert second != tag, "a tag reused across turns is one the customer has already seen"
 
 
+async def test_the_fence_rule_is_the_last_rule_the_router_reads(db, live_case):
+    """
+    An instruction inside the fence competes with the fence rule for the same slot, and
+    later text wins it. The guard goes after the brief, and only the language line
+    follows it.
+    """
+    from policydesk.agent import executor, i18n
+    from policydesk.agent.scenario import ROUTER_INSTRUCTIONS, WRITING
+    from policydesk.llm.provider import Completion
+
+    seen: list[str] = []
+
+    class Captures:
+        name = "stub"
+
+        async def complete(self, **kwargs):
+            seen.append(kwargs["instructions"])
+            return Completion(text="請洽客服專線。", provider="stub")
+
+    turn = await executor.run_turn(Captures(), db, case_id=live_case["case_id"],
+                                   member_id=live_case["member_id"], text="您好", confirmed=False)
+
+    guard = seen[0].index("# UNTRUSTED INPUT")
+    assert guard > seen[0].index(ROUTER_INSTRUCTIONS[:80])
+    assert guard > seen[0].index(WRITING[:80])
+    tail = seen[0][seen[0].index("what this desk can help with.") + len("what this desk can help with."):]
+    assert tail.strip() == i18n.hint(turn.locale).strip(), "the language line closes the guard's own block"
+    assert seen[0].endswith(tail), "nothing follows the closing block"
+
+
 async def test_rebuilt_history_carries_no_fence_tag(db, live_case):
     """
     The fence lives for one call. A tag in the transcript is a tag the customer has read.

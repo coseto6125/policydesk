@@ -261,9 +261,12 @@ async def _route(
         # customer at `run_turn`'s `scenario is None` branch. It is also the path where the
         # model has the most freedom to write a long unstructured paragraph, since no
         # scenario injection is shaping it.
+        # `untrusted` closes the brief and carries the language line inside it, so the
+        # fence rule is the last thing the model reads. A guard in the middle is one the
+        # message can talk over, because later text wins the slot they both compete for.
         instructions=(
-            f"{LOOKUP_SCOPE}{ROUTER_INSTRUCTIONS}\n\n{untrusted(fence)}\n\n{WRITING}"
-            f"\n\n{i18n.hint(turn.locale)}"
+            f"{LOOKUP_SCOPE}{ROUTER_INSTRUCTIONS}\n\n{WRITING}"
+            f"\n\n{untrusted(fence, i18n.hint(turn.locale))}"
         ),
         user_input=f"{past}<{fence}>\n{text}\n</{fence}>",
         tools=[tool_schema(s) for s in offered.values()],
@@ -844,7 +847,7 @@ async def run_turn(
         # topic; a scenario that needs a figure the rows do not carry sets `calculator`.
         completion = await provider.complete(
             phase=Phase.ANSWER,
-            instructions=f"{instructions}\n\n{untrusted(fence)}\n\n{i18n.hint(turn.locale)}",
+            instructions=f"{instructions}\n\n{untrusted(fence, i18n.hint(turn.locale))}",
             user_input=f"{past}<{fence}>\n{text}\n</{fence}>\n\n# Tool results\n{material}",
             schema=_answer_schema(turn.clause_sources, calculator=scenario.calculator),
         )
