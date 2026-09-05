@@ -32,10 +32,10 @@ not that Protocol or its per-worker embedding cache.
 """
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import os
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from hashlib import sha256
 from operator import itemgetter
