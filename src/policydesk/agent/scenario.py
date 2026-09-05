@@ -27,7 +27,7 @@ ASKED_ALREADY = (
     "When the previous turn already asked for the national ID number and the customer asks "
     "the same thing again, answer differently. "
     "Finish the public material that is still unsaid, or name the first thing you will look "
-    "up once the check passes. Then bring the ID number in with one sentence. "
+    "up once the check passes. Use the connection's identity verification state for the next step. "
     "A reply that is only the request, repeated, tells the customer the last answer did not land.\n"
 )
 """What to do when the refusal has already been given once.
@@ -38,10 +38,19 @@ again drew the same request in fewer words. A customer who repeats a question is
 desk the last answer did not land, and repeating it more briefly is the desk saying less each
 time it is asked.
 
-Read by both paths that can refuse — the scenario one through `IDENTITY_PENDING`, and the
-router's free answer through `executor`'s own unverified block, which is where the third of
-those three turns was written.
+Read in the unverified context shared by the router and answering phases.
 """
+
+
+IDENTITY_NEXT_STEP = (
+    "Use the connection's identity verification state for the next step.\n"
+    "When pending, request the national ID number only when personal records are needed.\n"
+    "When locked, explain that verification is paused for this connection and offer staff assistance; "
+    "request no identity information and offer no further automated verification attempt.\n"
+    "Public insurance information remains available in either state; answer it from the returned material.\n"
+)
+
+IDENTITY_LOCKED_REPLY = "本次線上核對已暫停，請改由專人與您確認身分。"
 
 
 IDENTITY_PENDING = (
@@ -52,8 +61,7 @@ IDENTITY_PENDING = (
     "When the material holds no public information, say that this question reads the "
     "customer's own records, and name what you will be able to look up once identity is "
     "checked. A product description from memory is not an answer here.\n"
-    "Then ask for the national ID number.\n"
-    + ASKED_ALREADY +
+    "Use the connection's identity verification state for the next step.\n"
     "Every statement about their policies, premiums, sums insured or claims comes from the "
     "material. What this company sells comes from the catalogue in the material and from "
     "nowhere else."
@@ -165,7 +173,7 @@ BROWSE_PRODUCTS = Scenario(
         "再逐項介紹。不可以把手上這幾項寫成完整清單——保戶會在被砍過的選項裡做比較。\n"
         "逐項說明商品名稱、每單位年繳保費與計價單位、可投保年齡範圍，並註明附約需附加於主約。"
         "說完之後告訴保戶：要判斷哪一張適合他，需要看他的年齡、職業等級與既有保障，"
-        "因此請他提供身分證字號完成核對，核對後就能為他篩選並試算。"
+        "依本連線的核對狀態引導下一步，核對後就能為他篩選並試算。"
         "不要說任何關於這位保戶自身條件或既有保單的內容，你還看不到。"
     ),
     tools=("catalogue_sample",),

@@ -292,7 +292,7 @@ REINSTATE = Scenario(
         "保險法對復效的最低保障是公開的規定，不用核對身分也能先講。"
         "此時先照 statutory_floor 說明法律定的期限與健康告知規則，"
         "再說明要查他這張保單自己的停效日期、距今天數、以及契約自己寫的復效期限，需要先核對身分，"
-        "請他提供身分證字號。不要憑空講任何關於他保單的內容，也不要假裝已經查過他的保單。"
+        "並依本連線的核對狀態引導下一步。不要憑空講任何關於他保單的內容，也不要假裝已經查過他的保單。"
     ),
     tools=("lapsed_policies", "reinstatement_clauses", "statutory_floor"),
     tools_module="policydesk.agent.scenarios.reinstate",

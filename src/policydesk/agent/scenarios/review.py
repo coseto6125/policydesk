@@ -358,7 +358,7 @@ REVIEW = Scenario(
         "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的任何個人資料，"
         "material 裡也就沒有 policies、held_benefits、gaps 這幾項。"
         "此時只用 category_catalog 講本公司商品有哪些保障類別可以查，"
-        "接著說明要幫他健檢自己的保單、看他缺什麼，需要先核對身分，請他提供身分證字號。"
+        "接著說明要幫他健檢自己的保單、看他缺什麼，需要先核對身分，並依本連線的核對狀態引導下一步。"
         "不要把 category_catalog 講成他個人的缺口，也不要憑空講任何關於他保單或保障缺口的內容。"
     ),
     tools=("list_policies", "held_categories", "category_catalog"),

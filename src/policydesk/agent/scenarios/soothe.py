@@ -206,7 +206,7 @@ SOOTHE = Scenario(
         "不是就跳過，全部都不是就承接情緒之後直接講申訴管道與期限，"
         "並說這件事需要進一步查證。硬湊一條比不引更傷害保戶。\n"
         "不要提到保戶名下任何一張保單的內容，這個情境沒有查他的資料。"
-        "他問到自己的保單時，告訴他你可以為他查，並請他完成身分核對。"
+        "他問到自己的保單時，說明查詢需要核對身分，並依本連線的核對狀態引導下一步。"
     ),
     tools=("statute_reference", "complaint_channel"),
     tools_module="policydesk.agent.scenarios.soothe",

@@ -14,9 +14,10 @@ from unittest.mock import AsyncMock
 import pytest
 from msgspec import json
 
-from policydesk.agent import tools
+from policydesk.agent import executor, tools
 from policydesk.agent.scenario import CATALOGUE, IDENTITY_PENDING
 from policydesk.gov.identity import Sex, issue
+from policydesk.llm.provider import Completion
 from policydesk.web import server
 from policydesk.web.server import _answer as answer_customer
 from policydesk.web.session import Registry
@@ -109,7 +110,7 @@ async def test_customer_socket_correct_identity_releases_profile_and_replays_que
     first, replay = answer.await_args_list
     assert first.kwargs["confirmed"] is False
     assert first.kwargs["floor"] == 19
-    assert replay.kwargs == {"case_id": 1, "text": "查我的保單", "confirmed": True, "floor": 0}
+    assert replay.kwargs == {"case_id": 1, "text": "查我的保單", "confirmed": True, "floor": 0, "identity_locked": False}
 
 
 @pytest.mark.parametrize("next_name", ["fixture-owner", "fixture-other"])
@@ -127,6 +128,21 @@ async def test_customer_socket_locked_hello_preserves_lockout(customer_handler, 
     assert request.app.ctx.db.fetch_val.await_count == server.MAX_CONFIRM_ATTEMPTS
     assert not socket.closed, "repeating hello must not evict its own socket"
     server.cmd.snapshot.assert_not_awaited()
+
+
+async def test_customer_socket_locked_question_passes_lockout_to_answer(customer_handler):
+    server, request, _, answer = customer_handler
+    socket = _CustomerSocket([
+        {"type": "hello", "name": "fixture-owner"},
+        *[{"type": "say", "text": issue(Sex.MALE, 9)} for _ in range(server.MAX_CONFIRM_ATTEMPTS)],
+        {"type": "say", "text": "那現在可以幫我查什麼？"},
+    ])
+    await server.customer_socket(request, socket)
+    assert answer.await_count == 1
+    assert answer.call_args.kwargs["identity_locked"] is True
+    assert answer.call_args.kwargs["confirmed"] is False
+    assert answer.call_args.kwargs["floor"] == 19
+    assert not any(frame["type"] in {"confirmed", "case"} for frame in socket.sent)
 
 
 async def test_customer_socket_rename_discards_previous_pending_question(customer_handler):
@@ -164,7 +180,8 @@ async def test_customer_socket_rename_to_new_member_allows_enrol_without_old_cas
 
 
 @pytest.mark.parametrize("command", ["upload", "verify"])
-async def test_customer_socket_unverified_mutation_is_denied(customer_handler, monkeypatch, command):
+@pytest.mark.parametrize("identity_locked", [False, True])
+async def test_customer_socket_unverified_mutation_is_denied(customer_handler, monkeypatch, command, identity_locked):
     server, request, _, _ = customer_handler
     signature = AsyncMock()
     verification = AsyncMock()
@@ -172,11 +189,13 @@ async def test_customer_socket_unverified_mutation_is_denied(customer_handler, m
     monkeypatch.setattr(server.cmd, "verify_identity", verification)
     socket = _CustomerSocket([
         {"type": "hello", "name": "fixture-owner"},
+        *([{"type": "say", "text": issue(Sex.MALE, 9)}] * server.MAX_CONFIRM_ATTEMPTS if identity_locked else []),
         {"type": command, "document_id": 22, "filename": "signed.pdf", "national_id": issue(Sex.MALE, 9)},
     ])
     await server.customer_socket(request, socket)
-    assert socket.sent[-1] == {"type": "notice", "text": "請先完成身分核對。", "level": "warn"}
-    request.app.ctx.db.execute.assert_not_awaited()
+    expected = server.IDENTITY_LOCKED_REPLY if identity_locked else "請先完成身分核對。"
+    assert socket.sent[-1] == {"type": "notice", "text": expected, "level": "warn"}
+    assert request.app.ctx.db.execute.await_count == (server.MAX_CONFIRM_ATTEMPTS if identity_locked else 0)
     assert request.app.ctx.db.fetch_one.await_count == 1
     signature.assert_not_awaited()
     verification.assert_not_awaited()
@@ -216,7 +235,8 @@ async def test_push_case_without_confirmation_reads_and_sends_nothing(customer_h
     server.cmd.snapshot.assert_not_awaited()
 
 
-async def test_answer_public_reply_does_not_push_private_case(customer_handler, monkeypatch):
+@pytest.mark.parametrize("identity_locked", [False, True])
+async def test_answer_public_reply_does_not_push_private_case(customer_handler, monkeypatch, identity_locked):
     server, request, _, _ = customer_handler
     request.app.ctx.provider = object()
     request.app.ctx.clauses = None
@@ -228,12 +248,71 @@ async def test_answer_public_reply_does_not_push_private_case(customer_handler, 
     monkeypatch.setattr(server.i18n, "translate", AsyncMock(return_value=[]))
     monkeypatch.setattr(server, "cited", AsyncMock(return_value=[]))
     socket = _CustomerSocket([])
-    await answer_customer(request, socket, request.app.ctx.db, case_id=1, text="有什麼商品", confirmed=False, floor=19)
+    await answer_customer(
+        request, socket, request.app.ctx.db, case_id=1, text="有什麼商品",
+        confirmed=False, floor=19, identity_locked=identity_locked,
+    )
     assert [frame["type"] for frame in socket.sent] == ["reply"]
     assert socket.sent[0]["text"] == turn.reply
     assert run_turn.call_args.kwargs["confirmed"] is False
+    assert run_turn.call_args.kwargs["identity_locked"] is identity_locked
     assert run_turn.call_args.kwargs["since"] == 19
     server.cmd.snapshot.assert_not_awaited()
+
+
+@pytest.mark.parametrize("scenario_name", ["policy_overview", "browse_products"])
+async def test_run_turn_locked_session_reaches_both_model_phases_without_personal_reads(monkeypatch, scenario_name):
+    monkeypatch.setattr(executor.memory, "recent", AsyncMock(return_value=[]))
+    monkeypatch.setattr(executor.memory, "card", AsyncMock())
+    monkeypatch.setattr(executor.tools, "standing_brief", AsyncMock())
+    monkeypatch.setattr(executor.statute, "unresolved", AsyncMock(return_value=[]))
+    provider, db = AsyncMock(), AsyncMock()
+    db.fetch_val.return_value = "inquiry"
+    db.fetch.return_value = [{"product_id": "public-product", "name": "公開商品樣本"}]
+    provider.complete.side_effect = [
+        Completion(text="", provider="test", tool_calls=({
+            "name": scenario_name, "arguments": '{"line":"life"}',
+        },)),
+        Completion(text='{"reply":"可由專人協助，公開資訊仍可查詢。","citations":[],"calculations":[]}', provider="test"),
+    ]
+    turn = await executor.run_turn(
+        provider, db, case_id=1, member_id=1, text="這次先幫我說明可查的資料",
+        confirmed=False, identity_locked=True, locale="zh-TW",
+    )
+    assert turn.scenario == scenario_name
+    assert provider.complete.await_count == 2
+    for call in provider.complete.call_args_list:
+        assert "# Identity verification state: locked" in call.kwargs["user_input"]
+        assert "request no identity information" in call.kwargs["user_input"]
+    executor.memory.card.assert_not_awaited()
+    executor.tools.standing_brief.assert_not_awaited()
+    if scenario_name == "browse_products":
+        db.fetch.assert_awaited_once()
+        assert "FROM sale_catalog" in db.fetch.call_args.args[0]
+        assert "公開商品樣本" in provider.complete.call_args.kwargs["user_input"]
+    else:
+        db.fetch.assert_not_awaited()
+    assert not turn.faults
+
+
+async def test_run_turn_locked_private_template_refers_to_staff_without_requesting_identity(monkeypatch):
+    monkeypatch.setattr(executor.memory, "recent", AsyncMock(return_value=[]))
+    provider, db = AsyncMock(), AsyncMock()
+    db.fetch_val.return_value = "inquiry"
+    provider.complete.return_value = Completion(text="", provider="test", tool_calls=({
+        "name": "coverage", "arguments": "{}",
+    },))
+    turn = await executor.run_turn(
+        provider, db, case_id=1, member_id=1, text="幫我查目前保額",
+        confirmed=False, identity_locked=True, locale="zh-TW",
+    )
+    assert turn.scenario == "coverage"
+    assert "暫停" in turn.reply
+    assert "專人" in turn.reply
+    assert "請提供" not in turn.reply
+    assert "身分證字號" not in turn.reply
+    assert provider.complete.await_count == 1
+    db.fetch.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
