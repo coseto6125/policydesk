@@ -22,3 +22,6 @@ data/evaluations/
 # corpus in about six minutes, and 51 MB of float32 in every clone buys nothing a
 # rebuild does not. It ships to a deployment host directly rather than through git.
 data/vectors/
+
+# pyci-check writes its cache beside the source it reads.
+.pyci-check-cache/
