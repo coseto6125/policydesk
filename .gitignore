@@ -4,6 +4,8 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 .env
+.claude/
+SUPERVISOR-ARCHIVE.md
 
 # Insurer contract PDFs are their copyright, and the corpus is 1.1 GB.
 # Rebuild it with: uv run python -m policydesk.ingest
