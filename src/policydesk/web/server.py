@@ -43,6 +43,7 @@ from policydesk.retrieval.vectors import open_vectors
 from policydesk.synthetic.alias import mint
 from policydesk.synthetic.person import generate, insurance_age, occupation_catalogue
 from policydesk.synthetic.portfolio import DEFAULT_PRESET, enrol, preset_catalogue
+from policydesk.web.auth import DESK_TOKEN
 from policydesk.web.console import cited, console
 from policydesk.web.highlight import page_count, page_image
 from policydesk.web.params import int_arg
@@ -50,17 +51,7 @@ from policydesk.web.session import Registry
 
 STATIC = Path(__file__).parent / "static"
 
-# The back office reads every member's national ID, occupation and address. Without a
-# token anyone who can reach the port reads all of it — an acceptance run connected
-# straight to /ws/desk and pulled 17 cases with full personal data. A shared secret is
-# the smallest thing that is still true; a real deployment puts staff behind SSO.
-#
-# A hardcoded fallback would be worse than none: a default that ships in the source is
-# a password everyone already has, and it makes an unconfigured deployment look
-# protected. When the variable is unset a fresh token is minted per boot and logged, so
-# the operator has to read it out of the log to open the pane, and nobody else can
-# guess it.
-DESK_TOKEN = os.environ.get("POLICYDESK_DESK_TOKEN") or secrets.token_urlsafe(16)
+
 
 # A display name is an identifier, not prose. An acceptance run created a case whose
 # customer name was several hundred characters, which no pane can render and no
@@ -578,17 +569,29 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
 
                     # Answer what they actually asked, before the check interrupted them.
                     text, pending_question = pending_question, None
+                    # Read the stage before the first answer, not after it. The customer's
+                    # pane stays disabled for as long as this handler is still going to
+                    # speak, and it can only be told that in the first message — by the
+                    # time the second one is decided, the pane has already re-opened and
+                    # a question typed into that gap has jumped the queue.
+                    stage = await db.fetch_val('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
+                    documents_follow = stage in ("proposed", "issued", "signed", "verified", "review")
                     turn = await _answer(
                         request, ws, db, case_id=case_id, text=text,
                         confirmed=True, floor=floor, identity_locked=locked,
+                        pending_reply=documents_follow,
                     )
-                    if turn.scenario not in ("issue_documents", "document_progress", "verify_identity"):
-                        stage = await db.fetch_val('SELECT stage FROM "case" WHERE case_id = $1::bigint', [case_id])
-                        if stage in ("proposed", "issued", "signed", "verified", "review"):
-                            await _answer(
-                                request, ws, db, case_id=case_id, text="", confirmed=True,
-                                floor=floor, document_event=True,
-                            )
+                    # The scenario is only known after the answer, so a turn that already
+                    # spoke about documents releases the pane with an empty notice rather
+                    # than leaving it waiting for a second reply that will not come.
+                    if turn.scenario in ("issue_documents", "document_progress", "verify_identity"):
+                        if documents_follow:
+                            await ws.send(json.encode({"type": "notice", "text": "", "level": "info"}).decode())
+                    elif documents_follow:
+                        await _answer(
+                            request, ws, db, case_id=case_id, text="", confirmed=True,
+                            floor=floor, document_event=True,
+                        )
 
                 case "say" if case_id is not None:
                     text = (message.get("text") or "").strip()
@@ -723,7 +726,7 @@ async def _last_message(db: Database, case_id: int) -> int:
 async def _answer(
     request: Request, ws: Websocket, db: Database, *, case_id: int, text: str,
     confirmed: bool, floor: int = 0, identity_locked: bool = False,
-    document_event: bool = False,
+    document_event: bool = False, pending_reply: bool = False,
 ) -> Turn:
     """
     Run one turn and send it, recording both halves of the exchange.
@@ -787,6 +790,14 @@ async def _answer(
         "quick": list(await i18n.translate(db, spoken, turn.quick_replies)),
         "citations": _jsonable(await cited(db, member_id, citation_keys)),
         "faults": list(turn.faults),
+        # The customer's input stays disabled while a second reply is still coming.
+        # Without it the pane re-opened after the first of the two answers an identity
+        # check produces, and a question typed in that gap was answered before the
+        # document guidance arrived — so the guidance landed under the new question and
+        # read as a non-sequitur. Observed on case 7033: identity-correct, then
+        # claim-documents received document_progress, and the next two turns each
+        # carried the previous question's answer.
+        "pending_reply": pending_reply,
     }).decode())
     await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
     return turn
