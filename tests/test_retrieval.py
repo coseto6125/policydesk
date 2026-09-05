@@ -179,6 +179,45 @@ def test_the_dictionary_travels_with_the_index():
     assert "self.terms = load_terms(path)" in opened
 
 
+def test_load_terms_settles_every_frequency_before_the_first_add(tmp_path, monkeypatch):
+    """
+    `add_word` with no frequency cuts the word to work one out, and every cut after an
+    add rebuilds jieba-next's prefix dict: 2,594 terms cost 90 s at every desk start and
+    every test module. Every suggestion is taken first, then every add; no cut runs in
+    between, so the dict is rebuilt once.
+    """
+    from policydesk.retrieval import index as ix
+
+    calls: list[tuple[str, str, int | None]] = []
+    monkeypatch.setattr(ix.jieba, "suggest_freq", lambda term, _tune: calls.append(("suggest", term, None)) or len(term) * 100)
+    monkeypatch.setattr(ix.jieba, "add_word", lambda term, freq: calls.append(("add", term, freq)))
+    (tmp_path / ix.TERMS_FILE).write_text("住院日額保險金\n\n豁免保費\t12345\n", encoding="utf-8")
+    assert ix.load_terms(tmp_path) == 2, "a tab-separated frequency from an earlier revision is not part of the term"
+    assert calls == [
+        ("suggest", "住院日額保險金", None), ("suggest", "豁免保費", None),
+        ("add", "住院日額保險金", 700), ("add", "豁免保費", 400),
+    ]
+    assert ix.load_terms(tmp_path / "absent") == 0
+
+
+def test_an_index_cut_with_another_dictionary_is_not_current(tmp_path):
+    """
+    A stale index still returns hits, so `find_clause` never falls back and nobody sees
+    the queries tokenising differently from the documents. The fingerprint is the check.
+    """
+    from policydesk.retrieval import index as ix
+
+    assert ix.dictionary_fingerprint(tmp_path) is None
+    assert ix.index_current(tmp_path) is False, "no index at all"
+    (tmp_path / ix.TERMS_FILE).write_text("住院日額保險金\n豁免保費\n", encoding="utf-8")
+    (tmp_path / "meta.json").write_text("{}", encoding="utf-8")
+    assert ix.index_current(tmp_path) is False, "an index built before fingerprints were written"
+    (tmp_path / ix.DICTIONARY_FILE).write_text(ix.dictionary_fingerprint(tmp_path), encoding="utf-8")
+    assert ix.index_current(tmp_path) is True
+    (tmp_path / ix.TERMS_FILE).write_text("住院日額保險金\n", encoding="utf-8")
+    assert ix.index_current(tmp_path) is False, "the term file changed under the index"
+
+
 def test_split_term_keeps_the_nouns_and_drops_the_grammar():
     from policydesk.retrieval.index import _split_term
 

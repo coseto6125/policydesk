@@ -812,10 +812,21 @@ async def _answer(
         for product, clause in turn.cited_sources
         if not turn.faults
     ]
+    # Faults and evidence go in beside the reply. A withheld answer used to leave its
+    # reason in the log and nowhere else, so nobody could ask the database which turns
+    # were withheld, why, or what the model had been shown when it went wrong.
     await db.execute(
-        """INSERT INTO conversation_message (case_id, speaker, text, turn_id, citations)
-           VALUES ($1::bigint,'agent',$2::text,$3::text,$4::text[])""",
-        [case_id, turn.reply, turn.turn_id, citation_keys],
+        """INSERT INTO conversation_message (case_id, speaker, text, turn_id, citations, faults, evidence)
+           VALUES ($1::bigint,'agent',$2::text,$3::text,$4::text[],$5::text[],$6::jsonb)""",
+        # Parameter names, not values: a value is the customer's own words, and for
+        # verify_identity it is their national id. `audit_request` digests the brief for
+        # the same reason. Which parameters the router filled is what a review needs.
+        [case_id, turn.reply, turn.turn_id, citation_keys, list(turn.faults), {
+            "scenario": turn.scenario, "params": sorted(name for name, value in turn.params.items() if value),
+            **turn.evidence,
+            "computations": [list(pair) for pair in turn.computations],
+            "dates": [list(pair) for pair in turn.dates],
+        }],
     )
     await ws.send(json.encode({
         "type": "reply",
@@ -824,7 +835,11 @@ async def _answer(
         "params": turn.params,
         "quick": list(await i18n.translate(db, spoken, turn.quick_replies)),
         "citations": _jsonable(await cited(db, member_id, citation_keys)),
-        "faults": list(turn.faults),
+        # Kinds only. A fault carries the thing that was withheld — the date, the promise,
+        # the clause key — and sending it here put that thing back in front of the
+        # customer as 引用查核未過：date:2026-03-11, one line under the reply that had
+        # been withheld to keep it from them. The full strings are in the row and the log.
+        "faults": sorted({fault.split(":", 1)[0] for fault in turn.faults}),
         # The customer's input stays disabled while a second reply is still coming.
         # Without it the pane re-opened after the first of the two answers an identity
         # check produces, and a question typed in that gap was answered before the

@@ -27,7 +27,6 @@ from policydesk.llm.provider import (
     (Phase.SCENARIO_TOOLS, 0.1),
     (Phase.ANSWER, 0.3),
     (Phase.VALIDATE, 0.1),
-    (Phase.REPAIR, 0.1),
     (Phase.FACTS, 0.1),
 ])
 async def test_complete_http_phase_sets_sampling_temperature(monkeypatch, phase, temperature):

@@ -32,6 +32,7 @@ embedding channel is the thing to add next, alongside rather than instead.
 
 import asyncio
 import shutil
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -73,8 +74,21 @@ emits it — so `[^⁣]+` partitions on it with nothing else to filter."""
 
 
 TERMS_FILE = "terms.txt"
-"""Written beside the index. Both sides must cut with the same dictionary, so the
-dictionary travels with the index rather than being rebuilt from a query-time guess."""
+"""Written beside the index, one term per line, longest first. Both sides must cut with
+the same dictionary, so the dictionary travels with the index rather than being rebuilt
+from a query-time guess."""
+
+DICTIONARY_FILE = "dictionary.sha256"
+"""The fingerprint of the dictionary the documents were cut with: the term file's bytes
+and the procedure that taught them to jieba. Written last by `build`, read first by
+`open_index`. An index whose fingerprint is missing or differs was cut with a dictionary
+this process will not reproduce — a terms file edited by hand, or an index built before
+the frequencies were settled up front — and its queries would tokenise differently from
+its documents, which `find_clause` cannot detect because BM25 still returns hits. Such an
+index is rebuilt rather than opened; the build is four seconds."""
+
+_DICTIONARY_PROCEDURE = b"settle-then-add/1"
+"""Bumped when `load_terms` changes how the same term file becomes a dictionary."""
 
 _MIN_TERM = 2
 _MAX_TERM = 12
@@ -170,6 +184,41 @@ def _split_term(raw: str) -> list[str]:
     return [piece for piece in cleaned.split("\x00") if piece]
 
 
+def dictionary_fingerprint(path: Path = INDEX_DIR) -> str | None:
+    """
+    Fingerprint the dictionary an index at `path` would be cut with.
+
+    Args:
+        path: Where the index and its term list live.
+
+    Returns:
+        A hex digest over the term file and the teaching procedure, or None when there
+        is no term file.
+
+    """
+    file = path / TERMS_FILE
+    if not file.is_file():
+        return None
+    return sha256(file.read_bytes() + b"\n" + _DICTIONARY_PROCEDURE).hexdigest()
+
+
+def index_current(path: Path = INDEX_DIR) -> bool:
+    """
+    Say whether the index at `path` was cut with the dictionary this process would use.
+
+    Args:
+        path: Where the index lives.
+
+    Returns:
+        True when the index exists and its stored fingerprint matches `dictionary_fingerprint`.
+
+    """
+    stored = path / DICTIONARY_FILE
+    if not (path / "meta.json").is_file() or not stored.is_file():
+        return False
+    return stored.read_text(encoding="utf-8").strip() == dictionary_fingerprint(path)
+
+
 def load_terms(path: Path = INDEX_DIR) -> int:
     """
     Teach jieba the vocabulary this index was built with.
@@ -180,13 +229,34 @@ def load_terms(path: Path = INDEX_DIR) -> int:
     Returns:
         How many terms were loaded, zero when the file is absent.
 
+    Every frequency is worked out first, then every term is added. `add_word` with no
+    frequency calls `suggest_freq`, which cuts the word against the dictionary, and each
+    cut after an add rebuilds jieba-next's prefix dict of half a million entries: 35 ms a
+    term, 92.8 s for the 2,594 terms this corpus carries, at every desk start and every
+    test module. With the frequencies settled before the first add, nothing cuts between
+    adds and the dict is rebuilt once, on the first real cut. Measured: 0.33 s, and the
+    cuts over 800 headings and clause openings are identical to the term-by-term path.
+
+    Consistency between the two sides comes from construction, not from equivalence with
+    the old term-by-term path: `build` calls this same function before it cuts the first
+    document, so the documents and the queries are cut by one dictionary. The old path is
+    not identical in general — jieba's running total grows with every add and feeds the
+    next suggestion, and a contrived pair of terms can cut differently — which is why an
+    index built before this should be rebuilt once (`policydesk-index bm25`, four
+    seconds). On this corpus the measured drift is 26 English procedure names moving from
+    frequency 2 to 1 and no change in the cuts of 800 headings and clause openings.
+
+    A line may carry a tab-separated frequency from an index built by an earlier revision
+    of this branch; only the term before the tab is read.
+
     """
     file = path / TERMS_FILE
     if not file.is_file():
         return 0
-    terms = [line.strip() for line in file.read_text(encoding="utf-8").splitlines() if line.strip()]
-    for term in terms:
-        jieba.add_word(term)
+    terms = [term for line in file.read_text(encoding="utf-8").splitlines() if (term := line.split("\t", 1)[0].strip())]
+    settled = [(term, jieba.suggest_freq(term, False)) for term in terms]
+    for term, freq in settled:
+        jieba.add_word(term, freq)
     return len(terms)
 
 
@@ -299,6 +369,8 @@ async def build(db: Database, *, path: Path = INDEX_DIR, batch: int = 2000) -> i
             offset += batch
 
     writer.wait_merging_threads()
+    # Written last, so an interrupted build leaves no fingerprint and is rebuilt on open.
+    await asyncio.to_thread((path / DICTIONARY_FILE).write_text, dictionary_fingerprint(path) or "", encoding="utf-8")
     logger.info("bm25_built", documents=total, terms=len(terms), path=str(path))
     return total
 
@@ -478,9 +550,15 @@ async def open_index(db: Database, *, path: Path = INDEX_DIR) -> BM25Retriever |
         caller handles by falling back to the SQL search — a desk whose ranking is worse
         still answers, and one that fails to start does not.
 
+    Built first when the index is absent or was cut with a dictionary this process would
+    not reproduce (see `DICTIONARY_FILE`). Opening such an index would tokenise queries
+    differently from documents, and `find_clause` would never notice: BM25 still returns
+    hits, so the SQL fallback never runs.
+
     """
     try:
-        if not await asyncio.to_thread((path / "meta.json").is_file):
+        if not await asyncio.to_thread(index_current, path):
+            logger.info("bm25_rebuilding", path=str(path), reason="missing or cut with another dictionary")
             await build(db, path=path)
         index = BM25Retriever(path)
     except (OSError, ValueError) as exc:

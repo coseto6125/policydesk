@@ -148,8 +148,11 @@ def test_cooling_off_forbids_stating_a_fixed_ten_day_period():
     assert "不可以憑印象講十天" in COOLING_OFF.injection
 
 
-def test_cooling_off_forbids_computing_a_deadline():
-    assert "不可以自己算出撤銷期限是哪一天" in COOLING_OFF.injection
+def test_cooling_off_forbids_computing_a_deadline_before_the_delivery_date_is_known():
+    """Once the customer names the day, the date tool works it out; the model still never counts in prose."""
+    assert "在保戶說出收到保單的日期之前，你不能算出撤銷期限是哪一天" in COOLING_OFF.injection
+    assert "用 date_calculations 算" in COOLING_OFF.injection
+    assert COOLING_OFF.dates is True
     assert "已經過期了" in COOLING_OFF.injection
 
 

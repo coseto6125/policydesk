@@ -23,7 +23,7 @@ import asyncio
 import re
 import time
 from collections import defaultdict
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from importlib import import_module
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, Literal
@@ -49,12 +49,14 @@ from policydesk.agent.scenario import (
     WRITING,
     Emit,
     Scenario,
+    anchored,
     closing_rules,
     tool_schema,
 )
 from policydesk.bootloader import logger
 from policydesk.llm.pricing import cost
 from policydesk.llm.provider import Completion, Phase, Provider, ProviderError
+from policydesk.skills import dates
 from policydesk.skills.calculator import CalculationError, calculate
 from policydesk.validation.validator import QuotedField, Verdict, recheck
 
@@ -89,14 +91,77 @@ class _Answer(Struct, forbid_unknown_fields=True):
     citations: list[str]
     calculations: list[str]
     quoted_fields: list[_ProvisionQuote] = []
+    date_calculations: list[str] = []
 
 
-def _answer_schema(sources: tuple[tuple[str, str], ...], *, calculator: bool = False) -> dict[str, Any]:
+# The keys of `_Answer` beside `reply`, in the shape they take when a reply string keeps
+# going after the field should have closed: `", "citations": [`. The JSON still decodes,
+# `reply` is a valid string, and the customer reads the desk's own schema at the foot of
+# their answer. Observed as a structured-output corruption in raccoon-ai-platform, which
+# repairs it with a second model call; this desk withholds, as it does every other
+# malformed answer. The match wants the closing quote, the comma and the quoted key —
+# the structure, not the word — so a reply that mentions `citations:` in a sentence is
+# not a leak, and a leak followed by three hundred characters of quoted clause still is.
+_LEAK = re.compile(r'"\s*,\s*"(?:citations|calculations|date_calculations|quoted_fields)"\s*:')
+
+UNDATED = (
+    "本次回覆提到的日期無法對應到保單資料或日期工具的計算結果，"
+    "為避免提供錯誤的期限，已保留該回覆並轉由專人與您確認。"
+)
+"""What the customer reads instead of a reply that states a date nothing backs.
+
+A deadline is the figure a customer acts on first, and one day out is a claim not filed
+in time. Withheld rather than annotated, for `WITHHELD`'s reason.
+"""
+
+# The one date form the reply is held to: ISO with a year a policy can carry, bounded by
+# non-digits, which is the form the date tool emits and the material carries. A reply is
+# read for this form only. Chinese and ROC forms are read from the *sources* (below) so a
+# date the customer wrote as 民國115年3月1日 supports a reply that writes it 2026-03-01,
+# but they are not enforced in the reply: a regex wide enough to catch 3月11日 also
+# catches a service line (0800-01-1234) and a division (1000/10/2), and a withheld reply
+# costs the customer more than a date form this check does not read. `anchored` tells
+# the model to write dates in this form. The boundary is digits only, so a date at the
+# end of an English sentence (on 2026-03-01.) and a record's ISO datetime
+# (2026-03-01T00:00:00+08:00) both read; the year range is what keeps an identifier
+# such as P_1234-01-02 from reading as one.
+# Month and day take one or two digits, the same as the source side: a reply that writes
+# 2026-3-15 is stating a date, and a check that read only zero-padded ones let exactly
+# the invented deadline through that it exists to catch.
+_ISO_IN_REPLY = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
+# A calendar date as a customer, a clause or a record writes it: 2026-03-01, 2026/3/1,
+# 2026.03.01, 2026年3月1日, 民國115年3月1日, 民國99年3月1日, 115/03/01. A year of one to
+# three digits is 民國 and gains 1911.
+_DATE_IN_SOURCE = re.compile(
+    r"(?<!\d)(?:(民國)\s*(\d{1,3})|(\d{4})|(\d{3}))\s*[年/.-]\s*(\d{1,2})\s*[月/.-]\s*(\d{1,2})\s*日?(?!\d)"
+)
+# A month and day with no year — 3月1日, 3月1號, 3/1 — which a customer writes for a date
+# in the current year, and which the reply completes with the year `anchored` gave it.
+# Read only after every full date has been blanked out, so 2025年 3月1日 is one date with
+# a year, not a bare month and day that would license 2026-03-01.
+_MONTH_DAY = re.compile(r"(?<![\d年/.-])(\d{1,2})\s*(?:月|/)\s*(\d{1,2})\s*[日號]?(?![\d/.-])")
+# Fullwidth digits and separators fold to ASCII before either regex runs, on the reply
+# and on the sources alike, so a customer's ２０２６－０３－０１ supports the reply's 2026-03-01.
+_ASCII = str.maketrans("０１２３４５６７８９－／．", "0123456789-/.")
+_YEARS = range(1900, 2101)
+
+
+def _answer_schema(
+    sources: tuple[tuple[str, str], ...], *, calculator: bool = False, dates: bool = False
+) -> dict[str, Any]:
     definitions = json.schema(_Answer)["$defs"]
     schema = definitions["_Answer"]
     schema["required"] = list(schema["properties"])
     quotes = schema["properties"]["quoted_fields"]
     quotes.pop("default", None)
+    spans = schema["properties"]["date_calculations"]
+    spans.pop("default", None)
+    spans["description"] = (
+        "One expression per calendar date or day count the reply states that is not written in the "
+        "material: a date from the material or from the customer, then spans, for example "
+        "'2026-03-01 + 1 日 + 10 日' or 'today - 2025-12-20'. Use 'today' for the current date. "
+        "Use an empty list when the reply states no such date."
+    )
     quotes["items"] = definitions["_ProvisionQuote"]
     quotes["description"] = (
         "For claims about benefit conditions, exclusions, waiting periods or deadlines, quote the supporting "
@@ -113,6 +178,8 @@ def _answer_schema(sources: tuple[tuple[str, str], ...], *, calculator: bool = F
         quotes["maxItems"] = 0
     if not calculator:
         schema["properties"]["calculations"]["maxItems"] = 0
+    if not dates:
+        spans["maxItems"] = 0
     return schema
 
 
@@ -145,6 +212,14 @@ class Turn:
         self.computations: tuple[tuple[str, int], ...] = ()
         """Expressions the model asked the calculator to evaluate, and their results.
         Empty means the reply states no computed figure, or states one it should not."""
+        self.dates: tuple[tuple[str, str], ...] = ()
+        """Date expressions the model wrote, and what the date tool made of each. Same
+        contract as `computations`: a date either came from here or from a row."""
+        self.evidence: dict[str, Any] = {}
+        """What the answer stood on, for the record beside the reply: the clause keys the
+        tools offered, each one's retrieval score, and whether the evidence budget cut
+        anything. Empty when no model wrote the reply. Read offline, never by the model —
+        the scores are popped out of the material before it is serialised."""
         self.locale: str = lang.DEFAULT
         """The language the reply is written in, as `agent.locale` read it off the
         customer's message. The prompt names it, and the chips are rendered in it."""
@@ -236,7 +311,7 @@ def reachable(stage: str) -> tuple[Scenario, ...]:
 
 
 async def _route(
-    provider: Provider, db: Database, turn: Turn, text: str, past: str, stage: str, fence: str
+    provider: Provider, db: Database, turn: Turn, text: str, past: str, stage: str, fence: str, today: date
 ) -> tuple[Scenario, dict[str, str]]:
     """
     Ask the model which scenario this turn belongs to, and with what.
@@ -250,6 +325,8 @@ async def _route(
         stage: The case's stage, which decides what the router may choose from.
         fence: This turn's tag name, which marks where the customer's own words start
             and stop.
+        today: The date the router resolves 「上禮拜」 and 「三個月前」 against when it
+            fills a parameter. Without it a model fills the year it was trained in.
 
     Returns:
         The chosen scenario and the parameters the model filled from the conversation.
@@ -278,7 +355,7 @@ async def _route(
         # fence rule is the last thing the model reads. A guard in the middle is one the
         # message can talk over, because later text wins the slot they both compete for.
         instructions=(
-            f"{LOOKUP_SCOPE}{ROUTER_INSTRUCTIONS}\n\n{WRITING}"
+            f"{LOOKUP_SCOPE}{ROUTER_INSTRUCTIONS}\n\n{WRITING}\n\n{anchored(today)}"
             f"\n\n{closing_rules(fence, i18n.hint(turn.locale), sourced=False)}"
         ),
         user_input=f"{past}<{fence}>\n{text}\n</{fence}>",
@@ -364,15 +441,14 @@ def _as_budget(raw: str) -> int | None:
         return None
 
 
-def _clause_rows(value: Any) -> dict[tuple[str, str], dict[str, Any]]:
-    """Collect returned clause rows, excluding private metadata."""
-    found: dict[tuple[str, str], dict[str, Any]] = {}
+def _visible_rows(value: Any) -> list[dict[str, Any]]:
+    """List every returned clause row, duplicates included, excluding private metadata."""
+    found: list[dict[str, Any]] = []
 
     def visit(item: Any) -> None:
         if isinstance(item, dict):
-            product, clause = item.get("product_id"), item.get("clause_id")
-            if isinstance(product, str) and isinstance(clause, str):
-                found[product, clause] = item
+            if isinstance(item.get("product_id"), str) and isinstance(item.get("clause_id"), str):
+                found.append(item)
             for key, child in item.items():
                 if not key.startswith("_"):
                     visit(child)
@@ -384,6 +460,11 @@ def _clause_rows(value: Any) -> dict[tuple[str, str], dict[str, Any]]:
     return found
 
 
+def _clause_rows(value: Any) -> dict[tuple[str, str], dict[str, Any]]:
+    """Collect returned clause rows by identity, the last occurrence winning."""
+    return {(row["product_id"], row["clause_id"]): row for row in _visible_rows(value)}
+
+
 def _clause_sources(value: Any) -> tuple[tuple[str, str], ...]:
     """Preserve the document identities returned by permitted database tools."""
     return tuple(_clause_rows(value))
@@ -393,6 +474,31 @@ def _clause_subject(value: Any) -> dict[str, str]:
     """Keep the exact clause text made visible for this turn's answer."""
     return {f"{product}|{clause}": row["verbatim"]
             for (product, clause), row in _clause_rows(value).items() if isinstance(row.get("verbatim"), str)}
+
+
+def _retrieval_trail(value: Any) -> list[dict[str, Any]]:
+    """
+    Take each visible clause's retrieval score out of the material and into the record.
+
+    Args:
+        value: The answer context, after the evidence budget. Mutated: `retrieval_score`
+            is removed from every clause row it visits.
+
+    Returns:
+        One entry per offered clause, key and score. A row that reached the material
+        without a hit — a cross-referenced sibling, an ILIKE fallback — has no score, and
+        the record says so with None rather than inventing a rank for it. A clause two
+        tools both returned is one entry, carrying the first non-null score seen; every
+        copy has its score removed, so none reaches the model.
+
+    """
+    trail: dict[str, float | None] = {}
+    for row in _visible_rows(value):
+        key = f"{row['product_id']}|{row['clause_id']}"
+        score = row.pop("retrieval_score", None)
+        if trail.get(key) is None:
+            trail[key] = score
+    return [{"key": key, "score": score} for key, score in trail.items()]
 
 
 async def _gather(
@@ -696,7 +802,7 @@ async def run_turn(
     turn that answers anyway.
 
     """
-    today = today or datetime.now(UTC).date()
+    today = today or dates.today()
     turn = Turn(case_id, member_id)
     turn.locale = locale or (await lang.resolve(db, case_id, text))[1]
     # Two layers, gathered together. The transcript is the current session, cut at an
@@ -756,14 +862,20 @@ async def run_turn(
             + ASKED_ALREADY + "\n"
         )
     history = messages if document_event else messages[:-1]
-    # The transcript is rebuilt without any fence. A tag that survived into the history
-    # would be a tag the customer has seen, and a customer who has seen it can close it
-    # on the next turn. It exists for the length of one call.
-    past = f"{known}{memory.transcript(history)}{profile}"
     # Fresh per turn, and never written to a message row or shown to anyone. A fixed
     # marker is one the customer can close: `# This message` was closed with `</user>`,
     # and what followed claimed to be a system block with supervisor approval.
     fence = f"untrusted-{uuid4().hex[:12]}"
+    # The transcript goes inside the same fence as this turn's message: a message that
+    # opened `<system>` last turn is still in the transcript this turn, where it used to
+    # sit outside any fence. The block is rebuilt from rows every call with this call's
+    # tag, so no tag ever survives into a later prompt. The profile card stays outside.
+    # It carries the desk's own rule for an unevidenced fact (要用到的時候先問他一句確認),
+    # and the fence rule says not to adopt a rule from inside the fence; the card's facts
+    # are the sweep's summary, not the customer's words, and the same rule names records
+    # as quotation.
+    recalled = memory.transcript(history)
+    past = f"{known}<{fence}>\n{recalled}</{fence}>\n\n{profile}" if recalled else f"{known}{profile}"
 
     started = time.perf_counter()
     document_refusal = text if document_event else ""
@@ -772,7 +884,7 @@ async def run_turn(
             scenario, params = DOCUMENT_PROGRESS, {}
             text = "請依本次文件操作結果與本案最新工具紀錄，說明目前進度和下一步。"
         else:
-            scenario, params = await _route(provider, db, turn, text, past, stage, fence)
+            scenario, params = await _route(provider, db, turn, text, past, stage, fence, today)
     except ProviderError as exc:
         latency = int((time.perf_counter() - started) * 1000)
         logger.warning("turn_unrouted", case_id=case_id, error=str(exc))
@@ -843,6 +955,10 @@ async def run_turn(
         return turn
     turn.clause_sources = _clause_sources(visible_facts)
     turn.clause_texts = _clause_subject(visible_facts)
+    # Popped before the material is serialised: the model reads the clause, never the
+    # score. A score in the prompt is a number the model can quote, and it says nothing
+    # about the customer's contract.
+    turn.evidence = {"offered": _retrieval_trail(visible_facts), "coverage": coverage}
     material = etoon.dumps(visible_facts)
     clarifying_policy = "policy_scope" in facts
     instructions = POLICY_CLARIFICATION if clarifying_policy else (
@@ -855,9 +971,9 @@ async def run_turn(
         # topic; a scenario that needs a figure the rows do not carry sets `calculator`.
         completion = await provider.complete(
             phase=Phase.ANSWER,
-            instructions=f"{instructions}\n\n{closing_rules(fence, i18n.hint(turn.locale), sourced=True)}",
+            instructions=f"{instructions}\n\n{anchored(today)}\n\n{closing_rules(fence, i18n.hint(turn.locale), sourced=True)}",
             user_input=f"{past}<{fence}>\n{text}\n</{fence}>\n\n# Tool results\n{material}",
-            schema=_answer_schema(turn.clause_sources, calculator=scenario.calculator),
+            schema=_answer_schema(turn.clause_sources, calculator=scenario.calculator, dates=scenario.dates),
         )
     except ProviderError as exc:
         latency = int((time.perf_counter() - answering) * 1000)
@@ -873,16 +989,33 @@ async def run_turn(
         turn.reply = WITHHELD
         turn.faults = ("answer_format",)
         return turn
+    if _LEAK.search(answer.reply):
+        turn.reply = WITHHELD
+        turn.faults = ("answer_leak",)
+        return turn
     if answer.calculations and not scenario.calculator:
         turn.reply = WITHHELD
         turn.faults = ("unoffered_calculator",)
         return turn
+    if answer.date_calculations and not scenario.dates:
+        turn.reply = WITHHELD
+        turn.faults = ("unoffered_dates",)
+        return turn
+    computed = _run_dates(answer.date_calculations, today=today)
+    turn.dates = tuple((expression, dated.text) for expression, dated in computed)
     completion = structs.replace(
         completion, text=answer.reply,
         tool_calls=tuple({"name": "calculate", "arguments": json.encode({"expression": expression}).decode()}
                          for expression in answer.calculations),
     )
     turn.computations = _run_calculations(completion)
+    # Every date the reply states must be one the customer or the material gave, today,
+    # or a result the date tool produced this turn. The expression list alone constrains
+    # nothing — a model can write a correct expression and a different date beside it —
+    # so the reply is read back, the way its clause ids are.
+    backed = {dated.value for _, dated in computed if isinstance(dated.value, date)}
+    if _withhold_undated(turn, answer.reply, sources=f"{past}{text}{material}", backed=backed, today=today):
+        return turn
 
     if await _unverifiable(
         db, turn, completion.text, allowed, sources=tuple(answer.citations), quoted_fields=tuple(answer.quoted_fields),
@@ -1132,6 +1265,125 @@ async def _unverifiable(
         "citation_unresolved", case_id=turn.case_id, faults=list(checked.faults), statute=list(fabricated)
     )
     turn.reply = WITHHELD
+    return True
+
+
+def _run_dates(expressions: list[str], *, today: date) -> tuple[tuple[str, dates.Dated], ...]:
+    """
+    Evaluate every date expression the model wrote.
+
+    Args:
+        expressions: What the model put in `date_calculations`.
+        today: The date this turn is answered on.
+
+    Returns:
+        Each expression paired with its result. An expression the date tool cannot read
+        is dropped and logged rather than guessed at, the same rule the calculator
+        applies: a date either came from the tool or does not exist — and a reply that
+        states the date anyway is caught by `_unsourced_dates`, since nothing backs it.
+
+    """
+    results: list[tuple[str, dates.Dated]] = []
+    for expression in expressions:
+        try:
+            results.append((expression, dates.compute_date(expression, today=today)))
+        except dates.DateError as exc:
+            logger.warning("date_rejected", expression=expression[:200], error=str(exc))
+    return tuple(results)
+
+
+def _source_dates(text: str) -> tuple[set[date], set[tuple[int, int]]]:
+    """
+    Read the calendar dates a source text names, in every form a source writes them.
+
+    Args:
+        text: The brief, the transcript, the message and the material, as one string.
+
+    Returns:
+        The full dates found, and the month-day pairs written without a year. A day that
+        does not exist (2月30日) is skipped rather than read as a date.
+
+    """
+    text = text.translate(_ASCII)
+    full: set[date] = set()
+    for roc, roc_year, year, short_year, month, day in _DATE_IN_SOURCE.findall(text):
+        resolved = int(roc_year) + 1911 if roc else int(year) if year else int(short_year) + 1911
+        if resolved in _YEARS and (found := _in_year(resolved, int(month), int(day))) is not None:
+            full.add(found)
+    dated_out = _DATE_IN_SOURCE.sub(" ", text)
+    partial = {(int(month), int(day)) for month, day in _MONTH_DAY.findall(dated_out)}
+    return full, partial
+
+
+def _unsourced_dates(reply: str, *, sources: str, backed: set[date], today: date) -> list[str]:
+    """
+    Name every ISO date the reply states that nothing given this turn supports.
+
+    Args:
+        reply: What the model wrote.
+        sources: Everything the model was shown — the brief, the transcript, the message,
+            the material — as one string.
+        backed: Dates the date tool produced this turn.
+        today: The date the turn is answered on, which the reply may always state.
+
+    Returns:
+        The unsupported dates, empty when every date checks out. A source's month and
+        day without a year supports the same month and day in this year, which is how a
+        customer's 3月1日 and the reply's 2026-03-01 are the same date. A date-shaped
+        string naming a day that does not exist (2099-02-30) is unsupported by
+        definition and is returned as written.
+
+    What this proves is that the date came from something the model was shown or from
+    the date tool, the way the citation check proves a clause id exists in the material.
+    It does not prove the date is the right one for the sentence it sits in: a policy's
+    effective date is in the material, and a reply that calls it the rescission deadline
+    passes here. That is the reviewer's question, and the record beside the reply
+    (`turn.dates`, `turn.evidence`) is what they read to answer it.
+
+    """
+    stated: set[date] = set()
+    impossible: list[str] = []
+    for year, month, day in _ISO_IN_REPLY.findall(reply.translate(_ASCII)):
+        if int(year) not in _YEARS:
+            continue
+        if (found := _in_year(int(year), int(month), int(day))) is None:
+            impossible.append(f"{year}-{month}-{day}")
+        else:
+            stated.add(found)
+    allowed, allowed_partial = _source_dates(sources)
+    allowed |= backed | {today}
+    allowed |= {d for month, day in allowed_partial if (d := _in_year(today.year, month, day)) is not None}
+    return [d.isoformat() for d in sorted(stated - allowed)] + sorted(set(impossible))
+
+
+def _in_year(year: int, month: int, day: int) -> date | None:
+    """Return the date, or None when that month and day do not exist in that year."""
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _withhold_undated(turn: Turn, reply: str, *, sources: str, backed: set[date], today: date) -> bool:
+    """
+    Replace a reply that states a date nothing given this turn supports.
+
+    Args:
+        turn: The turn, whose `reply` and `faults` this may set.
+        reply: What the model wrote.
+        sources: Everything the model was shown, as one string.
+        backed: Dates the date tool produced this turn.
+        today: The date the turn is answered on.
+
+    Returns:
+        True when the reply was withheld, so the caller stops.
+
+    """
+    if not (unsourced := _unsourced_dates(reply, sources=sources, backed=backed, today=today)):
+        return False
+    logger.warning("date_unsourced", case_id=turn.case_id, scenario=turn.scenario, dates=unsourced)
+    turn.faults = (*turn.faults, *(f"date:{stated}" for stated in unsourced))
+    turn.reply = UNDATED
     return True
 
 

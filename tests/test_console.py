@@ -245,7 +245,7 @@ def test_every_phase_colour_is_declared_on_bare_root():
     declaration is correct in both — but it has to be the bare one.
     """
     root = PAGE[PAGE.index(":root {"):PAGE.index(':root:not([data-theme="light"]) { }')]
-    for phase in ("route", "scenario_tools", "answer", "validate", "repair", "embedding", "facts", "response"):
+    for phase in ("route", "scenario_tools", "answer", "validate", "embedding", "facts", "response"):
         assert f"--ph-{phase}:" in root, f"--ph-{phase} is not declared on bare :root"
 
 

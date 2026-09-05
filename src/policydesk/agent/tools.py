@@ -281,8 +281,15 @@ async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict
 
 def _apply_passages(rows: list[dict[str, Any]], hits: Iterable[Hit]) -> None:
     """Keep short articles whole; mark a longer one's matched span with an ellipsis where it was cut."""
-    spans = {(hit.scope_id, hit.doc_id): hit for hit in hits if hit.start is not None}
+    ranked = {(hit.scope_id, hit.doc_id): hit for hit in hits}
+    spans = {key: hit for key, hit in ranked.items() if hit.start is not None}
     for row in rows:
+        # The score rides on the row to the executor, which records it beside the reply
+        # and pops it before the model reads the material. It is what an offline review
+        # of a withheld or wrong answer needs first: was the clause a strong match or the
+        # closest miss.
+        if scored := ranked.get((row["product_id"], row["clause_id"])):
+            row["retrieval_score"] = scored.score
         if len(row.get("verbatim") or "") <= DOCUMENT_CHARS:
             continue
         if hit := spans.get((row["product_id"], row["clause_id"])):

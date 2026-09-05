@@ -33,11 +33,21 @@ def test_commands_document_kind_keeps_its_public_import():
     assert commands.DocumentKind.APPLICATION.value == "要保書"
 
 
-async def _corpus_counts(db: Database) -> dict:
+async def _corpus_counts(db: Database, names: list[str], product_id: str) -> dict:
+    """
+    Count what the document flow must leave alone: these members' policies and this product's clauses.
+
+    Scoped to the fixture's own members and product, not the whole tables. Test modules
+    run in parallel, and other modules enrol members and load scratch products of their
+    own; a global count moves under this fixture without the document flow having touched
+    anything.
+    """
     return await db.fetch_one(
-        """SELECT (SELECT count(*) FROM policy) AS policies,
-                  (SELECT count(*) FROM clause) AS clauses,
-                  (SELECT count(*) FROM contract_clause) AS contract_clauses"""
+        """SELECT (SELECT count(*) FROM policy p JOIN member m USING (member_id)
+                   WHERE m.display_name = ANY($1::text[])) AS policies,
+                  (SELECT count(*) FROM clause WHERE product_id = $2::text) AS clauses,
+                  (SELECT count(*) FROM contract_clause WHERE product_id = $2::text) AS contract_clauses""",
+        [names, product_id],
     )
 
 
@@ -45,18 +55,18 @@ async def _corpus_counts(db: Database) -> dict:
 async def document_cases():
     names = [f"doc-{uuid4().hex}" for _ in range(2)]
     async with connected_database() as db:
-        before = await _corpus_counts(db)
+        product_id = await db.fetch_val(
+            "SELECT product_id FROM product WHERE document_kind = 'contract' ORDER BY product_id LIMIT 1"
+        )
+        if product_id is None:
+            # The catalogue is built from the insurer's contract PDFs, which do not
+            # travel with the repository. With no product there is no document
+            # lifecycle to exercise, and a fixture that fails here reports a broken
+            # build where what it found was an empty database.
+            pytest.skip("no contract product to run a document lifecycle against")
+        before = await _corpus_counts(db, names, product_id)
         cases = []
         try:
-            product_id = await db.fetch_val(
-                "SELECT product_id FROM product WHERE document_kind = 'contract' ORDER BY product_id LIMIT 1"
-            )
-            if product_id is None:
-                # The catalogue is built from the insurer's contract PDFs, which do not
-                # travel with the repository. With no product there is no document
-                # lifecycle to exercise, and a fixture that fails here reports a broken
-                # build where what it found was an empty database.
-                pytest.skip("no contract product to run a document lifecycle against")
             for name in names:
                 person = generate(name, int(uuid4().hex, 16) % 10_000_000)
                 assert not await db.fetch_val(
@@ -101,7 +111,7 @@ async def document_cases():
                 [names, case_ids],
             )
             assert remaining == dict.fromkeys(remaining, 0), f"document fixtures survived cleanup: {remaining}"
-            assert await _corpus_counts(db) == before, "document tests must not change policy or clause counts"
+            assert await _corpus_counts(db, names, product_id) == before, "document tests must not change policy or clause counts"
 
 
 async def _state(db: Database, case_id: int) -> dict:
