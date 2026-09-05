@@ -81,6 +81,9 @@ class Hit(Struct, frozen=True):
     every contract in the corpus has an `art.6`."""
     score: float
     """Whatever the channel scored it. Comparable within a channel, never across."""
+    start: int | None = None
+    end: int | None = None
+    """Matched passage offsets in heading + newline + verbatim, when available."""
 
 
 class Retriever(Protocol):
@@ -192,10 +195,12 @@ def rrf(
         for position, hit in enumerate(ranking):
             key = (hit.scope_id, hit.doc_id)
             fused[key] = fused.get(key, 0.0) + weight / (k + position + 1)
-            seen.setdefault(key, hit)
+            if key not in seen or hit.start is not None:
+                seen[key] = hit
     ordered = sorted(fused.items(), key=lambda item: item[1], reverse=True)[:limit]
     return [
-        Hit(corpus=seen[key].corpus, doc_id=seen[key].doc_id, scope_id=seen[key].scope_id, score=score)
+        Hit(corpus=seen[key].corpus, doc_id=seen[key].doc_id, scope_id=seen[key].scope_id, score=score,
+            start=seen[key].start, end=seen[key].end)
         for key, score in ordered
     ]
 

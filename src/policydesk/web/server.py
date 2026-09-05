@@ -138,6 +138,14 @@ async def _open_db(application: Sanic, _loop) -> None:
     )
     channels = [r for r in (lexical, semantic) if r is not None]
     application.ctx.clauses = HybridRetriever(channels, reranker=encoder) if channels else None
+    application.ctx.retrieval_status = {
+        "channels": [r.name for r in channels],
+        "vector_generation": semantic.manifest["generation"] if semantic is not None and semantic.manifest else None,
+        "vector_rows": semantic.size if semantic is not None else 0,
+        "source_documents": {row["document_kind"]: row["count"] for row in await application.ctx.db.fetch(
+            "SELECT document_kind,count(*) AS count FROM product GROUP BY document_kind"
+        )},
+    }
     logger.info("retrieval_ready", channels=[r.name for r in channels], rerank=encoder is not None)
     if not os.environ.get("POLICYDESK_DESK_TOKEN"):
         logger.warning("desk_token_generated", token=DESK_TOKEN, hint="set POLICYDESK_DESK_TOKEN to fix it across restarts")
@@ -254,7 +262,7 @@ async def alias(request: Request):
 async def health(request: Request):
     """Report whether the desk can reach its database."""
     products = await request.app.ctx.db.fetch_val("SELECT count(*) FROM product")
-    return response.json({"ok": True, "products": products})
+    return response.json({"ok": True, "products": products, "retrieval": request.app.ctx.retrieval_status})
 
 
 async def _broadcast_desk(application: Sanic, payload: dict[str, Any]) -> None:

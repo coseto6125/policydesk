@@ -82,12 +82,12 @@ _MAX_TERM = 12
 
 _SOURCES: dict[str, str] = {
     CLAUSE: """SELECT product_id AS scope_id, clause_id AS doc_id, kind, heading, verbatim
-               FROM clause ORDER BY product_id, clause_id LIMIT $1::int OFFSET $2::int""",
+               FROM contract_clause ORDER BY product_id, clause_id LIMIT $1::int OFFSET $2::int""",
     # The statute half is written by another session. Absent, the query returns nothing
     # and the index holds one corpus — which is exactly what it held before, so the
     # ordering between the two sessions does not matter.
     STATUTE: """SELECT statute_id AS scope_id, doc_id, 'article' AS kind, heading, verbatim
-                FROM statute_article ORDER BY statute_id, article, paragraph
+                FROM statute_article ORDER BY statute_id, article, paragraph, doc_id
                 LIMIT $1::int OFFSET $2::int""",
 }
 
@@ -113,7 +113,7 @@ async def collect_terms(db: Database) -> list[str]:
 
     """
     rows = await db.fetch(
-        """SELECT DISTINCT heading AS term FROM clause WHERE heading <> ''
+        """SELECT DISTINCT heading AS term FROM contract_clause WHERE heading <> ''
            UNION SELECT DISTINCT name FROM benefit
            UNION SELECT DISTINCT procedure FROM surgery_multiplier"""
     )

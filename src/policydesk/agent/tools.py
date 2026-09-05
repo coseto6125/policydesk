@@ -16,9 +16,10 @@ import asyncio
 import re
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
+from unicodedata import normalize
 
 from policydesk.bootloader import logger
-from policydesk.retrieval.base import CLAUSE, Retriever
+from policydesk.retrieval.base import CLAUSE, Hit, Retriever
 from policydesk.synthetic.person import insurance_age
 
 if TYPE_CHECKING:
@@ -35,10 +36,12 @@ DOCUMENTS_PER_PRODUCT = 2
 """Document clauses kept per product. `_short` allows twelve rows in total, so this fits
 five products — the largest book in the corpus — with every one of them represented."""
 
-DOCUMENT_CHARS = 1200
-"""How much of a document clause reaches the model. Longer than `_short`'s general 400,
-because these are the lines the reply enumerates rather than context around them; the
-longest held one is 794."""
+DOCUMENT_CHARS = 4000
+"""Shared clause budget for retrieval and answer context.
+
+Keep bounded articles whole so a narrow match does not discard their exceptions.
+Over-budget articles remain explicitly marked excerpts, not complete evidence.
+"""
 
 UNITS_PER_LABEL = 1000
 """`policy.sum_insured` counts thousandths of one `unit_label` unit.
@@ -206,7 +209,7 @@ async def list_policies(db: Database, member_id: int, *, today: date) -> list[di
         """SELECT po.policy_id, po.policy_number, po.sum_insured, ce.unit_label,
                   po.effective_at, po.lapsed_at,
                   main.policy_number AS main_policy_number,
-                  pr.name AS product_name, pr.product_id, pr.attachment,
+                  pr.name AS product_name, pr.product_id, pr.attachment, pr.document_kind,
                   ($1::date - po.effective_at) AS days_in_force,
                   (po.lapsed_at IS NOT NULL AND po.lapsed_at <= $1::date) AS is_lapsed
            FROM policy po
@@ -226,6 +229,24 @@ async def list_policies(db: Database, member_id: int, *, today: date) -> list[di
         # thousandths of a unit named in another table.
         row["insured"] = insured_amount(row.pop("sum_insured", None), row.pop("unit_label", None))
     return rows
+
+
+def _select_policies(policies: list[dict[str, Any]], reference: str) -> dict[str, Any]:
+    """Resolve a stated choice only within holdings already read under the identity gate."""
+    wanted = "".join(normalize("NFKC", reference).split()).casefold()
+    if not policies:
+        return {"status": "empty", "policies": []}
+    if not wanted or wanted == "全部":
+        return {"status": "all", "policies": policies}
+    matched = []
+    for policy in policies:
+        number = "".join(normalize("NFKC", policy["policy_number"]).split()).casefold()
+        name = "".join(normalize("NFKC", policy["product_name"]).split()).casefold()
+        if wanted == number or wanted == policy["product_id"] or wanted in name:
+            matched.append(policy)
+    if len(matched) == 1:
+        return {"status": "found", "policies": matched}
+    return {"status": "ambiguous" if matched else "not_found", "policies": matched or policies}
 
 
 async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict[str, Any]]:
@@ -259,6 +280,21 @@ async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict
     rank = {key: position for position, key in enumerate(keys)}
     rows.sort(key=lambda r: rank.get((r["product_id"], r["clause_id"]), len(rank)))
     return rows
+
+
+def _apply_passages(rows: list[dict[str, Any]], hits: Iterable[Hit]) -> None:
+    """Keep short articles whole; carry the matched text for longer ones explicitly."""
+    spans = {(hit.scope_id, hit.doc_id): hit for hit in hits if hit.start is not None}
+    for row in rows:
+        if len(row.get("verbatim") or "") <= DOCUMENT_CHARS:
+            continue
+        if hit := spans.get((row["product_id"], row["clause_id"])):
+            full_text = f"{row.get('heading') or ''}\n{row.get('verbatim') or ''}"
+            row["verbatim"] = full_text[hit.start:hit.end]
+            row["excerpt"] = hit.start > 0 or hit.end < len(full_text)
+            row["excerpt_start"] = hit.start
+            row["excerpt_end"] = hit.end
+            row["source_chars"] = len(full_text)
 
 
 _CROSS = re.compile(r"第([一二三四五六七八九十百]+|\d+)條")
@@ -388,8 +424,12 @@ async def find_clause(
     # slots — a distribution production cannot produce. Reranking that pile is a real
     # improvement to a ranking nobody sees. Scoped, at the six clauses this tool returns,
     # the fused order is already right 167 times in 180 and reranking it is right 161.
-    if index is not None and (hits := index.search(topic, corpus=CLAUSE, scope=product_ids, limit=limit)):
+    if index is not None and (hits := await asyncio.to_thread(
+        index.search, topic, corpus=CLAUSE, scope=product_ids, limit=limit,
+    )):
+        hits = [hit for hit in hits if hit.corpus == CLAUSE and hit.scope_id in product_ids]
         found = await _clauses_by_id(db, [(h.scope_id, h.doc_id) for h in hits])
+        _apply_passages(found, hits)
         # Appended after the ranked hits, not mixed into them: a clause is here because
         # another one pointed at it, not because it matched the question.
         if cross := _referenced(found):
@@ -418,7 +458,8 @@ could not classify, so it is never offered."""
 
 @public
 async def suitable_products(
-    db: Database, *, insurance_age: int, occupation_class: int, budget: int, line: str, limit: int = 5
+    db: Database, *, insurance_age: int, occupation_class: int, budget: int, line: str, limit: int = 5,
+    need: str = "", index: Retriever | None = None,
 ) -> list[dict[str, Any]]:
     """
     Select products this person could actually be sold.
@@ -448,7 +489,7 @@ async def suitable_products(
     if line not in LINES:
         logger.warning("unsellable_line", line=line)
         return []
-    return await db.fetch(
+    candidates = await db.fetch(
         """SELECT p.product_id, p.name, p.attachment, p.line, ce.unit_premium, ce.unit_label,
                   ce.data_origin, ce.rate_unit_amount,
                   ce.issue_age_min, ce.issue_age_max, ce.max_occupation, ce.requires_main
@@ -460,8 +501,49 @@ async def suitable_products(
              AND ce.unit_premium <= $3::numeric
            ORDER BY ce.unit_premium ASC
            LIMIT $4::int""",
-        [insurance_age, occupation_class, Decimal(budget), limit, line],
+        [insurance_age, occupation_class, Decimal(budget), None if need and index is not None else limit, line],
     )
+    if not candidates:
+        return []
+    matches = {}
+    if need and index is not None:
+        # Eligibility is decided by SQL. Retrieval ranks only those eligible products,
+        # by their contract text, rather than letting a cheap unrelated product stand
+        # in for the customer's need merely because it shares a product line.
+        hits = await asyncio.to_thread(
+            index.search, need, corpus=CLAUSE, scope=[row["product_id"] for row in candidates],
+            limit=max(limit, len(candidates) * 4),
+        )
+        by_product = {row["product_id"]: row for row in candidates}
+        chosen = []
+        for hit in hits:
+            if hit.scope_id in by_product and hit.scope_id not in matches:
+                matches[hit.scope_id] = hit
+                chosen.append(by_product[hit.scope_id])
+                if len(chosen) == limit:
+                    break
+        if chosen:
+            candidates = chosen
+    candidates = candidates[:limit]
+    product_ids = [row["product_id"] for row in candidates]
+    clauses = await db.fetch(
+        """SELECT product_id, clause_id, kind, heading, verbatim, page
+           FROM contract_clause WHERE product_id = ANY($1::text[])
+             AND kind = ANY($2::text[])
+           ORDER BY product_id, kind, clause_id""",
+        [product_ids, ["waiting", "exclusion", "carve_back"]],
+    )
+    if matches:
+        matched = await _clauses_by_id(db, [(hit.scope_id, hit.doc_id) for hit in matches.values()])
+        _apply_passages(matched, matches.values())
+        clauses += matched
+    evidence: dict[str, dict[str, dict[str, Any]]] = {}
+    for clause in clauses:
+        evidence.setdefault(clause["product_id"], {})[clause["clause_id"]] = clause
+    for row in candidates:
+        row["selection_basis"] = "eligibility and contract retrieval" if row["product_id"] in matches else "eligibility only"
+        row["contract_evidence"] = list(evidence.get(row["product_id"], {}).values())
+    return candidates
 
 
 _RELAXED = """\
@@ -800,13 +882,17 @@ async def pending_signatures(db: Database, case_id: int) -> dict[str, Any]:
 
 
 @requires_identity
-async def required_documents(db: Database, product_ids: list[str]) -> list[dict[str, Any]]:
+async def required_documents(
+    db: Database, product_ids: list[str], *, index: Retriever | None = None, topic: str = "",
+) -> list[dict[str, Any]]:
     """
     List what a claim on these products must be accompanied by.
 
     Args:
         db: The database.
         product_ids: Which contracts.
+        index: The shared lexical/semantic retriever, when available.
+        topic: The claim context supplied by the scenario.
 
     Returns:
         Document requirements with the condition attached to each.
@@ -815,49 +901,47 @@ async def required_documents(db: Database, product_ids: list[str]) -> list[dict[
     diagnosis certificate"; it asks for one that 須列明手術或處置名稱及部位, and a
     certificate without the site named comes back.
 
-    **Read out of the clause corpus, not out of `required_document`.** That table holds
-    four rows across one product out of 660, so this scenario answered 系統尚未回傳本次申請
-    所需文件清單 for every customer — measured on a live turn. The contracts carry the lists
-    themselves, in 1,398 clauses across 394 products, under headings that name the act:
-    ...的申領, 保險金的申請, 檢具. The bodies are the enumeration a claimant needs:
+    Search each contract independently so a member's other policies do not disappear
+    behind the first product's matches. Hits identify candidate evidence, not an
+    exhaustive document checklist. The fallback is a normalized literal heading lookup;
+    it cannot infer requirements absent from those headings.
 
-        受益人申領「特定傷病保險金」時，應檢具下列文件：
-        一、保險單或其謄本。
-        二、診斷證明書及相關檢驗報告。…
-
-    So the clause is the answer, and it arrives with a `clause_id` the reply can cite and
-    the customer can check — which the table's rows never had.
-
-    **Capped per product, not per member.** `_short` trims a tool result to twelve rows
-    before it reaches the model, and this query used to order by product: a member holding
-    five products with 22 matching clauses had two of their policies cut off the end of the
-    list, and the reply then read as a complete answer that silently omitted a contract
-    they hold. Four of 46 members lost at least one product that way, and nothing logged
-    it. Ranking inside each product puts every held contract in the result, and the twelve
-    that survive are spread across them.
-
-    The text is sliced in SQL for the same reason. `_short` clips a string at 400
-    characters, which is right for the corpus at large — a clause runs to 442,649 — but
-    the injection tells the model the document list is in `verbatim`'s 一、二、三 lines,
-    so a clip mid-enumeration removes items rather than trailing context. Eight held
-    clauses exceed 400 characters, across twelve members.
+    Return the full text here. The shared answer-context budget applies once in
+    `_short`, which also marks any clipping so missing document requirements cannot
+    silently appear to be a complete list.
 
     """
     if not product_ids:
         return []
+    product_ids = list(dict.fromkeys(product_ids))
+    if index is not None:
+        query = f"{topic}\n申請保險金時，受益人應檢具哪些文件及證明？".strip()
+        rankings = await asyncio.gather(*(
+            asyncio.to_thread(index.search, query, corpus=CLAUSE, scope=[product], limit=DOCUMENTS_PER_PRODUCT)
+            for product in product_ids
+        ))
+        hits = [hit for product, ranked in zip(product_ids, rankings, strict=True)
+                for hit in ranked if hit.corpus == CLAUSE and hit.scope_id == product]
+        keys = list(dict.fromkeys((hit.scope_id, hit.doc_id) for hit in hits))
+        rows = await _clauses_by_id(db, keys)
+        _apply_passages(rows, hits)
+        return rows
     return await db.fetch(
         """SELECT product_id, clause_id, heading, verbatim, page, product_name
            FROM (
                SELECT c.product_id, c.clause_id, c.heading, c.page, p.name AS product_name,
-                      left(c.verbatim, $2::int) AS verbatim,
+                      c.verbatim,
                       row_number() OVER (PARTITION BY c.product_id ORDER BY c.clause_id) AS rank
                FROM contract_clause c JOIN product p USING (product_id)
                WHERE c.product_id = ANY($1::text[])
-                 AND c.heading ~ '申領|保險金的申請|檢具|應檢附'
+                 AND EXISTS (
+                     SELECT 1 FROM unnest($3::text[]) AS term(value)
+                     WHERE strpos(normalize(c.heading, NFKC), term.value) > 0
+                 )
            ) ranked
-           WHERE rank <= $3::int
+           WHERE rank <= $2::int
            ORDER BY product_id, clause_id""",
-        [product_ids, DOCUMENT_CHARS, DOCUMENTS_PER_PRODUCT],
+        [product_ids, DOCUMENTS_PER_PRODUCT, ["申領", "保險金的申請", "檢具", "應檢附"]],
     )
 
 
@@ -876,7 +960,7 @@ async def clause_ids_for(db: Database, product_ids: list[str]) -> frozenset[str]
     """
     if not product_ids:
         return frozenset()
-    rows = await db.fetch("SELECT clause_id FROM clause WHERE product_id = ANY($1::text[])", [product_ids])
+    rows = await db.fetch("SELECT clause_id FROM contract_clause WHERE product_id = ANY($1::text[])", [product_ids])
     return frozenset(r["clause_id"] for r in rows)
 
 

@@ -12,3 +12,6 @@ data/clauses/*.pdf
 data/*.log
 data/index-report.json
 data/bm25/
+data/vectors/current.json
+data/vectors/*/
+data/evaluations/
