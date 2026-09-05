@@ -298,26 +298,120 @@ def test_a_number_keeps_the_spaces_around_it():
      "核准文號：金管保壽字第10902號", "第 1 頁， 共 17 頁"],
 )
 def test_an_approval_line_is_not_a_product_name(line: str):
-    """
-    22 of 660 contracts were named after their approval number.
+    """Approval references are not positive evidence of a product name."""
+    from policydesk.clauses.index import _title_of
 
-    `_title_of` takes the first line of page one that is long enough and is not
-    furniture, and the filter knew 核准文號 but not 認證編號 — the same line, printed
-    under a different label by a different insurer's template. 認證編號：0610132-31 is
-    what a recommendation would have offered a customer as a product.
-    """
-    from policydesk.clauses.index import _FURNITURE, _title_of
+    title = "國泰人壽新實全心意PLUS住院醫療健康保險附約"
+    assert _title_of(f"{line}\n{title}") == title
 
-    assert _FURNITURE.search(line) or len(line) < 8
-    assert _title_of(f"{line}\n國泰人壽新實全心意PLUS住院醫療健康保險附約") != line
+
+@pytest.mark.parametrize("furniture", [
+    "本商品說明書僅供參考，詳細內容請以保險單條款為準",
+    "碳標字第R2316510002號", "健康促進保費折減", "保險單年度末年齡",
+])
+def test_title_of_furniture_before_printed_product_uses_positive_evidence(furniture):
+    from policydesk.clauses.index import _title_of
+
+    assert _title_of(f"{furniture}\n• 國泰人壽鑫月享加鑫外幣變額壽險") == "國泰人壽鑫月享加鑫外幣變額壽險"
+
+
+def test_title_of_wrapped_product_preserves_fullwidth_qualifiers():
+    from policydesk.clauses.index import _title_of
+
+    assert _title_of("國 泰 人 壽\n新守護久久長期照顧\n終身健康保險\n（實物給付型保險商品）") == (
+        "國泰人壽新守護久久長期照顧終身健康保險（實物給付型保險商品）"
+    )
+
+
+def test_title_of_two_main_products_is_unresolved():
+    from policydesk.clauses.index import _title_of
+
+    assert _title_of("國泰人壽安家一年期保險費豁免附約\n國泰人壽安護一年期保險費豁免附約") == ""
+
+
+def test_title_of_second_product_without_repeated_insurer_is_unresolved():
+    from policydesk.clauses.index import _title_of
+
+    assert _title_of("國泰人壽安家一年期保險費豁免附約\n安護一年期保險費豁免附約") == ""
+
+
+def test_title_of_wrapped_benefit_enumeration_is_not_a_second_product():
+    from policydesk.clauses.index import _title_of
+
+    title = "國泰人壽真心康愛防癌終身健康保險附約"
+    assert _title_of(title + "\n裝設保險金、癌症門診醫療保險金、癌症放射線治療保險\n金") == title
+
+
+def test_title_of_repeated_main_and_endorsement_uses_main():
+    from policydesk.clauses.index import _title_of
+
+    assert _title_of("國泰人壽真簡單愛變額萬能壽險\n國泰人壽真簡單愛變額萬能壽險\n"
+                     "國泰人壽意外生活照護保險金傷害失能保險附加條款") == "國泰人壽真簡單愛變額萬能壽險"
+
+
+def test_title_of_structured_product_retains_printed_index_and_currency():
+    from policydesk.clauses.index import _title_of
+
+    title = "澳幣計價股票指數連結結構型商品(無擔保) 【鏈結指數為韓國KOSPI 200指數(KOSPI 200 Index)】"
+    assert _title_of("商品說明書\n" + title) == title
+
+
+def test_title_of_inline_benefits_does_not_promote_related_endorsement():
+    from policydesk.clauses.index import _title_of
+
+    assert _title_of("■ 國泰人壽超月月澳利外幣變額壽險（給付項目：祝壽保險金、身故保險金）\n"
+                     "國泰人壽委託投資帳戶投資標的批註條款(二)") == "國泰人壽超月月澳利外幣變額壽險"
+
+
+def test_title_of_benefit_list_without_label_is_not_a_name_qualifier():
+    from policydesk.clauses.index import _title_of
+
+    title = "國泰人壽全心住院日額健康保險附約"
+    assert _title_of(title + "\n（住院日額醫療、出院療養、手術醫療、加護病房保險金）") == title
+
+
+def test_title_of_slogan_is_not_joined_to_next_line_as_product():
+    from policydesk.clauses.index import _title_of
+
+    assert _title_of("國泰人壽大特點去哪都安心\n新旅行平安保險") == ""
+
+
+@pytest.mark.parametrize(("prefix", "expected"), [
+    ("034bbaa688b2", "國泰人壽鑫月享加鑫外幣變額壽險"),
+    ("11762fabf871", "國泰人壽真安宜保險費豁免附約"),
+    ("8b9740dc6bc1", ""),
+    ("c0cb926dd8a3", ""),
+    ("b91c3821e306", "國泰人壽自由配一年定期初次罹患癌症健康保險附約（外溢型）"),
+])
+def test_title_of_local_pdf_matches_printed_source(prefix, expected):
+    from pypdf import PdfReader
+
+    from policydesk.clauses.index import _title_of
+
+    paths = list((FIXTURE.parent.parent / "cathay").glob(f"{prefix}*.pdf"))
+    if not paths:
+        pytest.skip("local Cathay PDF corpus is unavailable")
+    assert len(paths) == 1
+    assert _title_of(PdfReader(paths[0]).pages[0].extract_text()) == expected
+
+
+@pytest.mark.parametrize("page", [
+    "合作廠商資料及查閱方式\n合作廠商網站", "健康促進保費折減\n保障每一天",
+    "國泰人壽保險股份有限公司-基金通路報酬揭露聲明書",
+    "國泰人壽商品\n免費提供保險", "國泰人壽安心保險。", "國泰人壽安心\n\n健康保險",
+])
+def test_title_of_no_complete_printed_title_remains_unresolved(page):
+    from policydesk.clauses.index import _title_of
+
+    assert _title_of(page) == ""
 
 
 @pytest.mark.parametrize(
     ("line", "readable"),
     [
         ("國泰人壽新實全心意PLUS住院醫療健康保險附約（外溢型）", True),
-        ("真月月康利變額壽險", True),
-        ("保障內容(請詳閱條款)", True),
+        ("真月月康利變額壽險", False),
+        ("保障內容(請詳閱條款)", False),
         # A real product whose own prospectus prints this much Latin and this many
         # digits. The first version of the rule asked for half the characters to be CJK
         # and rejected it — a ratio punishes the honest name for the company it keeps.
@@ -327,28 +421,27 @@ def test_an_approval_line_is_not_a_product_name(line: str):
     ],
 )
 def test_a_title_is_text_a_person_could_read(line: str, readable: bool):
-    r"""
-    A subset-embedded CID font decodes to characters that are `\\w`.
+    """Readable text alone is insufficient, but Latin in a real title is retained."""
+    from policydesk.clauses.index import _title_of
 
-    `_FURNITURE`'s `[\\W\\d_]+` arm rejects a line of punctuation and digits and admits
-    ॆᔊఊฌᜊᕘຬঐྪᎈ, which became a product name the moment 保障您所愛 above it fell
-    below the length floor — a floor the `.strip()` fix lowered it past. Measured across
-    660 contracts, six titles move under that fix: five better, this one worse.
-
-    The bar is a count and not a ratio: the mojibake holds zero ideographs (those are
-    Devanagari, Telugu, Thai and Tibetan codepoints), while a structured product's real
-    name carries as much Latin as it needs to.
-    """
-    from policydesk.clauses.index import _reads_as_chinese
-
-    assert _reads_as_chinese(line) is readable
+    assert bool(_title_of(line)) is readable
 
 
 @needs_pdf
 def test_no_contract_is_named_after_a_broken_font():
-    # The whole corpus, because the mechanism is a short Chinese line above a mojibake
-    # one and nothing says which document has that shape.
-    from policydesk.clauses.index import _reads_as_chinese
-
     index = build_index(FIXTURE)
-    assert _reads_as_chinese(index.title), f"the fixture is named {index.title!r}"
+    assert index.title == "國泰人壽全心住院日額健康保險附約"
+
+
+@needs_pdf
+def test_build_index_title_selection_does_not_change_clause_text_or_pages(monkeypatch):
+    from policydesk.clauses import index as parser
+
+    before = build_index(FIXTURE)
+    monkeypatch.setattr(parser, "_title_of", lambda _: "核對用名稱")
+    after = build_index(FIXTURE)
+    assert after.title == "核對用名稱"
+    assert before.title != after.title
+    assert after.clauses == before.clauses
+    assert after.doc_id == before.doc_id
+    assert after.document_kind == before.document_kind
