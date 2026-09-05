@@ -20,6 +20,7 @@ from unicodedata import normalize
 
 from policydesk.bootloader import logger
 from policydesk.retrieval.base import CLAUSE, Hit, Retriever
+from policydesk.skills.calculator import calculate
 from policydesk.synthetic.person import insurance_age
 
 if TYPE_CHECKING:
@@ -481,8 +482,12 @@ async def suitable_products(
         limit: Most products to return.
 
     Returns:
-        Products within the issue-age band, the occupation ceiling and the budget, or
+        Products within the issue-age band, occupation ceiling and unit-rate budget, or
         an empty list when the line is not one this desk sells from.
+
+    Budget calculations use whole pricing units, not underwriting limits or comparable
+    coverage amounts. Rider rates remain visible, but their complete cost needs a main
+    contract. An unknown main-contract cost is not zero affordable units.
 
     The selection is a query, not a judgement. That is deliberate: asked how the desk
     avoids steering a customer to a product that pays it more, the answer is that the
@@ -549,6 +554,19 @@ async def suitable_products(
     for row in candidates:
         row["selection_basis"] = "eligibility and contract retrieval" if row["product_id"] in matches else "eligibility only"
         row["contract_evidence"] = list(evidence.get(row["product_id"], {}).values())
+        calculation = {"annual_budget": budget}
+        if row["requires_main"]:
+            calculation["status"] = "main_contract_cost_unknown"
+        elif not row.get("rate_unit_amount") or row["rate_unit_amount"] <= 0 or row["unit_premium"] <= 0:
+            calculation["status"] = "pricing_basis_unavailable"
+        else:
+            units = calculate(f"{budget} // {row['unit_premium']}")
+            premium = calculate(f"{units.amount} * {row['unit_premium']}")
+            calculation.update(
+                status="standalone_rate_only", rate_units=units.amount, annual_premium=premium.amount,
+                units_expression=units.basis, premium_expression=premium.basis,
+            )
+        row["budget_calculation"] = calculation
     return candidates
 
 

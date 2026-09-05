@@ -8,6 +8,7 @@ saying so. Integration tests use the generated demo catalogue; unit tests ensure
 calculation uses its structured numeric basis rather than interpreting a text label.
 """
 
+from decimal import Decimal
 from unittest.mock import AsyncMock
 
 import pytest
@@ -107,6 +108,101 @@ async def test_product_rate_missing_or_invalid_basis_returns_no_estimate(basis):
                                "unit_label": "每 1,000 元保額", "rate_unit_amount": basis}]
     result = await product_rate(pool, "health", amount=2000)
     assert "estimated_premium" not in result[0]
+
+
+@pytest.mark.parametrize(("budget", "expected"), [
+    (20000, [(12, 19320), (10, 19500)]),
+    (5000, [(3, 4830), (2, 3900)]),
+])
+async def test_suitable_products_budget_arithmetic_uses_current_budget(budget, expected):
+    pool = AsyncMock()
+    pool.fetch.side_effect = [[
+        {"product_id": f"p{index}", "unit_premium": Decimal(premium), "requires_main": False,
+         "rate_unit_amount": 1000, "unit_label": "不從文字猜計價單位", "data_origin": "synthetic_demo"}
+        for index, premium in enumerate(("1610", "1950"))
+    ], []]
+    rows = await tools.suitable_products(pool, insurance_age=35, occupation_class=1, budget=budget, line="health")
+    assert len(rows) == 2
+    for row, (units, premium) in zip(rows, expected, strict=True):
+        calculation = row["budget_calculation"]
+        assert calculation == {
+            "status": "standalone_rate_only", "annual_budget": budget,
+            "rate_units": units, "annual_premium": premium,
+            "units_expression": f"{budget} // {row['unit_premium']}",
+            "premium_expression": f"{units} * {row['unit_premium']}",
+        }
+        assert row["data_origin"] == "synthetic_demo"
+
+
+async def test_suitable_products_rider_keeps_rate_without_standalone_capacity():
+    pool = AsyncMock()
+    pool.fetch.side_effect = [[
+        {"product_id": "rider", "unit_premium": Decimal(1610), "requires_main": True, "rate_unit_amount": 1000},
+        {"product_id": "main", "unit_premium": Decimal(1950), "requires_main": False, "rate_unit_amount": 1000},
+    ], []]
+    rows = await tools.suitable_products(pool, insurance_age=35, occupation_class=1, budget=20000, line="health")
+    assert len(rows) == 2
+    assert rows[0]["unit_premium"] == Decimal(1610)
+    assert rows[0]["budget_calculation"] == {"status": "main_contract_cost_unknown", "annual_budget": 20000}
+    assert rows[1]["budget_calculation"]["rate_units"] == 10
+
+
+@pytest.mark.parametrize(("premium", "basis"), [("0", 1000), ("-1", 1000), ("1610", None), ("1610", 0), ("1610", -1)])
+async def test_suitable_products_unknown_pricing_basis_has_no_budget_estimate(premium, basis):
+    pool = AsyncMock()
+    pool.fetch.side_effect = [[{
+        "product_id": "unknown", "unit_premium": Decimal(premium), "requires_main": False,
+        "rate_unit_amount": basis, "unit_label": "每 1,000 元保額", "data_origin": "unknown",
+    }], []]
+    rows = await tools.suitable_products(pool, insurance_age=35, occupation_class=1, budget=5000, line="health")
+    assert len(rows) == 1
+    assert rows[0]["budget_calculation"] == {"status": "pricing_basis_unavailable", "annual_budget": 5000}
+    assert rows[0]["data_origin"] == "unknown"
+
+
+async def test_suitable_products_decimal_rate_keeps_each_products_unit_basis():
+    pool = AsyncMock()
+    pool.fetch.side_effect = [[
+        {"product_id": "daily", "unit_premium": Decimal("1666.67"), "requires_main": False,
+         "rate_unit_amount": 1000, "unit_label": "每日 1,000 元住院日額"},
+        {"product_id": "lump", "unit_premium": Decimal("1666.67"), "requires_main": False,
+         "rate_unit_amount": 1000000, "unit_label": "每 100 萬元保額"},
+    ], []]
+    rows = await tools.suitable_products(pool, insurance_age=35, occupation_class=1, budget=5000, line="health")
+    assert len(rows) == 2
+    assert [(row["rate_unit_amount"], row["unit_label"]) for row in rows] == [
+        (1000, "每日 1,000 元住院日額"), (1000000, "每 100 萬元保額"),
+    ]
+    for row in rows:
+        assert row["budget_calculation"] == {
+            "status": "standalone_rate_only", "annual_budget": 5000,
+            "rate_units": 2, "annual_premium": 3333,
+            "units_expression": "5000 // 1666.67", "premium_expression": "2 * 1666.67",
+        }
+
+
+@pytest.mark.parametrize("budget", [20000, 5000])
+async def test_suitable_products_real_catalog_estimates_agree_with_stored_rates(db, budget):
+    rows = await tools.suitable_products(db, insurance_age=35, occupation_class=1, budget=budget, line="health")
+    assert rows
+    stored = {row["product_id"]: row for row in await db.fetch(
+        """SELECT product_id, unit_premium, rate_unit_amount, unit_label, requires_main, data_origin
+           FROM sale_catalog WHERE product_id = ANY($1::text[])""",
+        [[row["product_id"] for row in rows]],
+    )}
+    assert {row["requires_main"] for row in stored.values()} == {False, True}
+    for row in rows:
+        rate = stored[row["product_id"]]
+        assert all(row[key] == value for key, value in rate.items())
+        calculation = row["budget_calculation"]
+        assert calculation["annual_budget"] == budget
+        if rate["requires_main"]:
+            assert calculation == {"status": "main_contract_cost_unknown", "annual_budget": budget}
+        else:
+            assert calculation["status"] == "standalone_rate_only"
+            units = calculation["rate_units"]
+            assert units * rate["unit_premium"] <= budget < (units + 1) * rate["unit_premium"]
+            assert calculation["annual_premium"] == int((units * rate["unit_premium"]).quantize(Decimal(1)))
 
 
 def test_as_amount_reads_a_comma_separated_figure():
