@@ -200,6 +200,24 @@ def test_load_terms_settles_every_frequency_before_the_first_add(tmp_path, monke
     assert ix.load_terms(tmp_path / "absent") == 0
 
 
+def test_an_index_cut_with_another_dictionary_is_not_current(tmp_path):
+    """
+    A stale index still returns hits, so `find_clause` never falls back and nobody sees
+    the queries tokenising differently from the documents. The fingerprint is the check.
+    """
+    from policydesk.retrieval import index as ix
+
+    assert ix.dictionary_fingerprint(tmp_path) is None
+    assert ix.index_current(tmp_path) is False, "no index at all"
+    (tmp_path / ix.TERMS_FILE).write_text("住院日額保險金\n豁免保費\n", encoding="utf-8")
+    (tmp_path / "meta.json").write_text("{}", encoding="utf-8")
+    assert ix.index_current(tmp_path) is False, "an index built before fingerprints were written"
+    (tmp_path / ix.DICTIONARY_FILE).write_text(ix.dictionary_fingerprint(tmp_path), encoding="utf-8")
+    assert ix.index_current(tmp_path) is True
+    (tmp_path / ix.TERMS_FILE).write_text("住院日額保險金\n", encoding="utf-8")
+    assert ix.index_current(tmp_path) is False, "the term file changed under the index"
+
+
 def test_split_term_keeps_the_nouns_and_drops_the_grammar():
     from policydesk.retrieval.index import _split_term
 
