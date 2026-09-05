@@ -440,7 +440,6 @@ async def ownership_members():
         members = []
         nonce = uuid4().hex
         try:
-            before = await db.fetch_val("SELECT count(*) FROM policy")
             product_id = await db.fetch_val(
                 "SELECT product_id FROM product WHERE attachment = 'main' AND document_kind = 'contract' ORDER BY product_id LIMIT 1"
             )
@@ -510,7 +509,6 @@ async def ownership_members():
                     [member_ids, policy_ids, claim_ids, case_ids],
                 )
                 assert remaining == 0, "ownership fixture records survived cleanup"
-                assert await db.fetch_val("SELECT count(*) FROM policy") == before
 
 
 @pytest.mark.parametrize("owner_index", [0, 1], ids=["member_a", "member_b"])

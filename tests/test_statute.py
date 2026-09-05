@@ -163,20 +163,26 @@ async def test_terms_include_statutory_vocabulary_absent_from_the_clause_corpus(
 
 
 async def test_reingest_replaces_rather_than_accumulates(loaded):
-    before = await loaded.fetch_val("SELECT count(*) FROM statute_article WHERE statute_id = 'insurance_act'")
-    await statute.store(
-        loaded,
-        "insurance_act",
-        statute.STATUTES["insurance_act"],
-        {"name": "保險法", "authority": "金融監督管理委員會", "amended_at": None},
-        [Article("art.1", 1, 0, None, None, "第 一 章 總則", "", "重寫")],
-    )
-    after = await loaded.fetch_val("SELECT count(*) FROM statute_article WHERE statute_id = 'insurance_act'")
-    assert (before, after) != (1, 1)
-    assert after == 1
-    # Restore, so the module's other tests and the running desk see the real corpus.
-    await statute.ingest(loaded, ["insurance_act"])
-    assert await loaded.fetch_val("SELECT count(*) FROM statute_article WHERE statute_id = 'insurance_act'") == before
+    """
+    `store` replaces a statute's rows wholesale, never merges.
+
+    Proven on a scratch statute rather than on 保險法. This test used to rewrite the real
+    Act to one row and then fetch it back over the network, and every module that reads
+    the corpus on another worker failed in that window.
+    """
+    meta = {"name": "測試法", "authority": "測試機關", "amended_at": None}
+
+    def article(text: str) -> list[Article]:
+        return [Article("art.1", 1, 0, None, None, "第 一 章 總則", "", text)]
+
+    try:
+        assert await statute.store(loaded, "scratch_act", "T0000000", meta, article("第一版")) == 1
+        assert await statute.store(loaded, "scratch_act", "T0000000", meta, article("重寫")) == 1
+        rows = await loaded.fetch("SELECT verbatim FROM statute_article WHERE statute_id = 'scratch_act'")
+        assert [r["verbatim"] for r in rows] == ["重寫"]
+    finally:
+        await loaded.execute("DELETE FROM statute WHERE statute_id = 'scratch_act'")
+    assert await loaded.fetch_val("SELECT count(*) FROM statute_article WHERE statute_id = 'scratch_act'") == 0
 
 
 async def test_search_finds_a_provision_from_a_whole_complaint_sentence(loaded):

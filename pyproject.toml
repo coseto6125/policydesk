@@ -44,7 +44,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.7"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "pytest-xdist>=3.6", "ruff>=0.7"]
 
 [project.scripts]
 policydesk = "policydesk.web.server:main"
@@ -100,3 +100,6 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# One worker per core, whole files per worker: the `db` fixture is module-scoped and
+# tests in one file build on each other's rows, so a file is the unit that may not split.
+addopts = "-n auto --dist loadfile"
