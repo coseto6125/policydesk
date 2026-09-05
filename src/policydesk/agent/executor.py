@@ -24,7 +24,7 @@ import re
 import time
 from datetime import UTC, date, datetime
 from importlib import import_module
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import etoon
@@ -50,7 +50,7 @@ from policydesk.bootloader import logger
 from policydesk.llm.pricing import cost
 from policydesk.llm.provider import Completion, Phase, Provider, ProviderError
 from policydesk.skills.calculator import CalculationError, calculate
-from policydesk.validation.validator import Verdict, recheck
+from policydesk.validation.validator import QuotedField, Verdict, recheck
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
@@ -72,21 +72,39 @@ is for.
 _CITATION = re.compile(r"\b(?:art\.\d{1,3}(?:\.carve\d)?|waiting)\b")
 
 
+class _ProvisionQuote(Struct, forbid_unknown_fields=True):
+    field: str
+    text: str
+    kind: Literal["benefit_condition", "exclusion", "waiting_period", "deadline"]
 
 
 class _Answer(Struct, forbid_unknown_fields=True):
     reply: str
     citations: list[str]
     calculations: list[str]
+    quoted_fields: list[_ProvisionQuote] = []
 
 
 def _answer_schema(sources: tuple[tuple[str, str], ...], *, calculator: bool = False) -> dict[str, Any]:
-    schema = json.schema(_Answer)["$defs"]["_Answer"]
+    definitions = json.schema(_Answer)["$defs"]
+    schema = definitions["_Answer"]
+    schema["required"] = list(schema["properties"])
+    quotes = schema["properties"]["quoted_fields"]
+    quotes.pop("default", None)
+    quotes["items"] = definitions["_ProvisionQuote"]
+    quotes["description"] = (
+        "For claims about benefit conditions, exclusions, waiting periods or deadlines, quote the supporting "
+        "clause text verbatim. Use product_id|clause_id as field and include that key in citations. "
+        "Use an empty list when the reply makes none of these four kinds of claim."
+    )
     citations = schema["properties"]["citations"]
     if sources:
         citations["items"]["enum"] = [f"{product}|{clause}" for product, clause in sources]
+        quotes["items"]["properties"]["field"]["enum"] = citations["items"]["enum"]
+        quotes["items"]["properties"]["text"]["minLength"] = 1
     else:
         citations["maxItems"] = 0
+        quotes["maxItems"] = 0
     if not calculator:
         schema["properties"]["calculations"]["maxItems"] = 0
     return schema
@@ -103,6 +121,7 @@ class Turn:
         self.scenario: str | None = None
         self.citations: tuple[str, ...] = ()
         self.clause_sources: tuple[tuple[str, str], ...] = ()
+        self.clause_texts: dict[str, str] = {}
         self.cited_sources: tuple[tuple[str, str], ...] = ()
         self.faults: tuple[str, ...] = ()
         self.procedure_hint: str = ""
@@ -322,6 +341,10 @@ def _clause_sources(value: Any) -> tuple[tuple[str, str], ...]:
     return tuple(_clause_rows(value))
 
 
+def _clause_subject(value: Any) -> dict[str, str]:
+    """Keep the exact clause text made visible for this turn's answer."""
+    return {f"{product}|{clause}": row["verbatim"]
+            for (product, clause), row in _clause_rows(value).items() if isinstance(row.get("verbatim"), str)}
 
 
 async def _gather(
@@ -746,6 +769,7 @@ async def run_turn(
     # waiting on.
     visible_facts = {k: _short(v) for k, v in facts.items()}
     turn.clause_sources = _clause_sources(visible_facts)
+    turn.clause_texts = _clause_subject(visible_facts)
     material = etoon.dumps(visible_facts)
     clarifying_policy = "policy_scope" in facts
     instructions = POLICY_CLARIFICATION if clarifying_policy else (
@@ -788,7 +812,7 @@ async def run_turn(
     turn.computations = _run_calculations(completion)
 
     if await _unverifiable(
-        db, turn, completion.text, allowed, sources=tuple(answer.citations),
+        db, turn, completion.text, allowed, sources=tuple(answer.citations), quoted_fields=tuple(answer.quoted_fields),
     ):
         return turn
     turn.reply = completion.text
@@ -968,6 +992,7 @@ def _withhold_promise(turn: Turn, case_id: int, scenario: str | None) -> bool:
 
 async def _unverifiable(
     db: Database, turn: Turn, text: str, allowed: frozenset[str], *, sources: tuple[str, ...] | None = None,
+    quoted_fields: tuple[_ProvisionQuote, ...] = (),
 ) -> bool:
     """
     Withhold a reply whose citations do not resolve.
@@ -979,6 +1004,7 @@ async def _unverifiable(
         allowed: The clause ids the tools actually returned for this member.
         sources: Explicit product-and-clause keys from the answer. None is the router's
             free-text path, which has no contract evidence and grants no document access.
+        quoted_fields: Exact supporting text for the four provision kinds in the answer schema.
 
     Returns:
         True when the reply was withheld, so the caller stops.
@@ -1000,7 +1026,12 @@ async def _unverifiable(
         selected = tuple(available[key] for key in dict.fromkeys(sources) if key in available)
         allowed = frozenset(clause for _, clause in selected)
     cited = tuple(dict.fromkeys([*(_CITATION.findall(text)), *(clause for _, clause in selected)]))
-    checked = recheck(Verdict(passed=True, reason="", cited_clauses=cited), subject={}, allowed_clauses=allowed)
+    subject = {key: value for key, value in turn.clause_texts.items() if key in (sources or ())}
+    checked = recheck(
+        Verdict(passed=True, reason="", cited_clauses=cited,
+                quoted_fields=tuple(QuotedField(field=quote.field, text=quote.text) for quote in quoted_fields)),
+        subject=subject, allowed_clauses=allowed,
+    )
     fabricated = await statute.unresolved(db, text)
     turn.citations = cited
     turn.faults = source_faults + checked.faults + tuple(f"{name}{doc_id}" for name, doc_id in fabricated)
