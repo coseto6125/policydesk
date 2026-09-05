@@ -1879,6 +1879,22 @@ function setLink(state, text) {
  * corpus, which is why the server resolves the id against this member's own book before
  * it reaches here — a bare id is not a link.
  */
+// A clause id the reader can read. Most ids look like a reference already — [art.12]
+// reads as one — but the index also mints word ids, and 等待期 30 日 came back into the
+// bubble as [waiting], which reads as a token the page failed to render. The citation
+// list carries a heading for every id; this puts the heading where the sentence is.
+function namedClauses(text, cited) {
+  if (!text || !cited?.length) return text;
+  for (const c of cited) {
+    if (!c.clause_id || /^art\./.test(c.clause_id)) continue;
+    // The first clause of the heading, so 等待期 30 日（載於「疾病」定義，非獨立條文）
+    // reads as 等待期 30 日 inline and keeps the rest for the list below.
+    const name = String(c.heading ?? "").split(/[（(]/)[0].trim() || c.clause_id;
+    text = text.split(`[${c.clause_id}]`).join(`[${name}]`);
+  }
+  return text;
+}
+
 function renderCitations(cited) {
   document.querySelectorAll(".cites").forEach(el => el.remove());
   if (!cited?.length) return;
@@ -2098,7 +2114,7 @@ function connectCustomer(name) {
         // after the first let a question typed in that gap be answered ahead of the
         // guidance still on its way.
         if (!m.pending_reply) waiting(false);
-        bubble("them", m.text);
+        bubble("them", namedClauses(m.text, m.citations));
         renderChips(m.quick);
         if (m.scenario) {
           const carried = Object.entries(m.params ?? {}).map(([k, v]) => `${k}=${v}`).join(" ");
