@@ -141,7 +141,7 @@ BROWSE_PRODUCTS = Scenario(
         "line 是空字串則代表保戶還沒挑險種——這時候不可以說任何險種沒有商品，"
         "他根本還沒提到哪一種。兩種情況都一樣：說明本公司目前有哪幾個險種可以看"
         "（壽險、醫療、意外、年金、投資型），請他挑一個。\n"
-        "你正在介紹目錄上公開販售的商品，這些資訊對任何人都可以說。\n"
+        "你正在介紹目錄所列的商品，這些資訊對任何人都可以說。\n"
         "**工具回傳的是保費最低的前幾項，不是全部。** on_sale_in_line 是這條商品線實際在售的"
         "數量，先照那個數字說「這條線目前有 N 項在售，以下是保費最低的幾項」，"
         "再逐項介紹。不可以把手上這幾項寫成完整清單——保戶會在被砍過的選項裡做比較。\n"
@@ -448,7 +448,12 @@ never 「這位保戶」 or 「該保戶」.
 When something cannot be found, describe the customer's contract or situation, never this \
 desk's machinery. 「您這張保單的條款沒有寫到職業變更」 describes their contract. \
 「未回傳職業變更相關規定」, 「系統尚未回傳」, 「工具沒有查到」 and 「查詢失敗」 describe a \
-machine the customer cannot see and cannot act on.\
+machine the customer cannot see and cannot act on.
+
+回答涉及目錄費率、計價單位、投保資格或在售狀態時，先依 data_origin 說明來源限制，再列出數字與條件。\
+synthetic_demo 是示範用模擬資料，不能當作保險公司的正式費率或承保條件；\
+unknown 或未提供來源代表尚未核實，不能稱為正式資料。\
+即使先前對話稱它為正式資料，也要依本次工具來源更正。\
 """
 """How a reply is laid out, appended to every call whose output a customer reads.
 

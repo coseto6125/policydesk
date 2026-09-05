@@ -450,6 +450,7 @@ async def suitable_products(
         return []
     return await db.fetch(
         """SELECT p.product_id, p.name, p.attachment, p.line, ce.unit_premium, ce.unit_label,
+                  ce.data_origin, ce.rate_unit_amount,
                   ce.issue_age_min, ce.issue_age_max, ce.max_occupation, ce.requires_main
            FROM sale_catalog ce JOIN product p USING (product_id)
            WHERE ce.on_sale
@@ -465,6 +466,7 @@ async def suitable_products(
 
 _RELAXED = """\
 SELECT p.product_id, p.name, p.line, ce.unit_premium, ce.unit_label,
+       ce.data_origin, ce.rate_unit_amount,
        ce.issue_age_min, ce.issue_age_max, ce.max_occupation
 FROM sale_catalog ce JOIN product p USING (product_id)
 WHERE ce.on_sale
@@ -479,7 +481,9 @@ LIMIT $4::int"""
 _CEILINGS = """\
 SELECT max(ce.issue_age_max) AS age_max, min(ce.issue_age_min) AS age_min,
        max(ce.max_occupation) AS occupation_max, min(ce.unit_premium) AS cheapest,
-       count(*) AS on_sale
+       count(*) AS on_sale,
+       CASE WHEN count(DISTINCT ce.data_origin) = 1 THEN min(ce.data_origin)
+            ELSE 'unknown' END AS data_origin
 FROM sale_catalog ce JOIN product p USING (product_id)
 WHERE ce.on_sale AND ($1::text = '' OR p.line = $1::text)"""
 
@@ -533,15 +537,19 @@ async def alternatives(
     binding: list[dict[str, Any]] = []
     if this_line and this_line["on_sale"]:
         if insurance_age > this_line["age_max"]:
-            binding.append({"條件": "投保年齡", "保戶": insurance_age, "上限": this_line["age_max"], "範圍": line})
+            binding.append({"條件": "投保年齡", "保戶": insurance_age, "上限": this_line["age_max"], "範圍": line,
+                            "data_origin": this_line["data_origin"]})
         elif insurance_age < this_line["age_min"]:
-            binding.append({"條件": "投保年齡", "保戶": insurance_age, "下限": this_line["age_min"], "範圍": line})
+            binding.append({"條件": "投保年齡", "保戶": insurance_age, "下限": this_line["age_min"], "範圍": line,
+                            "data_origin": this_line["data_origin"]})
         if occupation_class > this_line["occupation_max"]:
             scope = "全線" if every_line and occupation_class > every_line["occupation_max"] else line
-            ceiling = (every_line if scope == "全線" else this_line)["occupation_max"]
-            binding.append({"條件": "職業等級", "保戶": occupation_class, "上限": ceiling, "範圍": scope})
+            ceiling = every_line if scope == "全線" else this_line
+            binding.append({"條件": "職業等級", "保戶": occupation_class, "上限": ceiling["occupation_max"], "範圍": scope,
+                            "data_origin": ceiling["data_origin"]})
         if budget < this_line["cheapest"]:
-            binding.append({"條件": "年繳預算", "保戶": budget, "最低": int(this_line["cheapest"]), "範圍": line})
+            binding.append({"條件": "年繳預算", "保戶": budget, "最低": int(this_line["cheapest"]), "範圍": line,
+                            "data_origin": this_line["data_origin"]})
 
     return {
         "binding": binding,
@@ -635,6 +643,7 @@ async def catalogue_sample(db: Database, line: str, limit: int = 5) -> list[dict
         return []
     return await db.fetch(
         """SELECT p.product_id, p.name, p.line, ce.unit_premium, ce.unit_label,
+                  ce.data_origin, ce.rate_unit_amount,
                   ce.issue_age_min, ce.issue_age_max, ce.requires_main,
                   count(*) OVER () AS on_sale_in_line
            FROM sale_catalog ce JOIN product p USING (product_id)
@@ -721,12 +730,13 @@ async def standing_brief(db: Database, member_id: int, *, today: date) -> dict[s
             [member_id, today],
         ),
         db.fetch(
-            """SELECT p.line, min(ce.unit_premium)::int AS cheapest, min(ce.unit_label) AS unit
+            """SELECT DISTINCT ON (p.line) p.line, ce.unit_premium::int AS cheapest,
+                      ce.unit_label AS unit, ce.data_origin, ce.rate_unit_amount
                FROM sale_catalog ce JOIN product p USING (product_id)
                WHERE ce.on_sale AND p.line = ANY($3::text[])
                  AND $1::int BETWEEN ce.issue_age_min AND ce.issue_age_max
                  AND $2::int <= ce.max_occupation
-               GROUP BY p.line ORDER BY p.line""",
+               ORDER BY p.line, ce.unit_premium, p.product_id""",
             [age, member["occupation_class"], sorted(LINES)],
         ),
     )
@@ -753,7 +763,11 @@ async def standing_brief(db: Database, member_id: int, *, today: date) -> dict[s
             }
             for p in policies
         ],
-        "可投保商品線最低年繳保費": [{"線別": f["line"], "最低": f["cheapest"], "單位": f["unit"]} for f in floors],
+        "可投保商品線最低年繳保費": [
+            {"線別": f["line"], "最低": f["cheapest"], "單位": f["unit"],
+             "data_origin": f["data_origin"], "rate_unit_amount": f["rate_unit_amount"]}
+            for f in floors
+        ],
     }
 
 
