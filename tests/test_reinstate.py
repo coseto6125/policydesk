@@ -120,7 +120,7 @@ async def test_gather_names_all_three_facts(monkeypatch: pytest.MonkeyPatch):
                         "is_main": True,
                     }
                 ]
-            if "FROM clause c JOIN product p" in sql:
+            if "FROM contract_clause c JOIN product p" in sql:
                 return [{"product_id": "P1", "clause_id": "art.7", "heading": "停效及復效", "verbatim": "…", "page": 5, "product_name": "測試附約"}]
             raise AssertionError(sql)
 
@@ -188,7 +188,7 @@ async def test_gather_with_reinstatement_clauses_not_allowed_keeps_lapsed_but_dr
                         "is_main": True,
                     }
                 ]
-            if "FROM clause c JOIN product p" in sql:
+            if "FROM contract_clause c JOIN product p" in sql:
                 raise AssertionError("reinstatement_clauses must not run when it is not in `allowed`")
             raise AssertionError(sql)
 

@@ -191,7 +191,7 @@ async def plan(
     rows = await db.fetch(
         """SELECT p.product_id, p.name, p.line, ce.requires_main,
                   ce.issue_age_min, ce.issue_age_max
-           FROM catalog_entry ce JOIN product p USING (product_id)
+           FROM sale_catalog ce JOIN product p USING (product_id)
            WHERE ce.on_sale
              AND ce.issue_age_min <= $1::int
              AND $2::int <= ce.max_occupation

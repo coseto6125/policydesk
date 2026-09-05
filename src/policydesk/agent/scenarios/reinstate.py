@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute, tools
 from policydesk.agent.scenario_base import Scenario
-from policydesk.agent.tools import requires_identity
+from policydesk.agent.tools import public, requires_identity
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
@@ -69,6 +69,7 @@ def _citation(row: dict[str, Any]) -> str:
     return f"〔{row['statute_name']} {number}〕"
 
 
+@public
 async def statutory_floor(
     db: Database,
     concern: str = "保險費到期未交付效力停止停止效力之日起六個月內清償保險費恢復效力可保證明",
@@ -172,7 +173,7 @@ async def reinstatement_clauses(db: Database, product_ids: list[str]) -> list[di
         return []
     return await db.fetch(
         """SELECT c.product_id, c.clause_id, c.heading, c.verbatim, c.page, p.name AS product_name
-           FROM clause c JOIN product p USING (product_id)
+           FROM contract_clause c JOIN product p USING (product_id)
            WHERE c.product_id = ANY($1::text[])
              AND c.heading ~ '復效|效力停止|恢復效力'
            ORDER BY p.name, c.clause_id""",

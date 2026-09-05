@@ -100,6 +100,27 @@ def requires_identity(fn: Callable[..., Any]) -> Callable[..., Any]:
     return fn
 
 
+def public(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """
+    Mark a tool as answering the same thing to everyone.
+
+    Args:
+        fn: The tool.
+
+    Returns:
+        The same function, flagged.
+
+    The counterpart to `requires_identity`, and it exists so that no flag at all becomes a
+    third state the desk can notice. Without it, an undecorated tool means both 「someone
+    decided this is public」 and 「nobody looked」, and `tests/test_identity_inventory.py`
+    cannot tell a decision from an omission. The runtime gate is unaffected: it already
+    reads `requires_identity`, which this sets to False explicitly rather than by absence.
+
+    """
+    fn.requires_identity = False
+    return fn
+
+
 def reads_identity(tool_names: Iterable[str], *, owner: Any = None) -> bool:
     """
     Say whether any of these tools reads the customer's own record.
@@ -229,7 +250,7 @@ async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict
     products, clauses = [k[0] for k in keys], [k[1] for k in keys]
     rows = await db.fetch(
         """SELECT c.product_id, c.clause_id, c.kind, c.heading, c.verbatim, c.page, p.name AS product_name
-           FROM clause c
+           FROM contract_clause c
            JOIN product p USING (product_id)
            JOIN unnest($1::text[], $2::text[]) AS want(product_id, clause_id)
              ON want.product_id = c.product_id AND want.clause_id = c.clause_id""",
@@ -376,7 +397,7 @@ async def find_clause(
         return found
     return await db.fetch(
         """SELECT c.product_id, c.clause_id, c.kind, c.heading, c.verbatim, c.page, p.name AS product_name
-           FROM clause c JOIN product p USING (product_id)
+           FROM contract_clause c JOIN product p USING (product_id)
            WHERE c.product_id = ANY($1::text[])
              AND (c.verbatim ILIKE '%' || $2::text || '%'
                   OR c.heading ILIKE '%' || $2::text || '%'
@@ -395,6 +416,7 @@ LINES: frozenset[str] = frozenset({"health", "life", "accident", "annuity", "inv
 could not classify, so it is never offered."""
 
 
+@public
 async def suitable_products(
     db: Database, *, insurance_age: int, occupation_class: int, budget: int, line: str, limit: int = 5
 ) -> list[dict[str, Any]]:
@@ -429,7 +451,7 @@ async def suitable_products(
     return await db.fetch(
         """SELECT p.product_id, p.name, p.attachment, p.line, ce.unit_premium, ce.unit_label,
                   ce.issue_age_min, ce.issue_age_max, ce.max_occupation, ce.requires_main
-           FROM catalog_entry ce JOIN product p USING (product_id)
+           FROM sale_catalog ce JOIN product p USING (product_id)
            WHERE ce.on_sale
              AND p.line = $5::text
              AND $1::int BETWEEN ce.issue_age_min AND ce.issue_age_max
@@ -444,7 +466,7 @@ async def suitable_products(
 _RELAXED = """\
 SELECT p.product_id, p.name, p.line, ce.unit_premium, ce.unit_label,
        ce.issue_age_min, ce.issue_age_max, ce.max_occupation
-FROM catalog_entry ce JOIN product p USING (product_id)
+FROM sale_catalog ce JOIN product p USING (product_id)
 WHERE ce.on_sale
   AND p.line = $5::text
   AND ($1::int BETWEEN ce.issue_age_min AND ce.issue_age_max OR NOT $6::bool)
@@ -458,7 +480,7 @@ _CEILINGS = """\
 SELECT max(ce.issue_age_max) AS age_max, min(ce.issue_age_min) AS age_min,
        max(ce.max_occupation) AS occupation_max, min(ce.unit_premium) AS cheapest,
        count(*) AS on_sale
-FROM catalog_entry ce JOIN product p USING (product_id)
+FROM sale_catalog ce JOIN product p USING (product_id)
 WHERE ce.on_sale AND ($1::text = '' OR p.line = $1::text)"""
 
 
@@ -568,7 +590,7 @@ async def benefit_headings(db: Database, product_ids: list[str], limit: int = 40
         return []
     return await db.fetch(
         r"""SELECT c.product_id, c.clause_id, c.heading, p.name AS product_name
-           FROM clause c JOIN product p USING (product_id)
+           FROM contract_clause c JOIN product p USING (product_id)
            WHERE c.product_id = ANY($1::text[]) AND c.kind = 'grant'
              AND c.heading ~ '保險金|保險範圍|承保範圍'
              AND c.heading !~ '申領|申請|通知|指定|減少|變更|受益人'
@@ -581,6 +603,7 @@ async def benefit_headings(db: Database, product_ids: list[str], limit: int = 40
     )
 
 
+@public
 async def catalogue_sample(db: Database, line: str, limit: int = 5) -> list[dict[str, Any]]:
     """
     List what is on sale in a line, for anyone.
@@ -614,7 +637,7 @@ async def catalogue_sample(db: Database, line: str, limit: int = 5) -> list[dict
         """SELECT p.product_id, p.name, p.line, ce.unit_premium, ce.unit_label,
                   ce.issue_age_min, ce.issue_age_max, ce.requires_main,
                   count(*) OVER () AS on_sale_in_line
-           FROM catalog_entry ce JOIN product p USING (product_id)
+           FROM sale_catalog ce JOIN product p USING (product_id)
            WHERE ce.on_sale AND p.line = $1::text
            ORDER BY ce.unit_premium ASC
            LIMIT $2::int""",
@@ -699,7 +722,7 @@ async def standing_brief(db: Database, member_id: int, *, today: date) -> dict[s
         ),
         db.fetch(
             """SELECT p.line, min(ce.unit_premium)::int AS cheapest, min(ce.unit_label) AS unit
-               FROM catalog_entry ce JOIN product p USING (product_id)
+               FROM sale_catalog ce JOIN product p USING (product_id)
                WHERE ce.on_sale AND p.line = ANY($3::text[])
                  AND $1::int BETWEEN ce.issue_age_min AND ce.issue_age_max
                  AND $2::int <= ce.max_occupation
@@ -814,7 +837,7 @@ async def required_documents(db: Database, product_ids: list[str]) -> list[dict[
                SELECT c.product_id, c.clause_id, c.heading, c.page, p.name AS product_name,
                       left(c.verbatim, $2::int) AS verbatim,
                       row_number() OVER (PARTITION BY c.product_id ORDER BY c.clause_id) AS rank
-               FROM clause c JOIN product p USING (product_id)
+               FROM contract_clause c JOIN product p USING (product_id)
                WHERE c.product_id = ANY($1::text[])
                  AND c.heading ~ '申領|保險金的申請|檢具|應檢附'
            ) ranked

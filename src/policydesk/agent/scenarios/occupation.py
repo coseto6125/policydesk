@@ -72,7 +72,7 @@ from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import statute, tools
 from policydesk.agent.scenario_base import Param, Scenario, gather_tools
-from policydesk.agent.tools import requires_identity
+from policydesk.agent.tools import public, requires_identity
 from policydesk.synthetic.person import OccupationClass, occupation_catalogue
 
 if TYPE_CHECKING:
@@ -97,6 +97,7 @@ never load-bearing on their own.
 """
 
 
+@public
 async def occupation_duty(
     db: Database, concern: str, *, limit: int = 2, retriever: Any | None = None
 ) -> list[dict[str, Any]]:
@@ -134,6 +135,7 @@ async def occupation_duty(
     ]
 
 
+@public
 async def occupation_classes() -> list[dict[str, object]]:
     """
     List the occupations this insurer classifies, with the class each carries.

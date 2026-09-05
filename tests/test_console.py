@@ -398,7 +398,7 @@ def _transcript_db() -> _RoutedDB:
              "citations": ["art.3"], "created_at": datetime.now(UTC)},
         ],
         "llm_usage": [{"turn_id": "t-1", "scenario": "explain_cover", "latency_ms": 1300, "calls": 2}],
-        "FROM clause": [{"product_id": "P1", "clause_id": "art.3", "heading": "契約撤銷權", "page": 2,
+        "FROM contract_clause": [{"product_id": "P1", "clause_id": "art.3", "heading": "契約撤銷權", "page": 2,
                          "product_name": "某終身醫療"}],
     })
 
