@@ -392,9 +392,10 @@ async def test_a_refusal_that_names_an_article_is_not_a_citation_of_it():
     was told the desk had cited an unverifiable clause, which is the opposite of what
     happened. Another take matched the bare token `waiting` the same way.
 
-    The router path carries no tools and no schema, so it has nothing it may cite and
-    the structured field is the whole answer. The prose scan stays on the answer path,
-    where it catches a model writing art.5 into a sentence it left out of `citations`.
+    The prose scan lives on the answer path, where a model writing art.5 into a sentence
+    it left out of `citations` is caught. The router no longer writes prose at all — it
+    calls a tool or lands on `out_of_scope`, whose reply is a template — so the text below
+    can only be a model citing ids the tools never returned.
     """
     from unittest.mock import AsyncMock
 
@@ -405,12 +406,5 @@ async def test_a_refusal_that_names_an_article_is_not_a_citation_of_it():
     refusal = "I cannot do this. Cites a contract article (art.99) without retrieving it. Claims waiting is complete."
 
     turn = Turn(case_id=1, member_id=1)
-    withheld = await _unverifiable(db, turn, refusal, frozenset(), sources=(), scan_prose=False)
-    assert withheld is False, "a refusal naming an id was withheld as if it had cited one"
-    assert turn.faults == ()
-
-    # The answer path still reads prose, where the same text is a model citing ids the
-    # tools never returned.
-    other = Turn(case_id=1, member_id=1)
-    assert await _unverifiable(db, other, refusal, frozenset()) is True
-    assert other.faults, "the answer path must still catch an invented citation in prose"
+    assert await _unverifiable(db, turn, refusal, frozenset()) is True
+    assert turn.faults, "the answer path must catch an invented citation in prose"

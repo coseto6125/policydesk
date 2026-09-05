@@ -140,6 +140,7 @@ class Provider(Protocol):
         instructions: str,
         user_input: str,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
         schema: dict[str, Any] | None = None,
         model: str | None = None,
         phase: Phase | None = None,
@@ -151,6 +152,8 @@ class Provider(Protocol):
             instructions: The system-level brief. Stable across a scenario.
             user_input: What this turn is about.
             tools: Tool schemas the model may call.
+            tool_choice: Constrains the call. `{"type": "any"}` requires a tool without
+                naming which one, so a router cannot answer from its own words.
             schema: A JSON Schema the reply must satisfy, for a structured verdict.
             model: Overrides the configured model.
             phase: Selects HTTP sampling; providers without temperature ignore it.
@@ -201,6 +204,7 @@ class OpenAIProvider:
         instructions: str,
         user_input: str,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
         schema: dict[str, Any] | None = None,
         model: str | None = None,
         phase: Phase | None = None,
@@ -212,6 +216,8 @@ class OpenAIProvider:
             instructions: The system-level brief.
             user_input: What this turn is about.
             tools: Tool schemas the model may call.
+            tool_choice: Constrains the call. `{"type": "any"}` requires a tool without
+                naming which one, so a router cannot answer from its own words.
             schema: A JSON Schema the reply must satisfy.
             model: Overrides the configured model.
             phase: Selects the HTTP sampling temperature when supplied.
@@ -234,6 +240,11 @@ class OpenAIProvider:
         }
         if tools:
             body["tools"] = tools
+            if tool_choice:
+                # This API spells the same constraint as a bare string. `any` on the
+                # Anthropic path and `required` here both mean "call one of these, and
+                # you choose which".
+                body["tool_choice"] = "required" if tool_choice.get("type") == "any" else tool_choice
         if phase is not None:
             body["temperature"] = phase.temperature
         if schema:
@@ -304,6 +315,7 @@ class ScriptedProvider:
         instructions: str,
         user_input: str,
         tools: list[dict[str, Any]] | None = None,  # noqa: ARG002  - Protocol shape; a script has no tools to offer
+        tool_choice: dict[str, Any] | None = None,  # noqa: ARG002 - Protocol shape; a script calls nothing
         schema: dict[str, Any] | None = None,  # noqa: ARG002  - Protocol shape; a script cannot be constrained
         model: str | None = None,
         phase: Phase | None = None,  # noqa: ARG002 - Scripted answers do not sample.
@@ -485,6 +497,7 @@ class CodexCliProvider:
         instructions: str,
         user_input: str,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,  # noqa: ARG002 - The CLI builds calls from free text; it cannot be constrained.
         schema: dict[str, Any] | None = None,
         model: str | None = None,
         phase: Phase | None = None,  # noqa: ARG002 - Codex CLI has no temperature control.
@@ -850,6 +863,7 @@ class AnthropicProvider:
         instructions: str,
         user_input: str,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
         schema: dict[str, Any] | None = None,
         model: str | None = None,
         phase: Phase | None = None,  # noqa: ARG002 - see below; the SDK takes no temperature.
@@ -861,6 +875,8 @@ class AnthropicProvider:
             instructions: The system-level brief, sent as the top-level `system`.
             user_input: What this turn is about, sent as the one user message.
             tools: Tool schemas the model may call, rewritten by `_anthropic_tool`.
+            tool_choice: Forwarded as sent. `{"type": "any"}` makes a tool call the only
+                shape the reply may take.
             schema: A JSON Schema the reply must satisfy, enforced by `output_config`.
             model: Overrides the configured model.
             phase: Ignored. `Phase.temperature` is deliberately not forwarded on this
@@ -888,6 +904,8 @@ class AnthropicProvider:
         }
         if tools:
             body["tools"] = [_anthropic_tool(tool) for tool in tools]
+            if tool_choice:
+                body["tool_choice"] = tool_choice
         if schema:
             body["output_config"] = {"format": {"type": "json_schema", "schema": _anthropic_schema(schema)}}
 

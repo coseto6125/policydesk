@@ -42,14 +42,15 @@ from policydesk.agent.scenario import (
     IDENTITY_NEXT_STEP,
     LOOKUP_SCOPE,
     OPENERS,
+    OUT_OF_SCOPE,
     POLICY_CLARIFICATION,
     PUBLIC_OPENERS,
     ROUTER_INSTRUCTIONS,
     WRITING,
     Emit,
     Scenario,
+    closing_rules,
     tool_schema,
-    untrusted,
 )
 from policydesk.bootloader import logger
 from policydesk.llm.pricing import cost
@@ -229,7 +230,7 @@ def reachable(stage: str) -> tuple[Scenario, ...]:
 
 async def _route(
     provider: Provider, db: Database, turn: Turn, text: str, past: str, stage: str, fence: str
-) -> tuple[Scenario | None, dict[str, str]]:
+) -> tuple[Scenario, dict[str, str]]:
     """
     Ask the model which scenario this turn belongs to, and with what.
 
@@ -244,8 +245,16 @@ async def _route(
             and stop.
 
     Returns:
-        The chosen scenario and the parameters the model filled from the conversation,
-        or (None, {}) when nothing fits.
+        The chosen scenario and the parameters the model filled from the conversation.
+
+    **The model must call a tool.** `tool_choice` is `any`, so it has no way to answer
+    from its own words, and every turn resolves to a named scenario. A message the desk
+    does not serve lands on `out_of_scope`, whose reply is a template.
+
+    A provider that answers anyway lands there too. The codex path builds calls from free
+    text and cannot be constrained, so the fallback is `out_of_scope` rather than the
+    model's own words: that reply has no row behind it, which is where 等待期是 30 天 and
+    核准完成 were both written.
 
     The arguments are the point. A scenario declares the parameters it needs, the model
     collects them, and until they were returned from here they were discarded — the
@@ -256,20 +265,26 @@ async def _route(
     offered = {s.name: s for s in reachable(stage)}
     completion = await provider.complete(
         phase=Phase.ROUTE,
-        # WRITING belongs here too. This call answers directly whenever no scenario fits
-        # — `ROUTER_INSTRUCTIONS` says so in as many words — and that answer goes to the
-        # customer at `run_turn`'s `scenario is None` branch. It is also the path where the
-        # model has the most freedom to write a long unstructured paragraph, since no
-        # scenario injection is shaping it.
+        # WRITING belongs here because `out_of_scope` may be entered from this call and
+        # its template is the whole reply. No scenario injection shapes this brief.
         # `untrusted` closes the brief and carries the language line inside it, so the
         # fence rule is the last thing the model reads. A guard in the middle is one the
         # message can talk over, because later text wins the slot they both compete for.
         instructions=(
             f"{LOOKUP_SCOPE}{ROUTER_INSTRUCTIONS}\n\n{WRITING}"
-            f"\n\n{untrusted(fence, i18n.hint(turn.locale))}"
+            f"\n\n{closing_rules(fence, i18n.hint(turn.locale), sourced=False)}"
         ),
         user_input=f"{past}<{fence}>\n{text}\n</{fence}>",
         tools=[tool_schema(s) for s in offered.values()],
+        # `any` means "call one of these, and you pick which". It removes the router's
+        # free-text branch, which is where both live fabrications were written: 等待期是
+        # 30 天 for a contract whose art.4 says 91 days, and 核准完成 for a case still at
+        # review. Neither had a row behind it, because no tool had run.
+        #
+        # It needs `out_of_scope` on the offer list to be safe. Forced to choose with only
+        # lookups available, the model routed 今天天氣如何 to `product_clauses` — measured
+        # on the live endpoint.
+        tool_choice={"type": "any"},
     )
     await _record(db, turn, Phase.ROUTE, completion, None)
 
@@ -287,8 +302,8 @@ async def _route(
                 logger.warning("router_arguments_unreadable", call=str(call)[:200])
                 args = {}
             return scenario, {k: str(v) for k, v in args.items() if isinstance(args, dict)}
-    turn.reply = completion.text
-    return None, {}
+    logger.info("router_unconstrained", case_id=turn.case_id, provider=completion.provider)
+    return OUT_OF_SCOPE, {}
 
 
 async def _blank() -> str:
@@ -439,7 +454,12 @@ async def _gather(
         # so `permitted` never sees them and they need saying out loud. With no book there
         # is no citable clause either, which is the right answer: a clause id in a reply
         # to an unverified session is one nothing can check.
-        facts["_identity_required"] = True
+        #
+        # A scenario that declares no tool reads nothing, so nothing about it is withheld
+        # and the flag is false. `out_of_scope` is the one: it answers from a template,
+        # and the unconditional flag made an unverified visitor who asked about the
+        # weather read 查詢您名下的保單資料前，需要先核對您的身分.
+        facts["_identity_required"] = bool(scenario.tools)
         facts["_allowed_clauses"] = frozenset()
         product_ids: list[str] = []
         pending: dict[str, Any] = {}
@@ -748,30 +768,6 @@ async def run_turn(
         turn.reply = "櫃台的語言服務目前無回應，請稍候再試，或改由專人與您聯繫。"
         return turn
 
-    if scenario is None:
-        if not confirmed:
-            # The chips a refused customer sees must be things this desk can still answer.
-            # `OPENERS` is four questions about their own book, so offering them right after
-            # 請提供身分證字號 hands back the question that was just refused.
-            turn.quick_replies = PUBLIC_OPENERS
-        # Filtered after the swap, not before it. The echo filter used to run on the line
-        # above and have its result thrown away by `PUBLIC_OPENERS` — so it protected every
-        # path except the one where a refused customer is handed a fixed list, which is
-        # exactly where a stale chip lands. Measured: 你們有哪些商品？ came back as a chip
-        # under the third reply to that same question.
-        turn.quick_replies = _fresh(turn.quick_replies, _asked(messages))
-        # The router answers directly when nothing fits — `ROUTER_INSTRUCTIONS` says so in
-        # as many words — and that answer used to be the one reply nothing checked. It has
-        # no tools behind it, so no clause id is allowed and any citation in it is one the
-        # model invented.
-        # Structured citations only. This reply has no tools behind it and no schema, so
-        # there is nothing it may cite — and what it does do is name an id while refusing
-        # to use one. The prompt forbids stating a figure or an article here; this is the
-        # half that does not depend on the model having followed it.
-        await _unverifiable(db, turn, turn.reply, frozenset(), sources=(), scan_prose=False)
-        _withhold_promise(turn, case_id, None)
-        return turn
-
     scenario_owner = import_module(scenario.tools_module) if scenario.tools_module else None
     if not confirmed and tools.reads_identity(scenario.tools, owner=scenario_owner):
         # The gate withholds the member queries, not the conversation. Refusing the whole
@@ -847,7 +843,7 @@ async def run_turn(
         # topic; a scenario that needs a figure the rows do not carry sets `calculator`.
         completion = await provider.complete(
             phase=Phase.ANSWER,
-            instructions=f"{instructions}\n\n{untrusted(fence, i18n.hint(turn.locale))}",
+            instructions=f"{instructions}\n\n{closing_rules(fence, i18n.hint(turn.locale), sourced=True)}",
             user_input=f"{past}<{fence}>\n{text}\n</{fence}>\n\n# Tool results\n{material}",
             schema=_answer_schema(turn.clause_sources, calculator=scenario.calculator),
         )
@@ -1064,7 +1060,7 @@ def _withhold_promise(turn: Turn, case_id: int, scenario: str | None) -> bool:
 
 async def _unverifiable(
     db: Database, turn: Turn, text: str, allowed: frozenset[str], *, sources: tuple[str, ...] | None = None,
-    quoted_fields: tuple[_ProvisionQuote, ...] = (), scan_prose: bool = True,
+    quoted_fields: tuple[_ProvisionQuote, ...] = (),
 ) -> bool:
     """
     Withhold a reply whose citations do not resolve.
@@ -1097,16 +1093,16 @@ async def _unverifiable(
         source_faults = tuple(f"source:{key}" for key in dict.fromkeys(sources) if key not in available)
         selected = tuple(available[key] for key in dict.fromkeys(sources) if key in available)
         allowed = frozenset(clause for _, clause in selected)
-    # Prose is scanned on the answer path, where it is a second line rather than the
-    # only one: a model that writes art.5 into a sentence without listing it in
-    # `citations` is caught here, and the enum alone does not stop that.
+    # Prose is scanned as a second line rather than the only one: a model that writes
+    # art.5 into a sentence without listing it in `citations` is caught here, and the enum
+    # alone does not stop that.
     #
-    # It is not scanned where the reply may name an id in order to refuse it. A refusal
-    # reading 「Cites a contract article (art.99) without retrieving it」 was read as a
-    # citation of art.99, so a correct refusal was withheld and the customer was told
-    # the desk had cited an unverifiable clause. It had not. The same match fired on the
-    # bare token `waiting` in another refusal.
-    found = _CITATION.findall(text) if scan_prose else ()
+    # This ran on the router's own words too, and read a refusal reading 「Cites a contract
+    # article (art.99) without retrieving it」 as a citation of art.99 — withholding a
+    # correct refusal and telling the customer the desk had cited an unverifiable clause.
+    # It had not. That path is gone: the router calls a tool or lands on `out_of_scope`,
+    # and neither writes prose here.
+    found = _CITATION.findall(text)
     cited = tuple(dict.fromkeys([*found, *(clause for _, clause in selected)]))
     subject = {key: value for key, value in turn.clause_texts.items() if key in (sources or ())}
     checked = recheck(

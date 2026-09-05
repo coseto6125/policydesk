@@ -704,7 +704,13 @@ async def test_an_unverified_session_runs_no_member_query(scenario):
         db, scenario, turn, today=date(2026, 8, 29),
         params={p.name: p.example or "測試" for p in scenario.params}, confirmed=False,
     )
-    assert facts.get("_identity_required") is True, f"{scenario.name} did not mark the answer partial"
+    # A scenario that declares a tool had that read withheld, so its answer is partial and
+    # says so. One that declares none read nothing, so nothing about it was withheld —
+    # `out_of_scope` answers from a template, and marking it partial made an unverified
+    # visitor who asked about the weather read 請提供您的身分證字號.
+    assert facts.get("_identity_required") is bool(scenario.tools), (
+        f"{scenario.name} marked the answer partial against what it reads"
+    )
     assert facts.get("_allowed_clauses") == frozenset(), (
         f"{scenario.name} offered clause ids nothing can check"
     )

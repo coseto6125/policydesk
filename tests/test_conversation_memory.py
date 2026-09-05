@@ -98,7 +98,7 @@ def test_the_router_returns_what_it_collected():
 
     source = Path("src/policydesk/agent/executor.py").read_text()
     body = source[source.index("async def _route"):source.index("def _as_budget")]
-    assert "tuple[Scenario | None, dict[str, str]]" in body
+    assert "tuple[Scenario, dict[str, str]]" in body
     assert 'call.get("arguments")' in body
 
 
