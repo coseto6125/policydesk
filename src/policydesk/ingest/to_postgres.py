@@ -46,14 +46,14 @@ _BANDS: dict[str, tuple[int, int, int]] = {
     "other": (0, 80, 6),
 }
 
-_UNITS: dict[str, tuple[str, int, int]] = {
-    # line: (unit_label, min annual premium per unit, max)
-    "health": ("每日 1,000 元住院日額", 1200, 4800),
-    "accident": ("每 100 萬元保額", 900, 3600),
-    "life": ("每 100 萬元保額", 6000, 42000),
-    "annuity": ("每 10 萬元年金", 8000, 30000),
-    "investment": ("每 10 萬元保額", 5000, 25000),
-    "other": ("每單位", 1000, 5000),
+_UNITS: dict[str, tuple[str, int, int, int]] = {
+    # line: (demo unit label, numeric pricing basis, min annual premium, max)
+    "health": ("每 1,000 元保額", 1_000, 1200, 4800),
+    "accident": ("每 100 萬元保額", 1_000_000, 900, 3600),
+    "life": ("每 100 萬元保額", 1_000_000, 6000, 42000),
+    "annuity": ("每 10 萬元年金", 100_000, 8000, 30000),
+    "investment": ("每 10 萬元保額", 100_000, 5000, 25000),
+    "other": ("每單位", 1, 1000, 5000),
 }
 
 
@@ -72,7 +72,7 @@ def _stable_premium(product_id: str, line: str) -> Decimal:
         complaint that names neither the column nor the type it refused.
 
     """
-    _, low, high = _UNITS.get(line, _UNITS["other"])
+    _, _, low, high = _UNITS.get(line, _UNITS["other"])
     spread = high - low
     offset = int.from_bytes(blake2b(product_id.encode(), digest_size=4).digest(), "big") % spread
     return Decimal(round((low + offset) / 10) * 10)
@@ -218,7 +218,7 @@ async def build_catalog(db: Database) -> int:
     for row in rows:
         line = row["line"]
         age_min, age_max, max_occupation = _BANDS.get(line, _BANDS["other"])
-        unit_label = _UNITS.get(line, _UNITS["other"])[0]
+        unit_label, rate_unit_amount, _, _ = _UNITS.get(line, _UNITS["other"])
         entries.append(
             (
                 row["product_id"],
@@ -229,6 +229,8 @@ async def build_catalog(db: Database) -> int:
                 unit_label,
                 row["attachment"] == "rider",
                 True,
+                "synthetic_demo",
+                rate_unit_amount,
             )
         )
 
@@ -256,19 +258,24 @@ async def build_catalog(db: Database) -> int:
     # spacing until that changed.
     await db.execute_many(
         """INSERT INTO catalog_entry
-             (product_id, issue_age_min, issue_age_max, max_occupation, unit_premium, unit_label, requires_main, on_sale)
-           VALUES ($1::text,$2::int,$3::int,$4::int,$5::numeric,$6::text,$7::bool,$8::bool)
+             (product_id, issue_age_min, issue_age_max, max_occupation, unit_premium, unit_label, requires_main, on_sale,
+              data_origin, rate_unit_amount)
+           VALUES ($1::text,$2::int,$3::int,$4::int,$5::numeric,$6::text,$7::bool,$8::bool,$9::text,$10::int)
            ON CONFLICT (product_id) DO UPDATE SET
              issue_age_min = excluded.issue_age_min, issue_age_max = excluded.issue_age_max,
              max_occupation = excluded.max_occupation, unit_premium = excluded.unit_premium,
-             unit_label = excluded.unit_label, requires_main = excluded.requires_main
-           WHERE (catalog_entry.issue_age_min, catalog_entry.issue_age_max,
+             unit_label = excluded.unit_label, requires_main = excluded.requires_main,
+             data_origin = excluded.data_origin, rate_unit_amount = excluded.rate_unit_amount
+           WHERE catalog_entry.data_origin IN ('unknown', 'synthetic_demo')
+             AND (catalog_entry.issue_age_min, catalog_entry.issue_age_max,
                   catalog_entry.max_occupation, catalog_entry.unit_premium,
-                  catalog_entry.unit_label, catalog_entry.requires_main)
+                  catalog_entry.unit_label, catalog_entry.requires_main,
+                  catalog_entry.data_origin, catalog_entry.rate_unit_amount)
                  IS DISTINCT FROM
                  (excluded.issue_age_min, excluded.issue_age_max,
                   excluded.max_occupation, excluded.unit_premium,
-                  excluded.unit_label, excluded.requires_main)""",
+                  excluded.unit_label, excluded.requires_main,
+                  excluded.data_origin, excluded.rate_unit_amount)""",
         entries,
     )
     logger.info("catalog_built", entries=len(entries))

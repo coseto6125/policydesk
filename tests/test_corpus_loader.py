@@ -44,10 +44,89 @@ async def test_copy_corpus_legacy_ideographs_are_normalized_before_postgres(tmp_
     assert clause_call.args[1][0][3:5] == ("申領", "受益人（Ａ）：文件。")
 
 
+async def test_build_catalog_health_sum_insured_does_not_invent_daily_benefit():
+    db = AsyncMock()
+    db.fetch.return_value = [{"product_id": "major-illness", "line": "health", "attachment": "main", "clauses": 20}]
+    await build_catalog(db)
+    entry = db.execute_many.call_args.args[1][0]
+    assert insured_amount(1000, entry[5]) == "1,000 元"
+    assert entry[8] == "synthetic_demo"
+    assert entry[9] == 1000
 
 
+async def test_build_catalog_declared_source_is_not_overwritten_by_demo():
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from policydesk.core.db import Database
+
+    db = Database()
+    product_id = f"catalog-source-test-{uuid4().hex}"
+    try:
+        await db.execute(
+            """INSERT INTO product (product_id,doc_sha,insurer,name,line,attachment,document_kind)
+               VALUES ($1::text,$1::text,'test','source fixture','health','main','contract')""",
+            [product_id],
+        )
+        await db.execute_many(
+            """INSERT INTO clause (product_id,clause_id,kind,heading,verbatim,page)
+               VALUES ($1::text,$2::text,'grant','fixture','fixture',1)""",
+            [(product_id, f"art.{number}") for number in range(1, 11)],
+        )
+        await db.execute(
+            """INSERT INTO catalog_entry
+               (product_id,issue_age_min,issue_age_max,max_occupation,unit_premium,unit_label,
+                data_origin,rate_unit_amount,on_sale)
+               VALUES ($1::text,10,60,2,$2::numeric,'fixture unit','curated_fixture',100,false)""",
+            [product_id, Decimal(123)],
+        )
+        before = await db.fetch_one("SELECT * FROM catalog_entry WHERE product_id=$1::text", [product_id])
+        await build_catalog(db)
+        assert await db.fetch_one("SELECT * FROM catalog_entry WHERE product_id=$1::text", [product_id]) == before
+    finally:
+        await db.execute("DELETE FROM product WHERE product_id=$1::text", [product_id])
+        await db.close()
 
 
+async def test_source_views_brochure_and_unknown_never_become_contract_evidence():
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from policydesk.agent.tools import _clauses_by_id, suitable_products
+    from policydesk.core.db import Database
+
+    db = Database()
+    prefix = f"source-test-{uuid4().hex}"
+    ids = [f"{prefix}-{kind}" for kind in ("contract", "brochure", "unknown")]
+    try:
+        await db.execute_many(
+            """INSERT INTO product (product_id,doc_sha,insurer,name,line,attachment,document_kind)
+               VALUES ($1::text,$1::text,'test','source fixture','life','main',$2::text)""",
+            list(zip(ids, ["contract", "brochure", "unknown"], strict=True)),
+        )
+        await db.execute_many(
+            """INSERT INTO clause (product_id,clause_id,kind,heading,verbatim,page)
+               VALUES ($1::text,'art.1','grant','保障範圍','條款原文',1)""",
+            [(product,) for product in ids],
+        )
+        await db.execute_many(
+            """INSERT INTO catalog_entry
+               (product_id,issue_age_min,issue_age_max,max_occupation,unit_premium,unit_label)
+               VALUES ($1::text,99,99,6,$2::numeric,'每單位')""",
+            [(product, Decimal(1)) for product in ids],
+        )
+        evidence = await _clauses_by_id(db, [(product, "art.1") for product in ids])
+        assert [row["product_id"] for row in evidence] == ids[:1]
+        offers = await suitable_products(db, insurance_age=99, occupation_class=1, budget=1, line="life")
+        assert [row["product_id"] for row in offers] == ids[:1]
+        assert offers[0]["data_origin"] == "unknown"
+        assert offers[0]["rate_unit_amount"] is None
+        await db.execute("UPDATE product SET document_kind='brochure' WHERE product_id=$1::text", [ids[0]])
+        assert await _clauses_by_id(db, [(ids[0], "art.1")]) == []
+        assert await db.fetch_val("SELECT count(*) FROM clause WHERE product_id=ANY($1::text[])", [ids]) == 3
+    finally:
+        await db.execute("DELETE FROM product WHERE product_id=ANY($1::text[])", [ids])
+        await db.close()
 
 
 def test_connect_legacy_corpus_adds_unknown_source_kind_without_losing_product(tmp_path):

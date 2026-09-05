@@ -37,47 +37,17 @@ on every turn, because a figure headed 試算 and read as final is a complaint w
 happen.
 """
 
-import re
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
 from policydesk.agent import tools
-from policydesk.agent.tools import public
 from policydesk.agent.scenario_base import Param, Scenario, gather_tools
-from policydesk.agent.tools import LINES
+from policydesk.agent.tools import LINES, public
 from policydesk.bootloader import logger
 from policydesk.skills.calculator import CalculationError, calculate
 
 if TYPE_CHECKING:
     from policydesk.core.db import Database
-
-_WAN = re.compile(r"([\d,]+)\s*萬元")
-_YUAN = re.compile(r"([\d,]+)\s*元")
-
-
-def _unit_base(label: str) -> int:
-    """
-    Read the NT dollar amount one `unit_premium` buys, out of the label's own text.
-
-    Args:
-        label: `catalog_entry.unit_label`, e.g. `每 10 萬元保額` or `每單位`.
-
-    Returns:
-        100_000 for 每 10 萬元保額, 1_000_000 for 每 100 萬元保額, 1_000 for 每日
-        1,000 元住院日額, 1 for 每單位 — where the whole `unit_premium` is already
-        the price and no amount scales it.
-
-    萬 is tried before a bare 元, because 每 10 萬元保額 contains a 元 of its own
-    right after 萬 — matching that one first would read the label as costing NT$1
-    per unit and multiply a real rate by ten thousand.
-
-    """
-    if m := _WAN.search(label):
-        return int(m.group(1).replace(",", "")) * 10_000
-    if m := _YUAN.search(label):
-        return int(m.group(1).replace(",", ""))
-    return 1
-
 
 def _as_amount(raw: str) -> int | None:
     """
@@ -194,6 +164,7 @@ async def product_rate(
     wanted = keyword.strip()
     rows = await db.fetch(
         """SELECT p.product_id, p.name, p.line, p.attachment, ce.unit_premium, ce.unit_label,
+                  ce.data_origin, ce.rate_unit_amount,
                   ce.issue_age_min, ce.issue_age_max, ce.max_occupation, ce.requires_main,
                   count(*) OVER () AS matching_in_line
            FROM sale_catalog ce JOIN product p USING (product_id)
@@ -210,9 +181,10 @@ async def product_rate(
         row = dict(row)
         # A rider has no standalone premium to estimate — attaching one here is the
         # exact thing this scenario exists to stop the model from doing on its own.
-        if not row["requires_main"]:
+        unit_amount = row.get("rate_unit_amount")
+        if not row["requires_main"] and unit_amount is not None and unit_amount > 0:
             try:
-                computed = calculate(f"{row['unit_premium']} * {amount} / {_unit_base(row['unit_label'])}")
+                computed = calculate(f"{row['unit_premium']} * {amount} / {unit_amount}")
             except CalculationError as exc:
                 logger.warning("quote_estimate_failed", product_id=row["product_id"], error=str(exc))
             else:
@@ -304,7 +276,7 @@ QUOTE = Scenario(
         "matching_in_line 比回傳的列數多的時候，先講清楚符合條件的一共有幾項、這裡列的是保費最低的幾項，不要讓保戶以為只有這幾張可以選。\n"
         "你正在為保戶試算保費，這是試算，不是核保結果——"
         "職業等級、健康告知與核保結果都可能讓實際保費不同，這句話一定要說。\n\n"
-        "product_rate 回傳的 unit_premium 與 unit_label 是這張商品的公開費率，"
+        "product_rate 回傳的 unit_premium 與 unit_label 是目錄中的計價資料，"
         "estimated_premium（如果有）是照保戶想要的金額換算出來的試算金額，"
         "兩者都只能照工具回傳的數字說，不可以自己心算、估計或另外換算。\n\n"
         "requires_main 為 true 的商品是附約，沒有主約不能單獨投保，也沒有單獨的年繳保費。"
@@ -317,7 +289,7 @@ QUOTE = Scenario(
         "工具回傳 _identity_required 時，表示保戶尚未完成身分核對，所以你拿不到他的保險年齡與職業等級。"
         "此時只照 product_rate 說明費率與可投保的保險年齡範圍，"
         "接著說明要判斷是否符合他本人的條件，需要先核對身分，請他提供身分證字號。"
-        "不要憑空猜測他的年齡或職業等級。"
+        "不要憑空猜測他的年齡或職業等級。\n"
     ),
     tools=("product_rate", "member_underwriting"),
     tools_module="policydesk.agent.scenarios.quote",

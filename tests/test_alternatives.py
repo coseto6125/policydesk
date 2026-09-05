@@ -7,9 +7,44 @@ single change would reach.
 """
 
 from pathlib import Path
+from unittest.mock import AsyncMock
+
+import pytest
 
 TOOLS = Path("src/policydesk/agent/tools.py").read_text()
 EXECUTOR = Path("src/policydesk/agent/executor.py").read_text()
+
+
+@pytest.mark.parametrize(("age", "occupation", "budget", "scope"), [(80, 7, 1, "全線"), (0, 5, 1, "health")])
+async def test_alternatives_binding_preserves_queried_scope_origin(age, occupation, budget, scope):
+    from policydesk.agent.tools import alternatives
+
+    db = AsyncMock()
+    db.fetch.return_value = []
+    db.fetch_one.side_effect = [
+        {"age_max": 70, "age_min": 10, "occupation_max": 4, "cheapest": 1000,
+         "on_sale": 3, "data_origin": "synthetic_demo"},
+        {"age_max": 80, "age_min": 0, "occupation_max": 6, "cheapest": 500,
+         "on_sale": 10, "data_origin": "unknown"},
+    ]
+    result = await alternatives(db, insurance_age=age, occupation_class=occupation, budget=budget, line="health")
+    assert len(result["binding"]) == 3
+    for binding in result["binding"]:
+        if binding["條件"] == "職業等級":
+            assert binding["範圍"] == scope
+            assert binding["data_origin"] == ("unknown" if scope == "全線" else "synthetic_demo")
+        else:
+            assert binding["data_origin"] == "synthetic_demo"
+
+
+async def test_alternatives_empty_catalog_has_no_binding():
+    from policydesk.agent.tools import alternatives
+
+    db = AsyncMock()
+    db.fetch.return_value = []
+    db.fetch_one.return_value = {"on_sale": 0, "data_origin": "unknown"}
+    result = await alternatives(db, insurance_age=80, occupation_class=7, budget=1, line="health")
+    assert result == {"binding": [], "openings": []}
 
 
 def test_each_probe_drops_exactly_one_predicate():

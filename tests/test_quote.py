@@ -4,10 +4,11 @@
 A quote is not a policy. The two failures that matter here both dress a number up as
 one anyway: quoting a rider's unit rate as if it were a premium someone could actually
 pay on its own, and quoting a product outside the customer's insurable age band without
-saying so. Both are asserted against the real catalog rather than a fixture, because the
-`unit_label` text this module parses is the government's own vocabulary, not a shape
-this test invented.
+saying so. Integration tests use the generated demo catalogue; unit tests ensure
+calculation uses its structured numeric basis rather than interpreting a text label.
 """
+
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -16,7 +17,6 @@ from policydesk.agent.scenarios.quote import (
     QUOTE,
     TOOLS,
     _as_amount,
-    _unit_base,
     gather,
     product_rate,
 )
@@ -34,18 +34,91 @@ async def db():
     await pool.close()
 
 
-def test_unit_base_reads_the_five_labels_the_catalog_actually_uses():
-    assert _unit_base("每 10 萬元保額") == 100_000
-    assert _unit_base("每 100 萬元保額") == 1_000_000
-    assert _unit_base("每日 1,000 元住院日額") == 1_000
-    assert _unit_base("每 10 萬元年金") == 100_000
-    assert _unit_base("每單位") == 1
+async def test_standing_brief_floor_price_unit_and_origin_share_one_catalog_row(db):
+    from datetime import date
+
+    member = await db.fetch_one("SELECT member_id, birth_date, occupation_class FROM member ORDER BY member_id LIMIT 1")
+    today = date(2026, 9, 5)
+    age = tools.insurance_age(member["birth_date"], today)
+    brief = await tools.standing_brief(db, member["member_id"], today=today)
+    rows = await db.fetch(
+        """SELECT p.product_id, p.line, ce.unit_premium, ce.unit_label, ce.data_origin, ce.rate_unit_amount
+           FROM sale_catalog ce JOIN product p USING (product_id)
+           WHERE ce.on_sale AND $1::int BETWEEN ce.issue_age_min AND ce.issue_age_max
+             AND $2::int <= ce.max_occupation""",
+        [age, member["occupation_class"]],
+    )
+    for floor in brief["可投保商品線最低年繳保費"]:
+        cheapest = min((row for row in rows if row["line"] == floor["線別"]),
+                       key=lambda row: (row["unit_premium"], row["product_id"]))
+        assert floor == {"線別": cheapest["line"], "最低": int(cheapest["unit_premium"]),
+                         "單位": cheapest["unit_label"], "data_origin": cheapest["data_origin"],
+                         "rate_unit_amount": cheapest["rate_unit_amount"]}
 
 
-def test_unit_base_tries_wan_before_the_bare_yuan_inside_it():
-    # 每 10 萬元保額 contains a 元 of its own right after 萬 — matching that one first
-    # would read the label as costing NT$1 per unit.
-    assert _unit_base("每 10 萬元保額") != 10
+async def test_alternatives_real_catalog_binding_includes_origin(db):
+    result = await tools.alternatives(db, insurance_age=100, occupation_class=7, budget=1, line="health")
+    assert result["binding"]
+    assert all(binding["data_origin"] in {"synthetic_demo", "unknown"} for binding in result["binding"])
+
+
+CATALOG_ROWS = """WITH product(product_id, line) AS (VALUES ('cheap', 'health'), ('other', 'health')),
+sale_catalog(product_id, unit_premium, unit_label, data_origin, rate_unit_amount,
+             on_sale, issue_age_min, issue_age_max, max_occupation) AS (
+    VALUES ('cheap', 1::numeric, 'Z unit', 'synthetic_demo', 1000, true, 0, 70, 4),
+           ('other', 2::numeric, 'A unit', 'unknown', 100, true, 0, 75, 6))
+"""
+
+
+async def test_standing_brief_mixed_units_keeps_cheapest_product_metadata(db):
+    from datetime import date
+
+    pool = AsyncMock()
+    pool.fetch_one.return_value = {"birth_date": date(1990, 1, 1), "sex": "female",
+                                  "occupation": "test", "occupation_class": 1}
+
+    async def fetch(sql, params):
+        if "FROM sale_catalog" in sql:
+            return await db.fetch(CATALOG_ROWS + sql, params)
+        return []
+
+    pool.fetch.side_effect = fetch
+    brief = await tools.standing_brief(pool, 1, today=date(2026, 9, 5))
+    assert brief["可投保商品線最低年繳保費"] == [
+        {"線別": "health", "最低": 1, "單位": "Z unit", "data_origin": "synthetic_demo", "rate_unit_amount": 1000},
+    ]
+
+
+async def test_alternatives_mixed_catalog_sources_are_not_promoted_to_verified(db):
+    pool = AsyncMock()
+    pool.fetch.return_value = []
+
+    async def fetch_one(sql, params):
+        return await db.fetch_one(CATALOG_ROWS + sql, params)
+
+    pool.fetch_one.side_effect = fetch_one
+    result = await tools.alternatives(pool, insurance_age=80, occupation_class=7, budget=0, line="health")
+    assert len(result["binding"]) == 3
+    assert all(binding["data_origin"] == "unknown" for binding in result["binding"])
+
+
+@pytest.mark.parametrize("label", ["每 100 萬元保額", "住院日額", "每計畫", "label with no number"])
+async def test_product_rate_structured_basis_ignores_label(label):
+    pool = AsyncMock()
+    pool.fetch.return_value = [{"product_id": "demo", "requires_main": False, "unit_premium": 2000,
+                               "unit_label": label, "rate_unit_amount": 1000, "data_origin": "synthetic_demo"}]
+    result = await product_rate(pool, "health", amount=2000)
+    assert result[0]["estimated_premium"] == 4000
+    assert result[0]["data_origin"] == "synthetic_demo"
+
+
+@pytest.mark.parametrize("basis", [None, 0, -1])
+async def test_product_rate_missing_or_invalid_basis_returns_no_estimate(basis):
+    pool = AsyncMock()
+    pool.fetch.return_value = [{"product_id": "demo", "requires_main": False, "unit_premium": 2000,
+                               "unit_label": "每 1,000 元保額", "rate_unit_amount": basis}]
+    result = await product_rate(pool, "health", amount=2000)
+    assert "estimated_premium" not in result[0]
 
 
 def test_as_amount_reads_a_comma_separated_figure():
@@ -79,8 +152,9 @@ async def test_product_rate_estimates_the_premium_for_a_stated_amount(db):
     rows = await product_rate(db, "health", "IN 健康定期健康保險", amount=2000)
     assert rows
     row = rows[0]
-    assert row["unit_label"] == "每日 1,000 元住院日額"
-    # 2,000.00 per 1,000-元 unit, at a stated 2,000-元 daily benefit: two units.
+    assert row["data_origin"] == "synthetic_demo"
+    assert row["rate_unit_amount"] == 1000
+    # This is the demo pricing basis, not evidence of the contract's benefit type.
     assert row["estimated_premium"] == int(row["unit_premium"] * 2)
     assert row["estimated_basis"]
 
