@@ -17,3 +17,8 @@ data/bm25/
 data/vectors/current.json
 data/vectors/*/
 data/evaluations/
+
+# The vector index is a cache, not a source: `policydesk-index` rebuilds it from the
+# corpus in about six minutes, and 51 MB of float32 in every clone buys nothing a
+# rebuild does not. It ships to a deployment host directly rather than through git.
+data/vectors/
