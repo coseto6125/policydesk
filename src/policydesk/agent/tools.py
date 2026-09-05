@@ -32,9 +32,8 @@ if TYPE_CHECKING:
 _UNIT = re.compile(r"每\s*(?:日\s*)?([\d,]+)\s*(萬|)元")
 """How a `catalog_entry.unit_label` states its unit: 每 100 萬元保額, 每日 1,000 元住院日額."""
 
-DOCUMENTS_PER_PRODUCT = 2
-"""Document clauses kept per product. `_short` allows twelve rows in total, so this fits
-five products — the largest book in the corpus — with every one of them represented."""
+DOCUMENTS_PER_PRODUCT = 8
+"""Per-product retrieval budget; eight covers the observed maximum document clauses."""
 
 DOCUMENT_CHARS = 4000
 """Shared clause budget for retrieval and answer context.

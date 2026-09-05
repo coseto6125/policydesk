@@ -814,3 +814,32 @@ def test_a_reference_is_resolved_inside_its_own_contract():
 
     rows = [{"product_id": "p1", "clause_id": "art.4", "verbatim": "因第三條約定而住院。"}]
     assert _referenced(rows) == [("p1", "art.3")]
+
+
+@pytest.mark.parametrize("products", [5, 7])
+async def test_required_documents_eight_per_product_survive_prompt_context(monkeypatch, products):
+    from unittest.mock import AsyncMock, Mock
+
+    from policydesk.agent import tools
+    from policydesk.agent.executor import _short
+    from policydesk.retrieval.base import CLAUSE, Hit
+
+    ids = [f"p{number}" for number in range(products)]
+    index = Mock()
+
+    def search(query, *, corpus, scope, limit):
+        assert limit == 8
+        return [Hit(CLAUSE, f"art.{number}", scope[0], 1) for number in range(8)]
+
+    async def rows_for(db, keys):
+        return [{"product_id": product, "clause_id": clause, "verbatim": "申領文件（原文）。"}
+                for product, clause in keys]
+
+    index.search.side_effect = search
+    monkeypatch.setattr(tools, "_clauses_by_id", rows_for)
+    rows = await tools.required_documents(AsyncMock(), ids, index=index)
+    sent = _short(rows)
+    assert len(sent) == products * 8
+    assert {(row["product_id"], row["clause_id"]) for row in sent} == {
+        (product, f"art.{number}") for product in ids for number in range(8)
+    }

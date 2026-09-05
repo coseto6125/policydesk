@@ -97,7 +97,7 @@ async def test_tool_results_reach_model_as_toon_and_only_visible_sources_are_sel
     from policydesk.llm.provider import Completion
 
     facts = {"clauses": [{"product_id": f"p{number}", "clause_id": "art.6", "verbatim": "條款原文"}
-                         for number in range(15)], "_allowed_clauses": frozenset({"art.6"})}
+                         for number in range(45)], "_allowed_clauses": frozenset({"art.6"})}
     monkeypatch.setattr(executor, "_route", AsyncMock(return_value=(RECOMMEND, {})))
     monkeypatch.setattr(executor, "_gather", AsyncMock(return_value=facts))
     monkeypatch.setattr(executor.memory, "recent", AsyncMock(return_value=[]))
@@ -108,8 +108,11 @@ async def test_tool_results_reach_model_as_toon_and_only_visible_sources_are_sel
 
         async def complete(self, **kwargs):
             material = kwargs["user_input"].split("# Tool results\n", 1)[1]
-            assert material == etoon.dumps({"clauses": facts["clauses"][:12]})
-            assert "p14|art.6" not in kwargs["schema"]["properties"]["citations"]["items"]["enum"]
+            assert material == etoon.dumps({
+                "clauses": facts["clauses"][:executor.MAX_EVIDENCE_ROWS],
+                "evidence_coverage": {"complete": False, "omitted_rows": 45 - executor.MAX_EVIDENCE_ROWS},
+            })
+            assert "p44|art.6" not in kwargs["schema"]["properties"]["citations"]["items"]["enum"]
             return Completion(text='{"reply":"依條款說明。","citations":["p0|art.6"],"calculations":[]}', provider="stub")
 
     db = AsyncMock()
