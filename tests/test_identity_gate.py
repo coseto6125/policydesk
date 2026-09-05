@@ -444,7 +444,9 @@ async def ownership_members():
             product_id = await db.fetch_val(
                 "SELECT product_id FROM product WHERE attachment = 'main' AND document_kind = 'contract' ORDER BY product_id LIMIT 1"
             )
-            assert product_id is not None, "ownership integration requires an existing contract product"
+            if product_id is None:
+                # Same reason as the document fixture: no catalogue, nothing to own.
+                pytest.skip("no contract product for a member to hold")
             for ordinal in range(2):
                 name = f"auth-{nonce}-{ordinal}"
                 national_id = issue(Sex.FEMALE, (int(nonce, 16) + ordinal) % 10_000_000, "Z")
