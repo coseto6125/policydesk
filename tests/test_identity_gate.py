@@ -8,14 +8,232 @@ person on *this connection* is the customer, and it expires with the connection.
 
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from msgspec import json
 
 from policydesk.agent import tools
 from policydesk.agent.scenario import CATALOGUE, IDENTITY_PENDING
+from policydesk.gov.identity import Sex, issue
+from policydesk.web import server
+from policydesk.web.server import _answer as answer_customer
+from policydesk.web.session import Registry
 
 SERVER = Path("src/policydesk/web/server.py").read_text()
 EXECUTOR = Path("src/policydesk/agent/executor.py").read_text()
+
+
+class _CustomerSocket:
+    def __init__(self, messages):
+        self.messages = messages
+        self.sent = []
+        self.closed = False
+
+    async def __aiter__(self):
+        for message in self.messages:
+            yield json.encode(message).decode()
+
+    async def send(self, message):
+        self.sent.append(json.decode(message))
+
+    async def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def customer_handler(monkeypatch):
+    members = {
+        name: {"member_id": number, "national_id": issue(Sex.FEMALE, number), "sex": "female",
+               "birth_date": date(1985, 3, 12), "occupation": "PRIVATE_OCCUPATION", "occupation_class": 1}
+        for number, name in enumerate(("fixture-owner", "fixture-other"), 1)
+    }
+    db = AsyncMock()
+    db.fetch_one.side_effect = lambda sql, params: members.get(params[0])
+    db.fetch_val.return_value = members["fixture-owner"]["national_id"]
+    monkeypatch.setattr(server.cmd, "open_case", AsyncMock(side_effect=lambda db, member: SimpleNamespace(case_id=member)))
+    monkeypatch.setattr(server, "_last_message", AsyncMock(return_value=19))
+    monkeypatch.setattr(server, "_next_serial", AsyncMock(return_value=3))
+    snapshot = AsyncMock(return_value={
+        "case_id": 1, "member_id": 1, "national_id": members["fixture-owner"]["national_id"],
+        "policies": [{"policy_number": "PRIVATE_POLICY", "sum_insured": 234567}],
+        "audit": [{"detail": {"private": "PRIVATE_AUDIT"}}],
+    })
+    monkeypatch.setattr(server.cmd, "snapshot", snapshot)
+    answer = AsyncMock()
+    monkeypatch.setattr(server, "_answer", answer)
+    request = SimpleNamespace(app=SimpleNamespace(ctx=SimpleNamespace(db=db, registry=Registry(), desk_sockets=set())))
+    return server, request, members, answer
+
+
+async def test_customer_socket_unverified_returning_member_receives_no_personal_frames(customer_handler):
+    server, request, members, _ = customer_handler
+    socket = _CustomerSocket([{"type": "hello", "name": "fixture-owner"}])
+    await server.customer_socket(request, socket)
+    material = json.encode(socket.sent).decode()
+    for private in (members["fixture-owner"]["national_id"], "1985-03-12", "PRIVATE_OCCUPATION", "PRIVATE_POLICY", "PRIVATE_AUDIT"):
+        assert private not in material
+    assert not any(frame["type"] == "case" for frame in socket.sent)
+    assert socket.sent == [{"type": "profile", "name": "fixture-owner", "returning": True, "identity_required": True}]
+    server.cmd.snapshot.assert_not_awaited()
+
+
+async def test_customer_socket_rebinding_name_drops_previous_verification(customer_handler):
+    server, request, members, answer = customer_handler
+    socket = _CustomerSocket([
+        {"type": "hello", "name": "fixture-owner"},
+        {"type": "say", "text": members["fixture-owner"]["national_id"]},
+        {"type": "hello", "name": "fixture-other"},
+        {"type": "say", "text": "查我的保單"},
+    ])
+    await server.customer_socket(request, socket)
+    assert any(frame["type"] == "confirmed" for frame in socket.sent)
+    assert answer.call_args.kwargs["case_id"] == 2
+    assert answer.call_args.kwargs["confirmed"] is False
+    assert answer.call_args.kwargs["floor"] == 19
+
+
+async def test_customer_socket_correct_identity_releases_profile_and_replays_question(customer_handler):
+    server, request, members, answer = customer_handler
+    socket = _CustomerSocket([
+        {"type": "hello", "name": "fixture-owner"},
+        {"type": "say", "text": "查我的保單"},
+        {"type": "say", "text": members["fixture-owner"]["national_id"]},
+    ])
+    await server.customer_socket(request, socket)
+    assert [frame["type"] for frame in socket.sent] == ["profile", "profile", "confirmed", "case"]
+    assert socket.sent[1]["member_id"] == 1
+    assert socket.sent[1]["occupation"] == "PRIVATE_OCCUPATION"
+    assert socket.sent[-1]["policies"][0]["policy_number"] == "PRIVATE_POLICY"
+    first, replay = answer.await_args_list
+    assert first.kwargs["confirmed"] is False
+    assert first.kwargs["floor"] == 19
+    assert replay.kwargs == {"case_id": 1, "text": "查我的保單", "confirmed": True, "floor": 0}
+
+
+@pytest.mark.parametrize("next_name", ["fixture-owner", "fixture-other"])
+async def test_customer_socket_locked_hello_preserves_lockout(customer_handler, next_name):
+    server, request, members, _ = customer_handler
+    socket = _CustomerSocket([
+        {"type": "hello", "name": "fixture-owner"},
+        *[{"type": "say", "text": issue(Sex.MALE, 9)} for _ in range(server.MAX_CONFIRM_ATTEMPTS)],
+        {"type": "hello", "name": next_name},
+        {"type": "say", "text": members[next_name]["national_id"]},
+    ])
+    await server.customer_socket(request, socket)
+    assert not any(frame["type"] in {"confirmed", "case"} for frame in socket.sent)
+    assert "暫停" in socket.sent[-1]["text"]
+    assert request.app.ctx.db.fetch_val.await_count == server.MAX_CONFIRM_ATTEMPTS
+    assert not socket.closed, "repeating hello must not evict its own socket"
+    server.cmd.snapshot.assert_not_awaited()
+
+
+async def test_customer_socket_rename_discards_previous_pending_question(customer_handler):
+    server, request, members, answer = customer_handler
+    request.app.ctx.db.fetch_val.return_value = members["fixture-other"]["national_id"]
+    socket = _CustomerSocket([
+        {"type": "hello", "name": "fixture-owner"},
+        {"type": "say", "text": "前一人的私人問題"},
+        {"type": "hello", "name": "fixture-other"},
+        {"type": "say", "text": members["fixture-other"]["national_id"]},
+    ])
+    await server.customer_socket(request, socket)
+    assert answer.await_count == 1
+    assert socket.sent[-1]["text"].endswith("請問需要什麼協助？")
+    assert next(frame for frame in socket.sent if frame.get("member_id"))["member_id"] == 2
+
+
+async def test_customer_socket_rename_to_new_member_allows_enrol_without_old_case(customer_handler, monkeypatch):
+    server, request, members, _ = customer_handler
+    enrol = AsyncMock(return_value=(3, 2))
+    monkeypatch.setattr(server, "enrol", enrol)
+    socket = _CustomerSocket([
+        {"type": "hello", "name": "fixture-owner"},
+        {"type": "say", "text": members["fixture-owner"]["national_id"]},
+        {"type": "hello", "name": "fixture-new"},
+        {"type": "enrol", "sex": "female", "age": 35, "occupation": "內勤行政"},
+    ])
+    await server.customer_socket(request, socket)
+    assert socket.sent[-2]["type"] == "draft"
+    assert socket.sent[-1]["type"] == "profile"
+    assert socket.sent[-1]["member_id"] == 3
+    assert socket.sent[-1]["national_id"] == enrol.call_args.args[0].national_id
+    assert socket.sent[-1]["policies"] == 2
+    assert server.cmd.snapshot.await_count == 1, "new enrol must not inherit old confirmation"
+
+
+@pytest.mark.parametrize("command", ["upload", "verify"])
+async def test_customer_socket_unverified_mutation_is_denied(customer_handler, monkeypatch, command):
+    server, request, _, _ = customer_handler
+    signature = AsyncMock()
+    verification = AsyncMock()
+    monkeypatch.setattr(server.cmd, "record_signature", signature)
+    monkeypatch.setattr(server.cmd, "verify_identity", verification)
+    socket = _CustomerSocket([
+        {"type": "hello", "name": "fixture-owner"},
+        {"type": command, "document_id": 22, "filename": "signed.pdf", "national_id": issue(Sex.MALE, 9)},
+    ])
+    await server.customer_socket(request, socket)
+    assert socket.sent[-1] == {"type": "notice", "text": "請先完成身分核對。", "level": "warn"}
+    request.app.ctx.db.execute.assert_not_awaited()
+    assert request.app.ctx.db.fetch_one.await_count == 1
+    signature.assert_not_awaited()
+    verification.assert_not_awaited()
+    server.cmd.snapshot.assert_not_awaited()
+
+
+@pytest.mark.parametrize("owned", [False, True])
+async def test_customer_socket_upload_requires_document_in_confirmed_case(customer_handler, monkeypatch, owned):
+    server, request, members, _ = customer_handler
+    db = request.app.ctx.db
+    db.fetch_one.side_effect = [members["fixture-owner"], {"sha": "fixture-sha"} if owned else None]
+    signature = AsyncMock()
+    monkeypatch.setattr(server.cmd, "record_signature", signature)
+    socket = _CustomerSocket([
+        {"type": "hello", "name": "fixture-owner"},
+        {"type": "say", "text": members["fixture-owner"]["national_id"]},
+        {"type": "upload", "document_id": 22, "filename": "signed.pdf"},
+    ])
+    await server.customer_socket(request, socket)
+    sql, params = db.fetch_one.call_args.args
+    assert "AND case_id = $3::bigint" in sql
+    assert params == [22, "signed.pdf", 1]
+    if owned:
+        assert signature.await_count == len(server.cmd.SIGNING_PARTIES)
+        assert signature.call_args.kwargs["document_sha"] == "fixture-sha"
+        assert socket.sent[-1]["type"] == "case"
+    else:
+        signature.assert_not_awaited()
+        assert socket.sent[-1] == {"type": "notice", "text": "無法處理這份文件。", "level": "warn"}
+
+
+async def test_push_case_without_confirmation_reads_and_sends_nothing(customer_handler):
+    server, request, _, _ = customer_handler
+    socket = _CustomerSocket([])
+    await server._push_case(request.app.ctx.db, socket, request.app, 1)
+    assert not socket.sent
+    server.cmd.snapshot.assert_not_awaited()
+
+
+async def test_answer_public_reply_does_not_push_private_case(customer_handler, monkeypatch):
+    server, request, _, _ = customer_handler
+    request.app.ctx.provider = object()
+    request.app.ctx.clauses = None
+    turn = server.Turn(1, 1)
+    turn.reply = "可以先了解公開商品資訊。"
+    run_turn = AsyncMock(return_value=turn)
+    monkeypatch.setattr(server, "run_turn", run_turn)
+    monkeypatch.setattr(server.lang, "resolve", AsyncMock(return_value=("zh-TW", "zh-TW")))
+    monkeypatch.setattr(server.i18n, "translate", AsyncMock(return_value=[]))
+    monkeypatch.setattr(server, "cited", AsyncMock(return_value=[]))
+    socket = _CustomerSocket([])
+    await answer_customer(request, socket, request.app.ctx.db, case_id=1, text="有什麼商品", confirmed=False, floor=19)
+    assert [frame["type"] for frame in socket.sent] == ["reply"]
+    assert socket.sent[0]["text"] == turn.reply
+    assert run_turn.call_args.kwargs["confirmed"] is False
+    assert run_turn.call_args.kwargs["since"] == 19
+    server.cmd.snapshot.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

@@ -353,6 +353,8 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
     Dropped to 0 the moment 資料核對 passes, because the session has then proved it is the
     customer and the case's own history is theirs to read."""
 
+    returning_profile: dict | None = None
+
     try:
         async for raw in ws:
             if (message := _decode(raw)) is None:
@@ -360,11 +362,11 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                 continue
             match message.get("type"):
                 case "hello":
-                    name = (message.get("name") or "").strip()
-                    if not name:
+                    requested_name = (message.get("name") or "").strip()
+                    if not requested_name:
                         await ws.send(json.encode({"type": "notice", "text": "請輸入姓名", "level": "warn"}).decode())
                         continue
-                    if len(name) > MAX_NAME:
+                    if len(requested_name) > MAX_NAME:
                         await ws.send(json.encode({
                             "type": "notice", "text": f"姓名請勿超過 {MAX_NAME} 字", "level": "warn",
                         }).decode())
@@ -375,8 +377,14 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     # a socket that has since renamed itself, and the finally below
                     # only releases the last name — so the first is held until the
                     # process restarts and nobody can claim it again.
-                    if session is not None and name != previous_name:
+                    if session is not None:
                         registry.release(previous_name, session)
+                    name = requested_name
+                    confirmed = False
+                    case_id = member_id = None
+                    pending_question = returning_profile = None
+                    floor = 0
+                    # Attempts and lockout belong to the socket, not the selected name.
                     session = await registry.claim(name, ws.send, ws.close)
                     previous_name = name
 
@@ -399,12 +407,10 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         # Everything already on this case belongs to the connection that
                         # wrote it, not to this one.
                         floor = await _last_message(db, case_id)
-                        await ws.send(json.encode({
+                        returning_profile = {
                             "type": "profile",
                             "name": name,
-                            # Masked. A returning session has proved nothing yet, and
-                            # sending the number to the browser before the check is
-                            # sending the answer along with the question.
+                            # Sent only after this connection completes the check.
                             "national_id": _mask(existing["national_id"]),
                             "sex": existing["sex"],
                             "birth_date": existing["birth_date"].isoformat(),
@@ -413,8 +419,11 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                             "occupation": existing["occupation"],
                             "occupation_class": existing["occupation_class"],
                             "returning": True,
+                        }
+                        await ws.send(json.encode({
+                            "type": "profile", "name": name, "returning": True,
+                            "identity_required": True,
                         }).decode())
-                        await _push_case(db, ws, request.app, case_id)
                         continue
 
                     draft = generate(name, await _next_serial(db))
@@ -464,7 +473,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         "email": person.email,
                         "policies": written,
                     }).decode())
-                    await _push_case(db, ws, request.app, case_id)
+                    await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
 
                 case "say" if case_id is not None and not confirmed and NATIONAL_ID.fullmatch(
                     (message.get("text") or "").strip()
@@ -535,8 +544,11 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     # theirs — including what they said before the reload.
                     floor = 0
                     logger.info("identity_confirmed", case_id=case_id, attempts=attempts)
+                    if returning_profile is not None:
+                        await ws.send(json.encode(returning_profile).decode())
+                        returning_profile = None
                     await ws.send(json.encode({"type": "confirmed"}).decode())
-                    await _push_case(db, ws, request.app, case_id)
+                    await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
 
                     if not pending_question:
                         await ws.send(json.encode({
@@ -563,16 +575,25 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         # attempts cannot overwrite it — they never reach this branch.
                         pending_question = text
 
-                case "upload" if case_id is not None:
+                case "upload" | "verify" if case_id is not None and not confirmed:
+                    await ws.send(json.encode({
+                        "type": "notice", "text": "請先完成身分核對。", "level": "warn",
+                    }).decode())
+
+                case "upload" if case_id is not None and confirmed:
                     document_id = int(message.get("document_id") or 0)
                     filename = (message.get("filename") or "").strip()
-                    await db.execute(
-                        "UPDATE case_document SET uploaded_name = $2::text WHERE document_id = $1::bigint",
-                        [document_id, filename],
+                    document = await db.fetch_one(
+                        """UPDATE case_document SET uploaded_name = $2::text
+                           WHERE document_id = $1::bigint AND case_id = $3::bigint RETURNING sha""",
+                        [document_id, filename, case_id],
                     )
-                    sha = await db.fetch_val(
-                        "SELECT sha FROM case_document WHERE document_id = $1::bigint", [document_id]
-                    )
+                    if document is None:
+                        await ws.send(json.encode({
+                            "type": "notice", "text": "無法處理這份文件。", "level": "warn",
+                        }).decode())
+                        continue
+                    sha = document["sha"]
                     for party in cmd.SIGNING_PARTIES:
                         outcome = await cmd.record_signature(
                             db, case_id, document_id=document_id, party=party, document_sha=sha or ""
@@ -583,9 +604,9 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                             "text": f"尚有 {len(outcome.missing)} 份文件未簽署",
                             "level": "info",
                         }).decode())
-                    await _push_case(db, ws, request.app, case_id)
+                    await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
 
-                case "verify" if case_id is not None:
+                case "verify" if case_id is not None and confirmed:
                     national_id = (message.get("national_id") or "").strip()
                     started = datetime.now(UTC)
                     result = verify(national_id)
@@ -596,7 +617,7 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                     )
                     if isinstance(outcome, cmd.Refusal):
                         await ws.send(json.encode({"type": "notice", "text": outcome.reason, "level": "warn"}).decode())
-                    await _push_case(db, ws, request.app, case_id)
+                    await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
 
     except (ConnectionError, asyncio.CancelledError):
         logger.info("customer_socket_closed", name=name)
@@ -605,7 +626,9 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
             registry.release(name, session)
 
 
-async def _push_case(db: Database, ws: Websocket, application: Sanic, case_id: int) -> None:
+async def _push_case(
+    db: Database, ws: Websocket, application: Sanic, case_id: int, *, confirmed: bool = False,
+) -> None:
     """
     Send the case to the customer and to every desk pane.
 
@@ -614,8 +637,11 @@ async def _push_case(db: Database, ws: Websocket, application: Sanic, case_id: i
         ws: The customer's socket.
         application: The running app.
         case_id: Which case.
+        confirmed: Whether this connection may receive the case.
 
     """
+    if not confirmed:
+        return
     snap = await cmd.snapshot(db, case_id)
     if snap is None:
         return
@@ -707,7 +733,7 @@ async def _answer(
         "citations": _jsonable(await cited(db, member_id, citation_keys)),
         "faults": list(turn.faults),
     }).decode())
-    await _push_case(db, ws, request.app, case_id)
+    await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
     return turn
 
 
