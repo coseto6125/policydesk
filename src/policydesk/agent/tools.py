@@ -231,7 +231,14 @@ async def list_policies(db: Database, member_id: int, *, today: date) -> list[di
 
 
 def _select_policies(policies: list[dict[str, Any]], reference: str) -> dict[str, Any]:
-    """Resolve a stated choice only within holdings already read under the identity gate."""
+    """
+    Resolve a choice within holdings already read under the identity gate.
+
+    An omitted choice selects all holdings. Multiple name matches stay ambiguous,
+    even when one name equals the reference. Neither exact nor longest names win.
+    Separate contracts for the same product remain separate choices; policy numbers
+    match exactly. Ambiguous results contain only matching holdings.
+    """
     wanted = "".join(normalize("NFKC", reference).split()).casefold()
     if not policies:
         return {"status": "empty", "policies": []}

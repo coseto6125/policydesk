@@ -748,6 +748,17 @@ async def run_turn(
     facts = await _gather(db, scenario, turn, today=today, params=params, confirmed=confirmed, index=index)
     allowed: frozenset[str] = facts.pop("_allowed_clauses")
 
+    if (scope := facts.get("policy_scope")) and scope["status"] == "ambiguous":
+        # The choice must identify each contract, even if the model omits or merges candidates.
+        (question,) = await i18n.translate(db, turn.locale, (
+            "有多張保單符合您指定的名稱，請提供要查詢的保單號碼：",
+        ))
+        candidates = scope["candidates"]
+        choices = "\n".join(f"- {row['policy_number']}｜{row['product_name']}" for row in candidates)
+        turn.reply = f"{question}\n\n{choices}"
+        turn.quick_replies = tuple(row["policy_number"] for row in candidates)
+        return turn
+
     if facts.get("_identity_required") and scenario.emit is Emit.TEMPLATE:
         # A template fills from rows, and the withheld query has none — so 您名下有效保單
         # 共 0 張 is what it renders. That is a false statement about the customer rather

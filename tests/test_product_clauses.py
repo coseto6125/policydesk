@@ -27,14 +27,98 @@ def test_select_policies_reference_resolves_only_supplied_holdings(reference, st
     assert [row["policy_number"] for row in result["policies"]] == numbers
 
 
-def test_select_policies_same_product_multiple_contracts_requires_selection():
+@pytest.mark.parametrize("numbers", [("CL1", "CL2"), ("CL2", "CL1")])
+def test_select_policies_same_product_multiple_contracts_requires_selection(numbers):
     from policydesk.agent.tools import _select_policies
 
     rows = [{"policy_number": number, "product_id": "same", "product_name": "同商品"}
-            for number in ("CL1", "CL2")]
+            for number in numbers]
     assert _select_policies(rows, "同商品")["status"] == "ambiguous"
+    for row in rows:
+        assert _select_policies(rows, row["policy_number"]) == {"status": "found", "policies": [row]}
     assert _select_policies(rows[:1], "")["policies"] == rows[:1]
     assert _select_policies([], "")["status"] == "empty"
+
+
+@pytest.fixture
+def colliding_policies():
+    return [
+        {"policy_number": "CL1001", "product_id": "p1", "product_name": "安心醫療"},
+        {"policy_number": "CL1002", "product_id": "p2", "product_name": "安心醫療加值型"},
+        {"policy_number": "CL1003", "product_id": "p3", "product_name": "平安意外"},
+    ]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(("reference", "status", "numbers"), [
+    ("安心醫療", "ambiguous", {"CL1001", "CL1002"}),
+    ("安心醫療加值型", "found", {"CL1002"}),
+    ("CL1001", "found", {"CL1001"}),
+    ("CL1002", "found", {"CL1002"}),
+    ("", "all", {"CL1001", "CL1002", "CL1003"}),
+])
+def test_select_policies_prefix_collision_keeps_every_match(
+    colliding_policies, reverse, reference, status, numbers,
+):
+    from policydesk.agent.tools import _select_policies
+
+    policies = colliding_policies[::-1] if reverse else colliding_policies
+    result = _select_policies(policies, reference)
+    assert result["status"] == status
+    assert {row["policy_number"] for row in result["policies"]} == numbers
+    assert len(result["policies"]) == len(numbers)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("same_product", [False, True])
+@pytest.mark.parametrize("scenario_name", ["explain_cover", "claim_checklist"])
+async def test_run_turn_ambiguous_policy_lists_only_matching_numbers_and_full_names(
+    monkeypatch, colliding_policies, reverse, same_product, scenario_name,
+):
+    from policydesk.agent import executor, tools
+    from policydesk.agent.scenario import BY_NAME
+    from policydesk.llm.provider import Completion
+
+    if same_product:
+        colliding_policies[1]["product_id"] = "p1"
+        colliding_policies[1]["product_name"] = "安心醫療"
+    policies = colliding_policies[::-1] if reverse else colliding_policies
+    monkeypatch.setattr(tools, "list_policies", AsyncMock(return_value=policies))
+    monkeypatch.setattr(executor, "_route", AsyncMock(return_value=(
+        BY_NAME[scenario_name], {"policy": "安心醫療", "topic": "住院", "event": "住院"},
+    )))
+    monkeypatch.setattr(executor.memory, "recent", AsyncMock(return_value=[]))
+    monkeypatch.setattr(executor.memory, "card", AsyncMock(return_value=""))
+    monkeypatch.setattr(tools, "standing_brief", AsyncMock(return_value={}))
+    lookups = {name: AsyncMock() for name in (
+        "find_clause", "required_documents", "find_multiplier", "clause_ids_for",
+    )}
+    for name, lookup in lookups.items():
+        monkeypatch.setattr(tools, name, lookup)
+    provider = AsyncMock()
+    provider.complete.return_value = Completion(
+        text='{"reply":"您指哪一張？","citations":[],"calculations":[]}', provider="test",
+    )
+    db, index = AsyncMock(), Mock()
+    db.fetch_val.return_value = "inquiry"
+    turn = await executor.run_turn(
+        provider, db, case_id=1, member_id=1, text="安心醫療的住院保障",
+        confirmed=True, locale="zh-TW", index=index,
+    )
+    candidate_lines = [line for line in turn.reply.splitlines() if line.startswith("- ")]
+    assert candidate_lines == [
+        f"- {row['policy_number']}｜{row['product_name']}"
+        for row in policies if row["policy_number"] in {"CL1001", "CL1002"}
+    ]
+    assert len(candidate_lines) == 2
+    assert "CL1003" not in turn.reply
+    assert "平安意外" not in turn.reply
+    assert turn.quick_replies == tuple(row["policy_number"] for row in policies if row["policy_number"] != "CL1003")
+    assert not turn.clause_sources
+    for lookup in lookups.values():
+        lookup.assert_not_called()
+    index.search.assert_not_called()
+    provider.complete.assert_not_called()
 
 
 @pytest.mark.parametrize("reference", ["住院", "外人的保單"])
