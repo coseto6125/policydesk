@@ -91,7 +91,6 @@ async def _require_desk_token(request: Request):
     national ID.
 
     """
-
     if request.args.get("token", "") != DESK_TOKEN:
         logger.warning("console_read_rejected", path=request.path, peer=str(request.ip))
         return response.text("需要授權", status=403)
