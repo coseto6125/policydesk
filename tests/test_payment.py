@@ -180,6 +180,13 @@ async def test_an_instalment_is_a_whole_number_of_dollars(db):
     assert not fractional, f"a premium is billed in whole dollars: {fractional}"
 
 
+async def test_gather_returned_payment_clauses_are_allowed(db, in_grace):
+    from policydesk.agent.executor import Turn, _gather
+
+    facts = await _gather(db, PAYMENT, Turn(0, in_grace), today=date(2026, 9, 5), params={})
+    returned = facts["mode_change_rule"]
+    assert returned
+    assert {row["clause_id"] for row in returned} <= facts["_allowed_clauses"]
 
 
 # ---------------------------------------------------------------- 改繳別
