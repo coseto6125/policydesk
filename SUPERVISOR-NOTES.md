@@ -208,6 +208,24 @@ Emptying only the overview tool result also produced two failures, despite popul
 Both mutations were removed. Cleanup after passing and failing runs left policy=288, llm_usage=2181 and no fixture members.
 This proves DB routing and record isolation, not real-model routing or end-to-end browser behavior.
 
+### Positive ownership acceptance re-run — 2026-09-05, 17:57
+
+Completed changes were committed by topic before this acceptance pass.
+The positive test existed only in the working tree; it is separate from the unconfirmed sentinel tests.
+It now requires every reply to include the owner's returned policy numbers, not merely a fixed success sentence.
+The scripted provider echoes real query values only after checking their presence in the actual model input.
+Additional checks match case IDs, the identity-confirmed audit row and beneficiary details against PostgreSQL.
+Beneficiary ownership uses returned policy IDs because that tool does not expose beneficiary record IDs.
+
+The fixed-success reply failed both directions under the new assertion; the query-backed reply passed both.
+A process-local probe then replaced the member ID passed from the real handler into run_turn with the other fixture member.
+Both directions failed at the independent policy-ID-to-DB-owner assertion, not at a mock identity field.
+After that probe exited, the identity-gate/inventory/beneficiary/claim-status run passed 182 tests with zero skips.
+Final DB counts were policy=288, clause=11775 and contract_clause=10512, with zero auth-prefixed fixture members.
+Fixture teardown also checks that cases, claims, beneficiaries, conversation and usage records are absent.
+No authentication, tool query, corpus or index implementation changed for this acceptance test.
+The model completions and socket transport remain scripted; this is not live-model or network WebSocket evidence.
+
 Ambiguous names now render exact candidate numbers and full product names directly from selection data.
 Quote-width normalization exists only in comparison keys; database text, displayed quotes and embedding input remain unchanged.
 The quote check still tests substring presence, not the semantic fidelity of a selectively shortened quotation.
