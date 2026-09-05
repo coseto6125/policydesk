@@ -336,3 +336,36 @@ def test_answer_schema_hidden_rows_do_not_become_selectable_sources():
     schema = _answer_schema(_clause_sources(visible))
     assert schema["properties"]["citations"]["items"]["enum"] == [f"p{number}|art.6" for number in range(40)]
     assert _answer_schema(())["properties"]["citations"]["maxItems"] == 0
+
+
+def test_the_trace_records_the_decision_without_copying_the_customer():
+    """
+    An auditor gets the tools and the digests, never the brief itself.
+
+    The request column held `{"scenario": ...}` and nothing else, so a 16,781-token
+    call left a 22-character record — the trace could not answer the question it
+    exists to answer. Storing the prompt verbatim would answer it and would put every
+    name, national ID and policy the brief carries into a second table with no
+    retention rule in front of it.
+
+    So this pins both halves: the tool list and reply fields are there, and no
+    fragment of the brief is.
+    """
+    from policydesk.agent.executor import _audit_request
+
+    secret = "客戶黃雅琪，身分證 A123456789，持有 CL1001。"
+    record = _audit_request(
+        instructions=f"你是保險櫃台。{secret}",
+        user_input="我的保單有哪些",
+        tools=[{"name": "list_policies"}, {"name": "billing_summary"}],
+        schema={"properties": {"reply": {}, "citations": {}}},
+    )
+
+    assert record["tools"] == ["billing_summary", "list_policies"], "the permission decision is legible"
+    assert record["response_fields"] == ["citations", "reply"]
+    assert len(record["instructions_sha256"]) == 64
+    assert record["instructions_chars"] > 0
+
+    written = str(record)
+    for fragment in ("黃雅琪", "A123456789", "CL1001", "保險櫃台"):
+        assert fragment not in written, f"{fragment} reached the trace"
