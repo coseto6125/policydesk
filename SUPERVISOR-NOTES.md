@@ -1,5 +1,34 @@
 # Supervisor notes
 
+## Document transactions completed — 2026-09-05, 23:10
+
+The upload-refusal and transaction work left unfinished in 75e3069 is now implemented.
+The confirmed socket passes its session case ID to one core upload command.
+That command validates before writing the filename and both signature roles in one transaction.
+True refusals leave no changes and produce a warning, including refusals without a missing list.
+Partial signatures and failed identity checks retain their existing persistence semantics.
+
+All stage commands lock the case before its documents, in document-ID order.
+Opening a case first locks the member, including when no case exists yet.
+Snapshots use the same case lock to avoid mixing document and stage generations.
+The transaction session never acquires another connection or retries individual statements.
+Transaction control completes before pool release, including repeated cancellation during BEGIN and rollback.
+Cancellation after COMMIT starts can still commit; the caller must read back the outcome before retrying.
+This remains a filename-only demo, not verification of file bytes or cryptographic signatures.
+
+Baseline: both illegal-stage socket uploads failed by changing uploaded_name.
+Four new tests also failed before implementation: missing atomic upload, exception rollback,
+cancellation rollback, and concurrent duplicate document issuance.
+Final command: `.venv/bin/python -m pytest tests/test_document_flow.py tests/test_acceptance_fixes.py tests/test_desk_ui.py tests/test_identity_gate.py tests/test_identity_inventory.py tests/test_db_fixture.py -q -ra --tb=short`.
+Result: 303 passed, zero skipped, zero deselected, in 11.66 seconds.
+The checks include controlled two-connection issuance, last-upload and decision races.
+A process-local mutation bypassing the issuance transaction made the stage-race test fail:
+an approved case incorrectly moved back to issued. The source files were not mutated.
+Ruff and diff whitespace checks passed. No full suite or corpus-loader test ran.
+Service status was active; TCP 5434 and SELECT 1 succeeded before testing.
+After cleanup: policy=288, clause=11775, contract_clause=10512, doc-prefixed fixture members=0.
+No tool schema, executor, memory or retrieval code changed in this work.
+
 ## Document status progress and remaining upload failure — 2026-09-05, 18:10
 
 The document stash was restored without changing the corpus or rebuilding the container.

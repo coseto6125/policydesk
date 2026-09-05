@@ -185,9 +185,9 @@ async def test_customer_socket_rename_to_new_member_allows_enrol_without_old_cas
 @pytest.mark.parametrize("identity_locked", [False, True])
 async def test_customer_socket_unverified_mutation_is_denied(customer_handler, monkeypatch, command, identity_locked):
     server, request, _, _ = customer_handler
-    signature = AsyncMock()
+    upload = AsyncMock()
     verification = AsyncMock()
-    monkeypatch.setattr(server.cmd, "record_signature", signature)
+    monkeypatch.setattr(server.cmd, "upload_document", upload)
     monkeypatch.setattr(server.cmd, "verify_identity", verification)
     socket = _CustomerSocket([
         {"type": "hello", "name": "fixture-owner"},
@@ -199,33 +199,30 @@ async def test_customer_socket_unverified_mutation_is_denied(customer_handler, m
     assert socket.sent[-1] == {"type": "notice", "text": expected, "level": "warn"}
     assert request.app.ctx.db.execute.await_count == (server.MAX_CONFIRM_ATTEMPTS if identity_locked else 0)
     assert request.app.ctx.db.fetch_one.await_count == 1
-    signature.assert_not_awaited()
+    upload.assert_not_awaited()
     verification.assert_not_awaited()
     server.cmd.snapshot.assert_not_awaited()
 
 
 @pytest.mark.parametrize("owned", [False, True])
-async def test_customer_socket_upload_requires_document_in_confirmed_case(customer_handler, monkeypatch, owned):
+async def test_customer_socket_upload_passes_confirmed_case_to_core_command(customer_handler, monkeypatch, owned):
     server, request, members, _ = customer_handler
     db = request.app.ctx.db
-    db.fetch_one.side_effect = [members["fixture-owner"], {"sha": "fixture-sha"} if owned else None]
-    signature = AsyncMock()
-    monkeypatch.setattr(server.cmd, "record_signature", signature)
+    upload = AsyncMock(return_value=(
+        server.cmd.Refusal(reason="尚有文件待簽署", missing=("fixture document",)) if owned
+        else server.cmd.Refusal(reason="無法處理這份文件。")
+    ))
+    monkeypatch.setattr(server.cmd, "upload_document", upload)
     socket = _CustomerSocket([
         {"type": "hello", "name": "fixture-owner"},
         {"type": "say", "text": members["fixture-owner"]["national_id"]},
-        {"type": "upload", "document_id": 22, "filename": "signed.pdf"},
+        {"type": "upload", "case_id": 999, "document_id": 22, "filename": "signed.pdf"},
     ])
     await server.customer_socket(request, socket)
-    sql, params = db.fetch_one.call_args.args
-    assert "AND case_id = $3::bigint" in sql
-    assert params == [22, "signed.pdf", 1]
+    upload.assert_awaited_once_with(db, 1, document_id=22, filename="signed.pdf")
     if owned:
-        assert signature.await_count == len(server.cmd.SIGNING_PARTIES)
-        assert signature.call_args.kwargs["document_sha"] == "fixture-sha"
         assert socket.sent[-1]["type"] == "case"
     else:
-        signature.assert_not_awaited()
         assert socket.sent[-1] == {"type": "notice", "text": "無法處理這份文件。", "level": "warn"}
 
 
