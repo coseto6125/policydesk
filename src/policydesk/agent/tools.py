@@ -291,15 +291,16 @@ async def _clauses_by_id(db: Database, keys: list[tuple[str, str]]) -> list[dict
 
 
 def _apply_passages(rows: list[dict[str, Any]], hits: Iterable[Hit]) -> None:
-    """Keep short articles whole; carry the matched text for longer ones explicitly."""
+    """Keep short articles whole; mark a longer one's matched span with an ellipsis where it was cut."""
     spans = {(hit.scope_id, hit.doc_id): hit for hit in hits if hit.start is not None}
     for row in rows:
         if len(row.get("verbatim") or "") <= DOCUMENT_CHARS:
             continue
         if hit := spans.get((row["product_id"], row["clause_id"])):
             full_text = f"{row.get('heading') or ''}\n{row.get('verbatim') or ''}"
-            row["verbatim"] = full_text[hit.start:hit.end]
-            row["excerpt"] = hit.start > 0 or hit.end < len(full_text)
+            prefix = "…" if hit.start > 0 else ""
+            suffix = "…" if hit.end < len(full_text) else ""
+            row["verbatim"] = f"{prefix}{full_text[hit.start:hit.end]}{suffix}"
             row["excerpt_start"] = hit.start
             row["excerpt_end"] = hit.end
             row["source_chars"] = len(full_text)
