@@ -120,11 +120,18 @@ async def test_date_expressions_are_evaluated_and_kept_on_the_turn(monkeypatch):
     ("客服電話 0800011234", "客服專線 0800-01-1234。[art.7]", [], ()),
     ("保單 P1234－01－02", "保單 P1234-01-02 的條款。[art.7]", [], ()),
     ("", "1000/10/2 = 50 元。[art.7]", [], ()),
+    # The forms a customer writes a month and day in all support the reply's ISO date.
+    ("我3/1收到保單", "您於 2026-03-01 收到保單。[art.7]", [], ()),
+    ("我3月1號收到保單", "您於 2026-03-01 收到保單。[art.7]", [], ()),
+    # A month or day without its zero is still a date the reply states.
+    ("我 2026-03-01 收到保單", "撤銷期限是 2026-3-15。[art.7]", [], ("date:2026-03-15",)),
     # A form the reply check does not read is not enforced, and not withheld.
     ("我 2026-03-01 收到保單", "撤銷期限是 2026年3月11日。[art.7]", [], ()),
     # Boundaries: an English sentence's full stop, a record's ISO datetime, fullwidth digits.
     ("我 2026-03-01 收到保單", "The deadline is 2099-01-01.[art.7]", [], ("date:2099-01-01",)),
     ("I received it on 2026-03-01.", "您於 2026-03-01 收到保單。[art.7]", [], ()),
+    ("", "保單於 2026-04-15 核發。[art.7]", [], ()),
+    ("", "保單於 2026-03-01 核發。[art.7]", [], ("date:2026-03-01",)),
     ("我２０２６－０３－０１收到保單", "您於 2026-03-01 收到保單。[art.7]", [], ()),
     # A month-day that already has its year does not license the same day this year.
     ("我於2024年 5月2日收到保單", "您於 2026-05-02 收到保單。[art.7]", [], ("date:2026-05-02",)),
@@ -139,7 +146,9 @@ async def test_an_iso_date_the_reply_states_must_be_given_backed_or_today(monkey
     An expression beside a different date constrains nothing. The reply is read back:
     every ISO date in it is the customer's, the material's, today, or the date tool's.
     """
-    row = {**CLAUSE, "effective_at": "2025-12-20", "issued_at": "2026-03-01T00:00:00+08:00"}
+    # Neither material date coincides with a customer date above, so each case's source
+    # is the only thing that can back its reply.
+    row = {**CLAUSE, "effective_at": "2025-12-20", "issued_at": "2026-04-15T00:00:00+08:00"}
     provider, db = _desk(monkeypatch, _answer(reply, citations=["p1|art.7"], date_calculations=expressions),
                          facts={"member_rescission": [row]})
     turn = await _turn(provider, db, text=f"{said}，還能退嗎？")
@@ -229,6 +238,16 @@ def test_apply_passages_stamps_the_score_on_every_ranked_row():
     assert rows[0]["retrieval_score"] == pytest.approx(0.42)
     assert "retrieval_score" not in rows[1]
     assert "excerpt_start" not in rows[0], "a short clause is kept whole, as before"
+
+
+def test_the_socket_carries_fault_kinds_and_the_row_carries_the_values():
+    """The withheld date must not come back to the customer as the reason it was withheld."""
+    server = Path("src/policydesk/web/server.py").read_text()
+    written = server.index("INSERT INTO conversation_message (case_id, speaker, text, turn_id")
+    start = server.index('"type": "reply"', written)
+    sent = server[start:server.index('"pending_reply": pending_reply', start)]
+    assert 'sorted({fault.split(":", 1)[0] for fault in turn.faults})' in sent
+    assert "list(turn.faults)" not in sent
 
 
 def test_the_reply_stores_its_faults_and_evidence_beside_the_text():

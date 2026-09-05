@@ -35,7 +35,10 @@ _ISO = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
 _ROC = re.compile(r"(?:民國)?(\d{1,3})(?:年|/)(\d{1,2})(?:月|/)(\d{1,2})日?")
 # Any one date literal, for finding where an expression's dates start and stop.
 _DATE = re.compile(rf"today|{_ISO.pattern}|{_ROC.pattern}")
-_SPAN = re.compile(r"([+-])\s*(\d+)\s*(天|日|days?|d|個月|月|months?|m|年|years?|y)\b", re.IGNORECASE)
+# The count is capped at nine digits: `int()` of a longer string raises its own ValueError
+# on 3.14 (the 4,300-digit limit), which is not a DateError, and no span a contract names
+# needs more. A nine-digit span still leaves the calendar and becomes a DateError in `_shift`.
+_SPAN = re.compile(r"([+-])\s*(\d{1,9})\s*(天|日|days?|d|個月|月|months?|m|年|years?|y)\b", re.IGNORECASE)
 _UNITS: dict[str, str] = {
     "天": "days", "日": "days", "d": "days", "day": "days", "days": "days",
     "個月": "months", "月": "months", "m": "months", "month": "months", "months": "months",

@@ -125,18 +125,21 @@ in time. Withheld rather than annotated, for `WITHHELD`'s reason.
 # end of an English sentence (on 2026-03-01.) and a record's ISO datetime
 # (2026-03-01T00:00:00+08:00) both read; the year range is what keeps an identifier
 # such as P_1234-01-02 from reading as one.
-_ISO_IN_REPLY = re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)")
+# Month and day take one or two digits, the same as the source side: a reply that writes
+# 2026-3-15 is stating a date, and a check that read only zero-padded ones let exactly
+# the invented deadline through that it exists to catch.
+_ISO_IN_REPLY = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
 # A calendar date as a customer, a clause or a record writes it: 2026-03-01, 2026/3/1,
 # 2026.03.01, 2026年3月1日, 民國115年3月1日, 民國99年3月1日, 115/03/01. A year of one to
 # three digits is 民國 and gains 1911.
 _DATE_IN_SOURCE = re.compile(
     r"(?<!\d)(?:(民國)\s*(\d{1,3})|(\d{4})|(\d{3}))\s*[年/.-]\s*(\d{1,2})\s*[月/.-]\s*(\d{1,2})\s*日?(?!\d)"
 )
-# A month and day with no year — 3月1日 — which a customer writes for a date in the
-# current year, and which the reply completes with the year `anchored` gave it. Read
-# only after every full date has been blanked out, so 2025年 3月1日 is one date with a
-# year, not a bare month and day that would license 2026-03-01.
-_MONTH_DAY = re.compile(r"(?<![\d年/.-])(\d{1,2})\s*月\s*(\d{1,2})\s*日")
+# A month and day with no year — 3月1日, 3月1號, 3/1 — which a customer writes for a date
+# in the current year, and which the reply completes with the year `anchored` gave it.
+# Read only after every full date has been blanked out, so 2025年 3月1日 is one date with
+# a year, not a bare month and day that would license 2026-03-01.
+_MONTH_DAY = re.compile(r"(?<![\d年/.-])(\d{1,2})\s*(?:月|/)\s*(\d{1,2})\s*[日號]?(?![\d/.-])")
 # Fullwidth digits and separators fold to ASCII before either regex runs, on the reply
 # and on the sources alike, so a customer's ２０２６－０３－０１ supports the reply's 2026-03-01.
 _ASCII = str.maketrans("０１２３４５６７８９－／．", "0123456789-/.")
@@ -485,8 +488,8 @@ def _retrieval_trail(value: Any) -> list[dict[str, Any]]:
         One entry per offered clause, key and score. A row that reached the material
         without a hit — a cross-referenced sibling, an ILIKE fallback — has no score, and
         the record says so with None rather than inventing a rank for it. A clause two
-        tools both returned is one entry, carrying the first score seen; every copy has
-        its score removed, so none reaches the model.
+        tools both returned is one entry, carrying the first non-null score seen; every
+        copy has its score removed, so none reaches the model.
 
     """
     trail: dict[str, float | None] = {}

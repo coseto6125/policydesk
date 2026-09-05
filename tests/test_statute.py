@@ -175,11 +175,12 @@ async def test_reingest_replaces_rather_than_accumulates(loaded):
     def article(text: str) -> list[Article]:
         return [Article("art.1", 1, 0, None, None, "第 一 章 總則", "", text)]
 
+    second = Article("art.2", 2, 0, None, None, "第 一 章 總則", "", "第二條")
     try:
-        assert await statute.store(loaded, "scratch_act", "T0000000", meta, article("第一版")) == 1
+        assert await statute.store(loaded, "scratch_act", "T0000000", meta, [*article("第一版"), second]) == 2
         assert await statute.store(loaded, "scratch_act", "T0000000", meta, article("重寫")) == 1
-        rows = await loaded.fetch("SELECT verbatim FROM statute_article WHERE statute_id = 'scratch_act'")
-        assert [r["verbatim"] for r in rows] == ["重寫"]
+        rows = await loaded.fetch("SELECT doc_id, verbatim FROM statute_article WHERE statute_id = 'scratch_act'")
+        assert [(r["doc_id"], r["verbatim"]) for r in rows] == [("art.1", "重寫")], "an article the re-ingest did not carry is gone"
     finally:
         await loaded.execute("DELETE FROM statute WHERE statute_id = 'scratch_act'")
     assert await loaded.fetch_val("SELECT count(*) FROM statute_article WHERE statute_id = 'scratch_act'") == 0

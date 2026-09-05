@@ -835,7 +835,11 @@ async def _answer(
         "params": turn.params,
         "quick": list(await i18n.translate(db, spoken, turn.quick_replies)),
         "citations": _jsonable(await cited(db, member_id, citation_keys)),
-        "faults": list(turn.faults),
+        # Kinds only. A fault carries the thing that was withheld — the date, the promise,
+        # the clause key — and sending it here put that thing back in front of the
+        # customer as 引用查核未過：date:2026-03-11, one line under the reply that had
+        # been withheld to keep it from them. The full strings are in the row and the log.
+        "faults": sorted({fault.split(":", 1)[0] for fault in turn.faults}),
         # The customer's input stays disabled while a second reply is still coming.
         # Without it the pane re-opened after the first of the two answers an identity
         # check produces, and a question typed in that gap was answered before the

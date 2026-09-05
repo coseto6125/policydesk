@@ -6,7 +6,6 @@ could write, deliberately or by accident, and each must raise rather than produc
 """
 
 from datetime import date, datetime
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -65,9 +64,15 @@ def test_compute_date_counts_the_days_between_two_dates():
 
 
 def test_compute_date_rejects_a_step_that_leaves_the_calendar():
-    for expression in ("9999-12-31 + 1 日", "0001-01-01 - 1 日", "2026-09-06 + 999999999999999999999 年"):
+    for expression in ("9999-12-31 + 1 日", "0001-01-01 - 1 日", "2026-09-06 + 999999999 年"):
         with pytest.raises(DateError):
             compute_date(expression, today=TODAY)
+
+
+def test_compute_date_rejects_a_span_too_long_for_int_as_a_date_error():
+    """Python refuses to parse 4,301 digits; that refusal must reach the caller as DateError."""
+    with pytest.raises(DateError):
+        compute_date("today + " + "9" * 4301 + " 日", today=TODAY)
 
 
 @pytest.mark.parametrize("unit", ["days", "d", "day", "日"])
@@ -91,6 +96,16 @@ def test_compute_date_rejects_what_is_not_date_arithmetic(expression):
         compute_date(expression, today=TODAY)
 
 
-def test_today_is_the_date_in_taiwan():
-    """00:00 to 08:00 in Taipei is the previous calendar day in UTC."""
-    assert today() == datetime.now(ZoneInfo("Asia/Taipei")).date()
+def test_today_is_the_date_in_taiwan(monkeypatch):
+    """00:00 to 08:00 in Taipei is the previous calendar day in UTC: pin that window."""
+    from datetime import UTC
+
+    from policydesk.skills import dates
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return datetime(2026, 9, 5, 17, 30, tzinfo=UTC).astimezone(tz)  # 01:30 in Taipei, 2026-09-06
+
+    monkeypatch.setattr(dates, "datetime", Clock)
+    assert today() == date(2026, 9, 6)

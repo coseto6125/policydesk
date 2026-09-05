@@ -5,7 +5,7 @@
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS faults text[] NOT NULL DEFAULT '{}';
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS evidence jsonb;
 
-COMMENT ON COLUMN conversation_message.faults IS 'Why an agent reply was withheld: answer_format, answer_leak, unoffered_dates, date:<date>, source:<key>, promise:<phrase>, a statute the corpus does not hold. Empty for a reply that passed every check and for every customer row.';
+COMMENT ON COLUMN conversation_message.faults IS 'Why an agent reply was withheld: answer_format, answer_leak, unoffered_calculator, unoffered_dates, date:<date>, source:<key>, promise:<phrase>, a statute the corpus does not hold. Empty for a reply that passed every check and for every customer row.';
 COMMENT ON COLUMN conversation_message.evidence IS 'Agent rows only. scenario the router chose and the names of the parameters it filled (never their values: one of them is the national id); offered = the clause keys the tools returned with each retrieval score (null for a row no channel ranked); coverage = whether the evidence budget cut rows; computations and dates = the expressions the model wrote and what the tools made of them. Scores are recorded here and never shown to the model.';
 
 -- `repair` was a phase the pipeline diagram drew and no code ever wrote. A constraint

@@ -233,8 +233,10 @@ async def card(db: Database, *, member_id: int, case_id: int) -> str:
         return ""
 
     parts = ["# 已知的保戶資訊（來自先前對話，可能不在上面的對話紀錄裡）"]
+    # A 「- 」 line, like the facts: the summary is the sweep's text, not the desk's rule,
+    # and the fence rule names the 「- 」 lines as quotation and the rest as the desk's.
     if summary:
-        parts.append(f"目前進度：{_flat(summary)}")
+        parts.append(f"- 目前進度：{_flat(summary)}")
     def line(fact: dict[str, Any]) -> str:
         return f"- {_flat(fact['key'])}（{fact['category']}）：{_flat(fact['value'])}"
 
