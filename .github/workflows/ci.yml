@@ -27,21 +27,29 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           enable-cache: true
 
-      # No project install: these three read source, they do not import it. Keeping
-      # them off the dependency step means a broken lockfile still gets a syntax
-      # answer rather than failing before the check that would have explained it.
+      # These two read source and resolve nothing, so they run before the install: a
+      # broken lockfile still gets a syntax answer rather than failing ahead of the
+      # check that would have explained it.
       - name: Syntax
         run: uvx pyci-check@0.3.5 syntax src/ tests/
-
-      - name: Imports
-        run: uvx pyci-check@0.3.5 imports src/
 
       - name: Lint
         run: uvx ruff check src/ tests/
 
-      # Reported, never enforced. The one cycle is deliberate — `console` reads
-      # DESK_TOKEN from `server` and defers the read to request time for exactly that
-      # reason — and the dead-code scan cannot tell a public API from an orphan.
+      # The imports check resolves each import against an environment. Run bare it
+      # reports every third-party module as missing — 23 modules, 61 errors, none of
+      # them real. What it is here to catch is the opposite case: a module that is
+      # imported and not declared, which is only visible once the declared ones are
+      # installed. `pypdfium2` was exactly that, arriving through `pdfplumber` until
+      # someone dropped it.
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Imports
+        run: uv run --with pyci-check==0.3.5 pyci-check imports src/
+
+      # Reported, never enforced: the dead-code scan cannot tell a public API from an
+      # orphan, and every Sanic route handler reads as one.
       - name: Cycles and dead code (advisory)
         continue-on-error: true
         run: |
