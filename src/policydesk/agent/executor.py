@@ -49,6 +49,7 @@ from policydesk.agent.scenario import (
     Emit,
     Scenario,
     tool_schema,
+    untrusted,
 )
 from policydesk.bootloader import logger
 from policydesk.llm.pricing import cost
@@ -227,7 +228,7 @@ def reachable(stage: str) -> tuple[Scenario, ...]:
 
 
 async def _route(
-    provider: Provider, db: Database, turn: Turn, text: str, past: str, stage: str
+    provider: Provider, db: Database, turn: Turn, text: str, past: str, stage: str, fence: str
 ) -> tuple[Scenario | None, dict[str, str]]:
     """
     Ask the model which scenario this turn belongs to, and with what.
@@ -239,6 +240,8 @@ async def _route(
         text: What the customer said.
         past: The transcript of the case so far.
         stage: The case's stage, which decides what the router may choose from.
+        fence: This turn's tag name, which marks where the customer's own words start
+            and stop.
 
     Returns:
         The chosen scenario and the parameters the model filled from the conversation,
@@ -258,8 +261,11 @@ async def _route(
         # customer at `run_turn`'s `scenario is None` branch. It is also the path where the
         # model has the most freedom to write a long unstructured paragraph, since no
         # scenario injection is shaping it.
-        instructions=f"{LOOKUP_SCOPE}{ROUTER_INSTRUCTIONS}\n\n{WRITING}\n\n{i18n.hint(turn.locale)}",
-        user_input=f"{past}# This message\n{text}",
+        instructions=(
+            f"{LOOKUP_SCOPE}{ROUTER_INSTRUCTIONS}\n\n{untrusted(fence)}\n\n{WRITING}"
+            f"\n\n{i18n.hint(turn.locale)}"
+        ),
+        user_input=f"{past}<{fence}>\n{text}\n</{fence}>",
         tools=[tool_schema(s) for s in offered.values()],
     )
     await _record(db, turn, Phase.ROUTE, completion, None)
@@ -715,7 +721,14 @@ async def run_turn(
             + ASKED_ALREADY + "\n"
         )
     history = messages if document_event else messages[:-1]
+    # The transcript is rebuilt without any fence. A tag that survived into the history
+    # would be a tag the customer has seen, and a customer who has seen it can close it
+    # on the next turn. It exists for the length of one call.
     past = f"{known}{memory.transcript(history)}{profile}"
+    # Fresh per turn, and never written to a message row or shown to anyone. A fixed
+    # marker is one the customer can close: `# This message` was closed with `</user>`,
+    # and what followed claimed to be a system block with supervisor approval.
+    fence = f"untrusted-{uuid4().hex[:12]}"
 
     started = time.perf_counter()
     document_refusal = text if document_event else ""
@@ -724,7 +737,7 @@ async def run_turn(
             scenario, params = DOCUMENT_PROGRESS, {}
             text = "請依本次文件操作結果與本案最新工具紀錄，說明目前進度和下一步。"
         else:
-            scenario, params = await _route(provider, db, turn, text, past, stage)
+            scenario, params = await _route(provider, db, turn, text, past, stage, fence)
     except ProviderError as exc:
         latency = int((time.perf_counter() - started) * 1000)
         logger.warning("turn_unrouted", case_id=case_id, error=str(exc))
@@ -831,8 +844,8 @@ async def run_turn(
         # topic; a scenario that needs a figure the rows do not carry sets `calculator`.
         completion = await provider.complete(
             phase=Phase.ANSWER,
-            instructions=f"{instructions}\n\n{i18n.hint(turn.locale)}",
-            user_input=f"{past}# This message\n{text}\n\n# Tool results\n{material}",
+            instructions=f"{instructions}\n\n{untrusted(fence)}\n\n{i18n.hint(turn.locale)}",
+            user_input=f"{past}<{fence}>\n{text}\n</{fence}>\n\n# Tool results\n{material}",
             schema=_answer_schema(turn.clause_sources, calculator=scenario.calculator),
         )
     except ProviderError as exc:
