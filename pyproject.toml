@@ -1,6 +1,6 @@
 [project]
 name = "policydesk"
-version = "0.1.0"
+version = "0.2.0"
 description = "An insurance desk agent: quote, enrol, bill, cover, claim — every figure it states carries a citation back to the contract clause that produced it."
 readme = "README.md"
 license = "MIT"
