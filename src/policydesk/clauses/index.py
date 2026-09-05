@@ -40,21 +40,6 @@ _CARVE_BACK = re.compile(r"但[^。；]{4,80}?(?:不在此限|除外|不適用)"
 # "自本附約生效日起持續有效三十日以後" — a waiting period wearing a definition's clothes.
 _WAITING = re.compile(r"(?:生效日|復效日)起持續有效([一二三四五六七八九十百]+)日")
 
-# Page furniture that sits above the product name on page one: "第1頁，共31頁",
-# "第 1 頁， 共 17 頁", "Since2023", an approval reference, a complaints hotline. The
-# spacing varies per document because it comes from the PDF's glyph positions, not
-# from the text, so every gap here tolerates whitespace.
-_FURNITURE = re.compile(
-    r"^(?:第\s*\d+\s*頁|共\s*\d+\s*頁|Since\s*\d{4}|[\W\d_]+)$|頁\s*，\s*(?:共|第)"
-    r"|核准文號|認證編號|認証番号|免費申訴"
-)
-"""...
-
-認證編號 and its Japanese spelling were missing, so 22 of 660 contracts took an approval
-line as their product name: 認證編號：0610132-31 is what a customer would have been
-offered in a recommendation. 核准文號 was already here — the same furniture, printed under
-a different label by a different insurer's template."""
-
 # Justified CJK lines come out of extraction with a space between every glyph:
 # "國 泰 人 壽新憶樂活認 知 功 能 障 礙終身健 康 保 險". Token matching then fails on every
 # term, which is how 80 real contracts ended up classified as "other". Latin runs keep
@@ -133,69 +118,107 @@ def cn_to_int(text: str) -> int:
     return (_CN_DIGITS.get(head, 1) if head else 1) * 10 + (_CN_DIGITS.get(tail, 0) if tail else 0)
 
 
-_CJK_CHAR = re.compile(r"[\u4e00-\u9fff]")
+_TITLE_PREFIX = "國泰人壽"
+_TITLE_ENDINGS = ("保險", "壽險", "附約", "附加條款", "批註條款")
+_TITLE_MAX_LINES = 4
+_TITLE_MAX_CHARACTERS = 120
+_TITLE_BRACKETS = {"（": "）", "(": ")", "【": "】"}
+_TITLE_WRAP_TERMS = ("保險", "壽險", "健康", "醫療", "住院", "年金", "變額", "利率", "終身", "定期",
+                    "附加", "批註", "外幣", "美元", "澳幣", "重大", "長期", "豁免")
+_TITLE_FAMILY_PREFIXES = ("投資型", "利率變動型", "指數連結型", "一年", "人身", "股票")
 
-_TITLE_CJK = 3
-"""Ideographs a line needs before it can be a product name. Three rejects 36 of the 660
-current titles, every one of them furniture — an approval number, a 碳標字 reference, a
-商品代號, the sha a document with no readable title falls back to. The shortest real name
-in the corpus carries far more."""
 
-
-def _reads_as_chinese(line: str) -> bool:
-    r"""
-    Say whether a line is text a person could read, or a CID font's leftovers.
-
-    Args:
-        line: One candidate title, already tidied and stripped.
-
-    Returns:
-        True when it holds at least `_TITLE_CJK` ideographs.
-
-    `_FURNITURE`'s `[\W\d_]+` arm catches a line of pure punctuation and digits, and a
-    subset-embedded CID font decodes to characters that are `\w` — ॆᔊఊฌᜊᕘຬঐྪᎈ passed
-    every filter and became a product name the moment the line above it, 保障您所愛,
-    dropped below the length floor. Measured across 660 contracts: six titles move when
-    the floor is applied to a stripped line, five of them for the better and this one
-    document for the worse.
-
-    **A count, not a ratio.** The first version asked for half the characters to be CJK
-    and rejected 澳幣計價股票指數連結結構型商品(無擔保)【鏈結指數為韓國KOSPI 200指數
-    (KOSPI 200 Index)】 — a real product whose name carries the Latin and the digits its
-    own prospectus prints. The mojibake is Devanagari, Telugu, Thai and Tibetan
-    codepoints and holds **zero** ideographs, so a count separates the two cleanly where
-    a ratio punishes the honest name for the company it keeps.
-    """
-    return len(_CJK_CHAR.findall(line)) >= _TITLE_CJK
+def _title_base(text: str) -> str | None:
+    """Separate complete title qualifiers without folding their printed punctuation."""
+    base_end = len(text)
+    closing: list[str] = []
+    for position, char in enumerate(text):
+        if char in _TITLE_BRACKETS:
+            if not closing and base_end == len(text):
+                base_end = position
+            closing.append(_TITLE_BRACKETS[char])
+        elif char in _TITLE_BRACKETS.values():
+            if not closing or closing.pop() != char:
+                return None
+        elif not closing and position >= base_end and not char.isspace():
+            return None
+    return text[:base_end].rstrip() if not closing else None
 
 
 def _title_of(first_page: str) -> str:
     """
-    Read the product name off page one.
+    Select a printed product title, never the first readable line or PDF metadata.
 
-    The name is rarely the first line. Above it sit a page counter, a "Since2023"
-    watermark, an approval reference, a complaints hotline — furniture that a naive
-    "first non-empty line" picks up instead, which is how a corpus ends up with six
-    documents all titled 第1頁，共31頁.
+    Require the insurer prefix and a complete insurance-title ending. Adjacent wrapped
+    lines and parenthesized qualifiers retain their printed punctuation. A page with
+    multiple main products is unresolved, even if one occurs first. Endorsement titles
+    do not displace a unique main title. No product evidence returns an empty string;
+    callers must retain that uncertainty rather than invent a product for a vendor list.
 
-    Args:
-        first_page: Extracted text of page one.
-
-    Returns:
-        The product name, or an empty string when the page has no line that reads
-        like one.
-
+    This function changes title metadata only. It never changes clause text or offsets.
     """
-    for raw in first_page.splitlines():
-        # `.strip()`, not `_tidy` alone: `_tidy` only rstrips, and `_FURNITURE` anchors
-        # three of its branches at `^`. One leading space and 「 第 1 頁」 stops looking
-        # like furniture and becomes the product's name — measured, `_title_of` returned
-        # 「 第   1   頁」 as a title. That is the bug this filter was widened to fix, back
-        # through a different door.
-        if len(line := _tidy(raw).strip()) < 8 or _FURNITURE.search(line) or not _reads_as_chinese(line):
+    first_article = next((start for start, _, number, _ in _article_marks(first_page) if number == 1), None)
+    cover = first_page[:first_article] if first_article is not None else first_page
+    lines = [_tidy(raw).strip().lstrip("•●■ ") for raw in cover.splitlines()]
+    candidates: dict[str, str] = {}
+    for start, line in enumerate(lines):
+        base = _title_base(line)
+        if base and base.endswith("結構型商品") and "計價" in base:
+            candidates[line] = base
             continue
-        return line
-    return ""
+        if not line.startswith(_TITLE_PREFIX):
+            continue
+        if line != _TITLE_PREFIX and not any(term in line.removeprefix(_TITLE_PREFIX) for term in _TITLE_WRAP_TERMS):
+            continue
+        candidate = ""
+        for offset, part in enumerate(lines[start : start + _TITLE_MAX_LINES]):
+            if not part or (offset and part.startswith(_TITLE_PREFIX)):
+                break
+            if part.endswith(("公司", "說明書", "商品")):
+                break
+            candidate += part
+            # Inline benefits are a separate paragraph, not part of a title qualifier.
+            for opening in _TITLE_BRACKETS:
+                before, separator, after = candidate.partition(opening)
+                if separator and before.rstrip().endswith(_TITLE_ENDINGS) and (":" in after or "：" in after):
+                    candidate = before.rstrip()
+                    break
+            if len(candidate) > _TITLE_MAX_CHARACTERS or any(char in candidate for char in "，。；：,:;!?！？�"):
+                break
+            base = _title_base(candidate)
+            if base is None or not base.endswith(_TITLE_ENDINGS):
+                continue
+            if len(base.removeprefix(_TITLE_PREFIX)) < 4:
+                break
+            # A following qualifier belongs to this name; a benefits paragraph does not.
+            following = start + offset + 1
+            if following < len(lines) and lines[following].startswith(tuple(_TITLE_BRACKETS)):
+                extended = candidate + lines[following]
+                qualifier = lines[following].rstrip("）)】")
+                if (qualifier.endswith(("型", "保險商品", "無身故給付", "無擔保"))
+                        and not any(char in extended for char in "，。；：,:;!?！？�")
+                        and _title_base(extended) == base):
+                    candidate = extended
+            candidates[candidate] = base
+            break
+    main = {title: base for title, base in candidates.items() if not base.endswith(("附加條款", "批註條款"))}
+    # A second product need not repeat the insurer. Generic family labels and wrapped
+    # fragments already contained in the selected full name are not other products.
+    if main:
+        compact_titles = tuple("".join(title.split()) for title in main)
+        for line in lines:
+            base = _title_base(line)
+            if (not base or base.startswith((_TITLE_PREFIX, *_TITLE_FAMILY_PREFIXES))
+                    or not base.endswith(("保險", "壽險", "附約"))
+                    or any(char in line for char in "、，。；：,:;!?！？�")):
+                continue
+            positions = [position for term in _TITLE_WRAP_TERMS if (position := base.find(term)) >= 0]
+            if positions and min(positions) >= 2 and not any("".join(line.split()) in title for title in compact_titles):
+                return ""
+    selected = main or candidates
+    # Repeated headers can differ only in extraction spacing. Keep printed spacing.
+    selected = {"".join(title.split()): title for title in selected}
+    return next(iter(selected.values())) if len(selected) == 1 else ""
 
 
 def _kind_for(heading: str) -> ClauseKind:

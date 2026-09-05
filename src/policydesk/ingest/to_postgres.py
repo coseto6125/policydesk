@@ -26,7 +26,7 @@ from msgspec import json
 from pypdf import PdfReader
 
 from policydesk.bootloader import logger
-from policydesk.clauses.index import _tidy, document_kind
+from policydesk.clauses.index import _tidy, _title_of, document_kind
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -101,7 +101,7 @@ async def copy_corpus(sqlite_path: Path, db: Database) -> tuple[int, int]:
             r["product_id"],
             r["doc_sha"],
             r["insurer"],
-            _tidy(r["name"]),
+            _tidy(r["name"]).strip(),
             r["line"],
             r["attachment"],
             r["approval"],
@@ -308,3 +308,47 @@ async def refresh_document_kinds(corpus: Path, db: Database) -> dict[str, int]:
     await db.execute_many("UPDATE product SET document_kind = $2::text WHERE product_id = $1::text", updates)
     logger.info("document_kinds_refreshed", counts=counts)
     return counts
+
+
+async def refresh_product_names(corpus: Path, db: Database, *, apply: bool = False) -> dict:
+    """
+    Correct names from printed cover titles without rewriting clauses, IDs or policy cover.
+
+    An unresolved or multi-product document retains its stripped existing label and
+    appears in the report. Metadata, a filename and a referenced product are not title evidence.
+    Only the operator's ingest path calls this; it is not a model-callable tool.
+    """
+    rows = await db.fetch("SELECT product_id, doc_sha, name, document_kind, source_url FROM product ORDER BY product_id")
+
+    def inspect() -> tuple[list[dict], list[dict]]:
+        changes, unresolved = [], []
+        for row in rows:
+            reader = PdfReader(corpus / f"{row['doc_sha']}.pdf")
+            first_page = reader.pages[0].extract_text() if reader.pages else ""
+            title = _title_of(first_page or "")
+            if not title:
+                unresolved.append({
+                    "product_id": row["product_id"], "name": row["name"].strip(),
+                    "document_kind": row["document_kind"], "source_url": row["source_url"],
+                })
+            name = title or row["name"].strip()
+            if name != row["name"]:
+                changes.append({**row, "new_name": name})
+        return changes, unresolved
+
+    changes, unresolved = await asyncio.to_thread(inspect)
+    if changes and apply:
+        async with db.transaction() as session:
+            written = await session.fetch(
+                """UPDATE product p SET name = candidate.name
+                   FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) AS candidate(id, sha, old_name, name)
+                   WHERE p.product_id = candidate.id AND p.doc_sha = candidate.sha AND p.name = candidate.old_name
+                   RETURNING p.product_id""",
+                [[row[key] for row in changes] for key in ("product_id", "doc_sha", "name", "new_name")],
+            )
+            if len(written) != len(changes):
+                raise RuntimeError("Product metadata changed during inspection; no name corrections were committed")
+    return {
+        "inspected": len(rows), "updated": len(changes) if apply else 0,
+        "changes": changes, "unresolved": unresolved,
+    }

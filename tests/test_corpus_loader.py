@@ -9,7 +9,8 @@ already held.
 
 import re
 from pathlib import Path
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from msgspec import json
@@ -28,7 +29,7 @@ async def test_copy_corpus_legacy_ideographs_are_normalized_before_postgres(tmp_
     source = connect(path)
     source.execute(
         "INSERT INTO product (product_id,doc_sha,insurer,name,line,attachment,pages) VALUES (?,?,?,?,?,?,?)",
-        ("p", "sha", "test", "一" + chr(0xF98E) + "期（Ａ）", "health", "main", 1),
+        ("p", "sha", "test", "  一" + chr(0xF98E) + "期（Ａ）  ", "health", "main", 1),
     )
     source.execute(
         "INSERT INTO clause (product_id,clause_id,kind,heading,verbatim,page) VALUES (?,?,?,?,?,?)",
@@ -42,6 +43,54 @@ async def test_copy_corpus_legacy_ideographs_are_normalized_before_postgres(tmp_
     product_call, clause_call = db.execute_many.call_args_list
     assert product_call.args[1][0][3] == "一年期（Ａ）"
     assert clause_call.args[1][0][3:5] == ("申領", "受益人（Ａ）：文件。")
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+async def test_refresh_product_names_printed_title_updates_only_unchanged_source(tmp_path, monkeypatch, conflict):
+    from policydesk.ingest import to_postgres
+
+    old_name = "本商品說明書僅供參考，詳細內容請以保險單條款為準"
+    title = "國泰人壽安心終身壽險"
+    page = SimpleNamespace(extract_text=lambda: f"{old_name}\n{title}\n商品說明書")
+    monkeypatch.setattr(to_postgres, "PdfReader", lambda path: SimpleNamespace(pages=[page]))
+    pool = AsyncMock()
+    pool.fetch.return_value = [{"product_id": "p", "doc_sha": "sha", "name": old_name,
+                                "document_kind": "brochure", "source_url": "fixture"}]
+    session = AsyncMock()
+    session.fetch.return_value = [] if conflict else [{"product_id": "p"}]
+    pool.transaction = MagicMock()
+    context = pool.transaction.return_value
+    context.__aenter__.return_value = session
+    if conflict:
+        with pytest.raises(RuntimeError, match="metadata changed"):
+            await to_postgres.refresh_product_names(tmp_path, pool, apply=True)
+        assert context.__aexit__.call_args.args[0] is RuntimeError
+    else:
+        report = await to_postgres.refresh_product_names(tmp_path, pool, apply=True)
+        assert report["inspected"] == report["updated"] == 1
+        assert report["unresolved"] == []
+        assert report["changes"][0]["new_name"] == title
+    sql, parameters = session.fetch.call_args.args
+    assert parameters == [["p"], ["sha"], [old_name], [title]]
+    assert "p.doc_sha = candidate.sha" in sql
+    assert "p.name = candidate.old_name" in sql
+    assert "UPDATE product p SET name" in sql
+    pool.execute_many.assert_not_awaited()
+
+
+async def test_refresh_product_names_unresolved_is_reported_not_guessed(tmp_path, monkeypatch):
+    from policydesk.ingest import to_postgres
+
+    page = SimpleNamespace(extract_text=lambda: "合作廠商資料及查閱方式\n公司地址及電話")
+    monkeypatch.setattr(to_postgres, "PdfReader", lambda path: SimpleNamespace(pages=[page], metadata={"/Title": "不可信商品名"}))
+    row = {"product_id": "p", "doc_sha": "sha", "name": "合作廠商資料及查閱方式",
+           "document_kind": "unknown", "source_url": "fixture"}
+    pool = AsyncMock()
+    pool.fetch.return_value = [row]
+    report = await to_postgres.refresh_product_names(tmp_path, pool)
+    assert report["updated"] == 0
+    assert report["unresolved"] == [{key: row[key] for key in ("product_id", "name", "document_kind", "source_url")}]
+    pool.transaction.assert_not_called()
 
 
 async def test_build_catalog_health_sum_insured_does_not_invent_daily_benefit():

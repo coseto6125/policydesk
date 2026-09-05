@@ -1,5 +1,60 @@
 # Supervisor notes
 
+## Corpus names and demonstration rates — 2026-09-05, 23:43
+
+The old title selector accepted the first readable line after a furniture denylist.
+Readable footers, carbon-label numbers and section headings therefore became product names.
+The replacement requires printed title evidence, handles bounded wrapped titles and
+qualifiers, and leaves multiple-product or unreadable covers unresolved rather than guessing.
+It changes title metadata only, not article boundaries, clause text or document kinds.
+
+Inspected all 660 local PDFs and applied 195 name/padding corrections to Postgres in
+one transaction guarded by product ID, document SHA and the previously read name.
+Footer names: 62 -> 0. Names with leading/trailing spaces: 24 -> 0.
+All 299 contract documents resolve. Another 166 documents remain unresolved:
+163 unknown and 3 brochure. Their existing stripped labels remain, including section
+and fund-disclosure labels; this is not a claim that all 660 names are now correct.
+The full changes and unresolved IDs/source URLs are in
+`data/evaluations/product-name-review-20260905.json` (local audit artifact).
+SQL and raw before/after output are in `data/evaluations/corpus-sql-audit-20260905.txt`.
+FU-2026-09-05-ac4c0e84b442 remains open for the unresolved documents.
+
+Health demonstration premiums previously used a daily-benefit-sized range against
+generic insured-amount units. They now use 10-50 per 1,000 insured amount (1%-5%),
+without changing policy cover or claiming these are insurer tariff rates.
+The live catalogue has 77 health contract entries in that range.
+Five pairs of same-name on-sale contract records still exist; the product-ID hash still
+explains differences in their synthetic premiums. They were not merged or deleted by name.
+Those five pairs are not the same population as the original 58 duplicate-name groups.
+
+Before/after probes match: clause=11775, policy=288;
+clause product/ID/heading/text/page fingerprint=df9e6247c510463b0794025eef812081;
+policy ID/member/product/cover fingerprint=d9723e35e019d25dd3eaeed6f46a8cb6.
+The title-only parser test also checks unchanged clauses, document ID and kind.
+Vector source queries read contract clauses, not product names or catalogue rates;
+this change does not require rebuilding the user's new Cloudflare index.
+
+Boundary correction: contract_clause has 10512 rows, maximum 54451 characters and
+zero over 100000; raw clause still has 40 brochure rows over 100000, maximum 420375.
+FU-2026-09-05-84ab360decab remains open: retrieval isolation is not a raw parser fix.
+
+Final targeted command: `.venv/bin/python -m pytest tests/test_clause_index.py tests/test_quote.py tests/test_payment.py tests/test_conversation_memory.py tests/test_corpus_loader.py::test_copy_corpus_legacy_ideographs_are_normalized_before_postgres tests/test_corpus_loader.py::test_refresh_product_names_printed_title_updates_only_unchanged_source tests/test_corpus_loader.py::test_refresh_product_names_unresolved_is_reported_not_guessed -q -ra --tb=short`.
+Result: 189 passed, 0 skipped, 0 deselected, in 20.58 seconds; Ruff passed.
+The service was active and TCP 5434/SELECT 1 succeeded before testing.
+Only four isolated/mock corpus-loader cases ran, not that whole file or the full suite.
+
+The tracked SQLite corpus cache is unchanged. A full PDF rebuild uses the new selector;
+importing the old cache directly can restore old names and must be followed by
+`policydesk-ingest --names-only` against the source PDFs. Updating/committing that
+83 MB cache is pending the user's choice, not silently included in this patch.
+
+Document changes were committed in 2e061a0 and health rates in 9df66a0.
+The document stash ae26e7629e6e88dca88fad665041979c77741a5c was reviewed against
+the completed document code/tests and dropped with the user's authorization.
+The unrelated cost-work stash remains. Both feat/desk-cost-and-hardening and
+feat/desk-ui-motion have zero commits outside main and no attached worktree;
+there is no identified reason to retain those branches, but they were not deleted here.
+
 ## Document transactions completed — 2026-09-05, 23:10
 
 The upload-refusal and transaction work left unfinished in 75e3069 is now implemented.
