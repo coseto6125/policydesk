@@ -1028,3 +1028,43 @@ async def test_a_desk_pane_receives_only_its_own_members_snapshots():
 
     assert len(owner.received) == 1
     assert stranger.received == [], "a snapshot reached a pane scoped to a different member"
+
+
+@pytest.mark.asyncio
+async def test_a_case_push_refreshes_the_queue_beside_it():
+    """
+    The rail and the main pane must tell one story.
+
+    The queue was sent at connect and then only when a pane asked. The case snapshot
+    went out every turn, so the two halves disagreed: v6 待人工審核 in the main pane,
+    交付文件 v3 in the rail, same case, checkpoint already at review.
+    """
+    from unittest.mock import AsyncMock
+
+    from msgspec import json
+
+    from policydesk.web.server import _broadcast_queue
+
+    class Pane:
+        def __init__(self) -> None:
+            self.received: list[str] = []
+
+        async def send(self, body: str) -> None:
+            self.received.append(body)
+
+    owner, stranger = Pane(), Pane()
+    application = SimpleNamespace(ctx=SimpleNamespace(desk_sockets={(owner, 101), (stranger, 202)}))
+    db = AsyncMock()
+    db.fetch.return_value = [{"case_id": 7, "stage": "review"}]
+
+    await _broadcast_queue(application, db, 101)
+
+    (frame,) = owner.received
+    sent = json.decode(frame.encode())
+    assert sent["type"] == "queue"
+    assert sent["cases"] == [{"case_id": 7, "stage": "review"}]
+    assert stranger.received == [], "one member's case list reached another member's pane"
+
+    owner.received.clear()
+    await _broadcast_queue(application, db, None)
+    assert owner.received == [], "no member means no list, never an unscoped one"

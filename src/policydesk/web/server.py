@@ -292,6 +292,32 @@ async def _broadcast_desk(application: Sanic, payload: dict[str, Any]) -> None:
     application.ctx.desk_sockets -= {entry for entry in application.ctx.desk_sockets if entry[0] in dead}
 
 
+async def _broadcast_queue(application: Sanic, db: Database, member_id: int | None) -> None:
+    """
+    Re-send the case list to the panes watching one member.
+
+    Args:
+        application: The running app.
+        db: The database, for the queue read.
+        member_id: Whose queue. None when the snapshot carried no member, and then
+            nothing is sent rather than an unscoped list.
+
+    The queue went out once at connect and after that only when a pane asked for it,
+    while the case snapshot went out on every turn. The two halves of one screen
+    disagreed: the main pane read v6 待人工審核 and the rail beside it still said
+    交付文件 v3, same case, with the websocket checkpoint already at review. It reads
+    as a database that has not moved and is a list that has not been re-read.
+
+    One query serves every socket, because `_broadcast_desk` narrows them to the member
+    whose queue this is.
+    """
+    if member_id is None:
+        return
+    await _broadcast_desk(
+        application, {"type": "queue", "member_id": member_id, "cases": _jsonable(await _queue(db, member_id))}
+    )
+
+
 async def _next_serial(db: Database) -> int:
     """
     Give the next national-ID serial.
@@ -699,6 +725,7 @@ async def _push_case(
     body = json.encode(payload).decode()
     await ws.send(body)
     await _broadcast_desk(application, payload)
+    await _broadcast_queue(application, db, snap.get("member_id"))
 
 
 async def _last_message(db: Database, case_id: int) -> int:
@@ -864,6 +891,7 @@ async def desk_socket(request: Request, ws: Websocket) -> None:
                     else:
                         snap = await cmd.snapshot(db, outcome.case_id)
                         await _broadcast_desk(request.app, {"type": "case", **_jsonable(snap or {})})
+                        await _broadcast_queue(request.app, db, (snap or {}).get("member_id"))
                 case "queue":
                     await ws.send(json.encode({"type": "queue", "cases": _jsonable(await _queue(db, viewer))}).decode())
                 case "open":
