@@ -20,6 +20,117 @@ _GAP = re.compile(r"(?<=[\u3000-\u303f\u3400-\u9fff\uff00-\uffef])[ \t\u3000]+(?
 needs_pdf = pytest.mark.skipif(not FIXTURE.exists(), reason="run scripts/fetch_fixtures.sh first")
 
 
+def test_tidy_compatibility_ideographs_preserves_fullwidth_punctuation():
+    from policydesk.clauses.index import _tidy
+
+    assert _tidy("受益人（保險年齡）：執行，申領；Ａ１。") == "受益人（保險年齡）：執行，申領；Ａ１。"
+
+
+def test_tidy_normalizes_ideographs_before_closing_cjk_gaps():
+    from policydesk.clauses.index import _tidy
+
+    assert _tidy("受 " + chr(0xFA17) + " 人（ A B ）") == "受益人（ A B ）"
+
+
+def test_normalize_ideographs_only_changes_compatibility_block():
+    from unicodedata import normalize
+
+    from policydesk.clauses.index import normalize_ideographs
+
+    block = "".join(chr(code) for code in range(0xF900, 0xFB00))
+    punctuation = "，：；（）Ａ１①㍻"
+    expected = "".join(normalize("NFKC", char) for char in block) + punctuation
+    assert normalize_ideographs(block + punctuation) == expected
+    assert normalize_ideographs(expected) == expected
+
+
+@pytest.mark.parametrize("number", ["第十九條", "第 19 條"])
+def test_build_index_heading_before_number_keeps_first_body_sentence(tmp_path, monkeypatch, number):
+    from types import SimpleNamespace
+
+    from policydesk.clauses import index as parser
+
+    page = "國泰人壽測試終身保險\n除外責任\n" + number + "\n第一句正文不得遺失。但有例外。\n"
+    monkeypatch.setattr(parser, "PdfReader", lambda _: SimpleNamespace(
+        pages=[SimpleNamespace(extract_text=lambda: page)],
+    ))
+    pdf = tmp_path / "contract.pdf"
+    pdf.write_bytes(b"fixture")
+    clause = build_index(pdf).clauses["art.19"]
+    assert clause.heading == "除外責任"
+    assert clause.verbatim == "第一句正文不得遺失。但有例外。"
+    assert clause.kind is ClauseKind.EXCLUSION
+
+
+def test_build_index_inline_heading_keeps_cross_reference_in_body(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from policydesk.clauses import index as parser
+
+    page = "國泰人壽測試終身保險\n第 1 條 契約的構成\n第一條所約定之事項仍適用。\n第 2 條 保險範圍\n保障正文。"
+    monkeypatch.setattr(parser, "PdfReader", lambda _: SimpleNamespace(
+        pages=[SimpleNamespace(extract_text=lambda: page)],
+    ))
+    pdf = tmp_path / "contract.pdf"
+    pdf.write_bytes(b"fixture")
+    indexed = build_index(pdf)
+    assert indexed.clauses["art.1"].heading == "契約的構成"
+    assert indexed.clauses["art.1"].verbatim == "第一條所約定之事項仍適用。"
+    assert indexed.clauses["art.2"].verbatim == "保障正文。"
+
+
+def test_build_index_heading_after_number_is_not_previous_section_heading(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from policydesk.clauses import index as parser
+
+    page = "國泰人壽測試終身保險\n附約的解釋\n第 1 條\n附約的訂立及構成\n第一句正文不得遺失。"
+    monkeypatch.setattr(parser, "PdfReader", lambda _: SimpleNamespace(
+        pages=[SimpleNamespace(extract_text=lambda: page)],
+    ))
+    pdf = tmp_path / "contract.pdf"
+    pdf.write_bytes(b"fixture")
+    clause = build_index(pdf).clauses["art.1"]
+    assert clause.heading == "附約的訂立及構成"
+    assert clause.verbatim == "第一句正文不得遺失。"
+
+
+@pytest.mark.skipif(not list((FIXTURE.parent.parent / "cathay").glob("346e81662019*.pdf")), reason="local corpus absent")
+def test_build_index_real_summary_does_not_promote_body_to_heading():
+    from policydesk.core.models import DocumentKind
+
+    pdf = next((FIXTURE.parent.parent / "cathay").glob("346e81662019*.pdf"))
+    indexed = build_index(pdf)
+    clause = indexed.clauses["art.39"]
+    assert clause.heading == "不分紅保單"
+    assert clause.verbatim.startswith("本保險為不分紅保單，不參加紅利分配，並無紅利給付項目。")
+    assert indexed.document_kind is DocumentKind.BROCHURE
+
+
+@pytest.mark.parametrize(("cover", "has_first", "expected"), [
+    ("國泰人壽測試保險\n商 品 說 明 書\n", True, "brochure"),
+    ("商品說明書\n", False, "brochure"),
+    ("重要條款摘要\n", True, "brochure"),
+    ("國泰人壽測試保險\n", True, "contract"),
+    ("僅有商品介紹\n", False, "unknown"),
+])
+def test_document_kind_printed_brochure_label_outranks_numbered_articles(cover, has_first, expected):
+    from policydesk.clauses.index import document_kind
+
+    assert document_kind(cover, has_first_article=has_first).value == expected
+
+
+@pytest.mark.parametrize("kind", ["brochure", "unknown"])
+def test_cite_non_contract_source_rejects_existing_article(kind):
+    from policydesk.clauses.index import ClauseIndex
+    from policydesk.core.models import Clause, DocumentKind
+
+    clause = Clause(clause_id="art.1", kind=ClauseKind.GRANT, heading="保障範圍", verbatim="摘要內容", page=1)
+    index = ClauseIndex(doc_id="source", title="來源", clauses={"art.1": clause}, document_kind=DocumentKind(kind))
+    with pytest.raises(ValueError, match="not a contract citation"):
+        index.cite("art.1")
+
+
 def test_cn_to_int_units_returns_digit():
     assert cn_to_int("三") == 3
 
@@ -34,6 +145,28 @@ def test_cn_to_int_teens_returns_ten_plus_unit():
 
 def test_cn_to_int_compound_tens_returns_full_value():
     assert cn_to_int("二十三") == 23
+
+
+@pytest.mark.parametrize(("written", "number"), [("廿", 20), ("廿七", 27), ("卅", 30), ("卅六", 36)])
+def test_cn_to_int_abbreviated_tens_returns_full_value(written, number):
+    assert cn_to_int(written) == number
+
+
+def test_build_index_real_abbreviated_articles_keep_document_lists_separate():
+    pdf = FIXTURE.parent.parent / "cathay" / "f8e03e1a4a79bc03cf44ef1eb5b6a9c9.pdf"
+    if not pdf.exists():
+        pytest.skip("local corpus absent")
+    indexed = build_index(pdf)
+    assert {f"art.{number}" for number in range(1, 37)} <= indexed.clauses.keys()
+    first = indexed.clauses["art.27"]
+    second = indexed.clauses["art.28"]
+    assert first.heading == "保險金的申領（一）"
+    assert second.heading == "保險金的申領（二）"
+    assert "病理切片檢查" in first.verbatim
+    assert "癌症門診手術證明文件" in second.verbatim
+    assert "保險金的申領" not in indexed.clauses["art.20"].verbatim
+    assert "第廿八條" not in first.verbatim
+    assert indexed.clauses["art.36"].heading == "管轄法院"
 
 
 def test_money_without_citation_raises():

@@ -133,9 +133,12 @@ def build(corpus: Path, db_path: Path, insurer: str = "國泰人壽") -> tuple[i
                 pages=max((c.page for c in index.clauses.values()), default=0),
                 approval=_approval_of(index),
                 source_url=url_by_sha.get(sha),
+                document_kind=index.document_kind,
             )
             conn.execute(
-                "INSERT OR REPLACE INTO product VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO product "
+                "(product_id,doc_sha,insurer,name,line,attachment,approval,pages,source_url,document_kind) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     product.product_id,
                     product.doc_sha,
@@ -146,6 +149,7 @@ def build(corpus: Path, db_path: Path, insurer: str = "國泰人壽") -> tuple[i
                     product.approval,
                     product.pages,
                     product.source_url,
+                    product.document_kind.value,
                 ),
             )
             products += 1
