@@ -95,6 +95,28 @@ class Scenario(Struct, frozen=True):
     one pixel away from a mis-tap, and a mis-tap that reads as 我要買這張 is an
     expression of intent the customer never made. Buying is typed, never tapped.
     """
+    coverage_verdict: bool = False
+    """Whether a reader can take this scenario's reply as whether something is covered.
+
+    Set it and the waiting, exclusion and carve-back clauses of the customer's contracts
+    are gathered whatever tools the scenario declares. It is not a prompt asking the
+    model to consider them; it is the rows being present.
+
+    The case that named it: 保單生效第 20 天生病住院，賠嗎？ routed to `claim_checklist`,
+    whose tools read documents and multipliers and no clause bearing on cover. Its
+    material held art.3, art.14 and art.20 and not art.2 — and art.3 grants cover for
+    第二條約定之疾病, while art.2 defines 疾病 as 自本附約生效日起持續有效第三十一日起
+    所發生的疾病. So the reply quoted a grant clause that defers to a definition nobody
+    had read, and answered 符合本附約的保險範圍 about a contract with a 31-day wait.
+
+    The citation check passed, and it was right to: it tests whether what was cited
+    exists, not whether what mattered was cited. Those are different guarantees and only
+    the first is built. The same question on the same product had been answered 不賠
+    through `explain_cover`, which retrieves those clauses — so the desk gave two opposite
+    answers depending on which scenario the router picked.
+
+    A material gap is not a prompt problem. The model fills what the rows leave out.
+    """
     calculator: bool = False
     """Whether the answering call is offered the calculator tool.
 

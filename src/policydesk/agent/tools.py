@@ -378,6 +378,50 @@ nothing."""
 
 
 @requires_identity
+async def coverage_clauses(db: Database, product_ids: list[str]) -> list[dict[str, Any]]:
+    """
+    Read the clauses that decide whether a loss is covered at all.
+
+    Args:
+        db: The database.
+        product_ids: Which contracts.
+
+    Returns:
+        Every definition, waiting, exclusion and carve-back clause of those contracts,
+        with its verbatim text.
+
+    Unfiltered by topic, unlike `find_clause`. A customer who asks 保單生效第 20 天生病
+    住院，賠嗎 names no topic a keyword search matches, and the clause that answers them
+    carries no matching word either.
+
+    **Definitions are in the set because that is usually where the rule lives.** The
+    corpus holds 43 clauses of kind `waiting` and 296 of kind `definition`, and the
+    contract that produced the failure is one of the 296: its art.3 grants cover for
+    第二條約定之疾病, and its art.2 defines 疾病 as 自本附約生效日起持續有效第三十一日
+    起所發生的疾病. A grant clause that defers to a definition says nothing on its own,
+    and quoting it alone is how 保單第 20 天生病住院，符合本附約的保險範圍 was written
+    about a contract with a 31-day wait.
+
+    The other three kinds are the ones `find_clause` sorts to the front, and for the same
+    reason: a grant clause alone answers 保什麼 wrongly.
+    """
+    if not product_ids:
+        return []
+    return await db.fetch(
+        """SELECT c.product_id, c.clause_id, c.kind, c.heading, c.verbatim, c.page,
+                  p.name AS product_name
+           FROM contract_clause c JOIN product p USING (product_id)
+           WHERE c.product_id = ANY($1::text[])
+             AND c.kind IN ('definition','waiting','exclusion','carve_back')
+           ORDER BY CASE c.kind
+                        WHEN 'definition' THEN 0 WHEN 'waiting' THEN 1
+                        WHEN 'exclusion' THEN 2 ELSE 3
+                    END, c.product_id, c.clause_id""",
+        [product_ids],
+    )
+
+
+@requires_identity
 async def find_clause(
     db: Database, product_ids: list[str], topic: str, limit: int = 6, index: Retriever | None = None
 ) -> list[dict[str, Any]]:

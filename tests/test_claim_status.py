@@ -116,3 +116,40 @@ async def test_gather_unconfirmed_never_calls_member_claims(db, monkeypatch):
     monkeypatch.setitem(claim_status.TOOLS, "member_claims", boom)
     facts = await gather(db, {}, member_id=1, today=None, retriever=None, allowed=frozenset({"complaint_channel"}))
     assert "member_claims" not in facts
+
+
+def test_a_scenario_that_can_say_covered_reads_the_clauses_that_decide_it():
+    """
+    保單生效第 20 天生病住院，賠嗎？ routed to `claim_checklist`, whose every tool is
+    about documents. Its material held art.3 — 因第二條約定之疾病…給付 — and not art.2,
+    which defines 疾病 as 自本附約生效日起持續有效第三十一日起所發生的疾病.
+
+    So the reply quoted a grant clause deferring to a definition nobody had read, and
+    said 符合本附約的保險範圍 about a contract with a 31-day wait. The citation check
+    passed and was right to: it tests whether what was cited exists, not whether what
+    mattered was cited.
+    """
+    from policydesk.agent.scenario import BY_NAME
+
+    flagged = {name for name, s in BY_NAME.items() if s.coverage_verdict}
+    assert "claim_checklist" in flagged, "the scenario the failure came from"
+    assert flagged >= {"claim_checklist", "claim_status", "policy_overview"}
+
+    # Anything already retrieving contract clauses has them either way; the flag is for
+    # the scenarios whose declared tools read something else entirely.
+    for name in flagged:
+        assert "find_clause" not in BY_NAME[name].tools, f"{name} already reads clauses"
+
+
+def test_the_coverage_set_holds_definitions_not_only_waiting_clauses():
+    """
+    43 clauses in the corpus carry kind `waiting`; 296 carry `definition`. The contract
+    that produced the failure is one of the 296 — its 31-day rule is a sentence inside
+    art.2 名詞定義, not a clause of its own.
+    """
+    import inspect
+
+    from policydesk.agent import tools
+
+    body = inspect.getsource(tools.coverage_clauses)
+    assert "'definition','waiting','exclusion','carve_back'" in body

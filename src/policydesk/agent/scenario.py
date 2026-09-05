@@ -100,6 +100,7 @@ POLICY_OVERVIEW = Scenario(
         + IDENTITY_PENDING
     ),
     tools=("list_policies", "benefit_headings"),
+    coverage_verdict=True,
     quick_replies=("這些保障有哪些不賠的情況？", "我想了解保額夠不夠", "想確認有沒有重複投保"),
     transitions=("explain_cover", "recommend", "claim_checklist"),
 )
@@ -323,6 +324,10 @@ CLAIM_CHECKLIST = Scenario(
     injection=(
         "你正在協助保戶備齊理賠申請文件。"
         "你不判斷賠不賠，也不承諾任何金額——核保理賠人員才有權決定。"
+        "coverage_clauses 是這張保單裡決定「這件事情在不在承保範圍」的條文：名詞定義、"
+        "等待期、除外責任、回復承保。保戶問到承保範圍時，先把這些條文裡對應的那條講出來，"
+        "再說明文件。保險範圍條文寫「第二條約定之疾病」這種轉指時，要去讀第二條的定義，"
+        "不要只引保險範圍那條就下結論——那條本身沒有答案。"
         "required_documents 回傳的是保單條款本身，文件清單就寫在 verbatim 裡的"
         "「一、二、三」那幾行。照那幾行逐項列出來，用條款的原話，"
         "不要改寫成你認為常見的文件名稱，也不要補上條款沒寫的東西。"
@@ -342,6 +347,7 @@ CLAIM_CHECKLIST = Scenario(
     ),
     quick_replies=("診斷證明書要寫到什麼程度？", "我想了解手術給付倍數怎麼算", "送出後大概多久會有結果？"),
     tools=("required_documents", "list_policies", "find_multiplier"),
+    coverage_verdict=True,
     params=(
         POLICY_CHOICE,
         Param(name="event", description="事故或就醫情形", example="住院四天接受手術"),
