@@ -148,7 +148,9 @@ class Turn:
         customer's message. The prompt names it, and the chips are rendered in it."""
 
 
-async def _record_failure(db: Database, turn: Turn, phase: Phase, scenario: str | None, error: str, latency_ms: int) -> None:
+async def _record_failure(
+    db: Database, turn: Turn, phase: Phase, scenario: str | None, error: str, latency_ms: int, provider: str
+) -> None:
     """
     Record a model call that never returned.
 
@@ -159,6 +161,10 @@ async def _record_failure(db: Database, turn: Turn, phase: Phase, scenario: str 
         scenario: Which scenario was active, if one had been chosen.
         error: What the provider said.
         latency_ms: How long the attempt took before giving up.
+        provider: Which seam was serving. Passed rather than assumed: this column read
+            `"openai"` for every outage whatever answered, so an auditor counting which
+            provider goes silent was reading a constant. `_record` has always written
+            `completion.provider`; a failure has no completion to read it off.
 
     An outage is the entry the trail most needs. Recording only successes leaves an
     auditor unable to distinguish "the desk never tried" from "the desk tried and the
@@ -168,7 +174,7 @@ async def _record_failure(db: Database, turn: Turn, phase: Phase, scenario: str 
     await db.execute(
         """INSERT INTO llm_usage (case_id, turn_id, phase, scenario, provider, model, latency_ms, request, response)
            VALUES ($1::bigint,$2::text,$3::text,$4::text,$5::text,$6::text,$7::int,$8::jsonb,$9::jsonb)""",
-        [turn.case_id, turn.turn_id, phase.value, scenario, "openai", "", latency_ms,
+        [turn.case_id, turn.turn_id, phase.value, scenario, provider, "", latency_ms,
          {"scenario": scenario}, {"error": error[:2000]}],
     )
 
@@ -709,7 +715,7 @@ async def run_turn(
     except ProviderError as exc:
         latency = int((time.perf_counter() - started) * 1000)
         logger.warning("turn_unrouted", case_id=case_id, error=str(exc))
-        await _record_failure(db, turn, Phase.ROUTE, None, str(exc), latency)
+        await _record_failure(db, turn, Phase.ROUTE, None, str(exc), latency, provider.name)
         turn.reply = "櫃台的語言服務目前無回應，請稍候再試，或改由專人與您聯繫。"
         return turn
 
@@ -813,7 +819,7 @@ async def run_turn(
     except ProviderError as exc:
         latency = int((time.perf_counter() - answering) * 1000)
         logger.warning("turn_unanswered", case_id=case_id, scenario=scenario.name, error=str(exc))
-        await _record_failure(db, turn, Phase.ANSWER, scenario.name, str(exc), latency)
+        await _record_failure(db, turn, Phase.ANSWER, scenario.name, str(exc), latency, provider.name)
         turn.reply = "櫃台的語言服務目前無回應，本次查詢已記錄，請稍候再試。"
         return turn
 
