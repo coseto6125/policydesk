@@ -74,6 +74,61 @@ def test_recheck_tolerates_whitespace_differences_in_a_quote():
     assert recheck(verdict, subject=subject, allowed_clauses=frozenset()).trustworthy
 
 
+@pytest.mark.parametrize(("source", "quote"), [
+    ("本公司不給付（等待期30日），限住院。", "本公司不給付（等待期30日），限住院。"),
+    ("本公司 不給付（等待期 30 日），限住院。", "本公司不給付（等待期30日），限住院。"),
+    ("本公司 不給付（等待期 30 日），限住院。", "本公司不給付(等待期30日),限住院。"),
+    ("本公司不給付(等待期30日),限住院。", "本公司 不給付（等待期 30 日），限住院。"),
+])
+def test_recheck_quote_width_comparison_preserves_original_inputs(source, quote):
+    subject = {"條款": source}
+    verdict = Verdict(passed=True, reason="核對原文。", quoted_fields=(QuotedField(field="條款", text=quote),))
+    original = json.encode(verdict)
+    checked = recheck(verdict, subject=subject, allowed_clauses=frozenset())
+    assert checked.trustworthy
+    assert checked.faults == ()
+    assert checked.verdict is verdict
+    assert json.encode(verdict) == original
+    assert subject == {"條款": source}
+
+
+@pytest.mark.parametrize(("wide", "narrow"), [
+    ("\uff01", "!"), ("\uff08", "("), ("\uff09", ")"), ("\uff0c", ","),
+    ("\uff0e", "."), ("\uff1a", ":"), ("\uff1b", ";"), ("\uff1f", "?"),
+    ("\uff3b", "["), ("\uff3d", "]"), ("\uff5b", "{"), ("\uff5d", "}"),
+])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_recheck_quote_width_punctuation_matches_symmetrically(wide, narrow, reverse):
+    source, quote = (narrow, wide) if reverse else (wide, narrow)
+    verdict = Verdict(passed=True, reason="核對標點。", quoted_fields=(QuotedField(field="條款", text=f"甲{quote}乙"),))
+    checked = recheck(verdict, subject={"條款": f"甲{source}乙"}, allowed_clauses=frozenset())
+    assert checked.trustworthy
+
+
+@pytest.mark.parametrize("quote", [
+    "本公司不理賠（等待期30日），限住院。",
+    "本公司不給付（等待期3日），限住院。",
+    "本公司給付（等待期30日），限住院。",
+    "本公司不給付等待期30日，限住院。",
+    "本公司不給付（等待期30日）；限住院。",
+    "本公司不給付[等待期30日]，限住院。",
+    "本公司不給付（等待期30日），限住院.",
+    "本公司不給付（等待期\uff13\uff10日），限住院。",
+])
+def test_recheck_quote_content_change_still_rejects(quote):
+    subject = {"條款": "本公司不給付（等待期30日），限住院。"}
+    verdict = Verdict(passed=True, reason="核對原文。", quoted_fields=(QuotedField(field="條款", text=quote),))
+    checked = recheck(verdict, subject=subject, allowed_clauses=frozenset())
+    assert not checked.trustworthy
+    assert checked.faults == ("欄位 條款 中查無所引原文",)
+
+
+@pytest.mark.parametrize(("source", "quote"), [("A", "\uff21"), ("\u884c", "\ufa08")])
+def test_recheck_quote_nonpunctuation_compatibility_change_rejects(source, quote):
+    verdict = Verdict(passed=True, reason="核對原文。", quoted_fields=(QuotedField(field="條款", text=quote),))
+    assert not recheck(verdict, subject={"條款": source}, allowed_clauses=frozenset()).trustworthy
+
+
 @pytest.mark.parametrize("text", ["", " ", "\n\t", "　"])
 def test_recheck_empty_quote_is_not_evidence(text):
     verdict = Verdict(
