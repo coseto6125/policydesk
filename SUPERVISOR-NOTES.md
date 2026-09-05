@@ -1,5 +1,61 @@
 # Supervisor notes
 
+## One-click demo and suite isolation — 2026-09-06
+
+This section supersedes the manual verification/submission guidance in the older document demo evidence below.
+The customer can choose 一鍵缺漏測試, 一鍵錯誤, or 一鍵完整, in that order.
+Missing preserves one unsigned file and existing progress; wrong changes no records.
+Complete and the final individual demo upload run signing, mock identity verification, and submission in one case transaction.
+Verification uses the existing mock identity checksum service, not a local model or real government verification.
+The process stops at REVIEW; a human caseworker alone approves or rejects the demo case.
+Identity or completeness refusals preserve SIGNED or VERIFIED for a retry without re-signing.
+Exceptions and cancellation roll back the whole command. Repeating a completed submission writes nothing.
+The socket takes the case from its confirmed session, never from a client-supplied case or document list.
+The UI retains simulation labels and the accessible notice about future local-model checks.
+
+The reported 24 failures have distinct causes, not one candidate-rendering regression:
+- 20 policy-scope cases used tool mocks without literal public/identity declarations.
+  The runtime gate, gather function, selection function, and original test file are unchanged between 56dcfeb's parent and HEAD 6529103.
+  Preserve the real declarations on replacements; do not weaken fail-closed authorization.
+- Two document rollback probes patched an imported TransactionSession class after another test reloaded its module.
+  The three-test ordered reproduction gave 2 failed / 1 passed; targeting the current module class gave 3 passed.
+- 56dcfeb changed issue_documents and verify_identity to model replies without supplying quick replies.
+  Both now share document follow-up questions; the scenario-inventory assertion remains intact.
+- The user's CF encoder event-loop fix is separate. This process lacks CF credentials and cannot certify live vector calls.
+
+The shared mock_database factory models synchronous transaction creation and async session operations.
+Its tests do not establish rollback or lock correctness; live DB tests establish those guarantees.
+State tests prove workflow correctness, not truthful model prose. Semantic review remains separate from pytest.
+New tests exercise actual commands, cross-case isolation, nonempty progress, refusal/retry, concurrent completion,
+and exception/cancellation after verification and submission. UI tests execute the original JavaScript.
+
+Final auto-flow transcript command: `rtk proxy .venv/bin/python data/evaluations/document-guidance-probe.py`.
+Raw output: `data/evaluations/document-guidance-auto-walk-final-20260906.txt`.
+It uses the real socket handler, DB, and Anthropic HTTP model claude-haiku-4-5-20251001, with a test socket transport.
+Missing produced 9/10 at ISSUED; wrong preserved records; complete reached REVIEW with verification and submission recorded.
+The final reply correctly assigned approval/rejection to a human. No human decision was made by the script.
+Cleanup retained policy=288, clause=11775, contract_clause=10512 and removed all fixture records.
+This is not a browser or novice-user usability test.
+
+HTTP A/B evidence: three trials per arm for six states, followed by a scoped human-review probe.
+Raw outputs: `document-guidance-auto-ab-20260906.txt` and `document-guidance-human-review-final-20260906.txt` under data/evaluations.
+The probes still expose occasional title typos and imprecise action descriptions; they are not universal semantic acceptance.
+Earlier walkthroughs wrongly attributed the review decision to the system. The final scenario clarifies human authority.
+Both final review arms identify human review, so that saturated control does not establish a causal improvement rate.
+No model-reply keyword check or fixed-word rewrite was added.
+
+Overlapping suite runs are diagnostic only: the first baseline was 23 failed / 1357 passed / 4 skipped.
+The intermediate run was 1436 passed / 4 skipped, but overlapped another pytest early and preceded auto-advance.
+After the user yielded the workspace, the final suite starts only after `ps -C pytest` reports no process.
+Final command: `rtk proxy uv run pytest -q -rs -p no:randomly`.
+Exclusive verification window: 2026-09-06 02:18:39-02:23:06 +08:00; pytest elapsed 228.92 seconds.
+Result: 1468 passed, 0 failed, 4 skipped. No other pytest ran during this window.
+Two skips require CF credentials unavailable to this process (one reports `no vectors built`).
+The other two skip member-record checks for public product_clauses and soothe scenarios.
+The user's separate live-CF result is not included in this local pass count.
+Raw suite output and the 24-node classification are under data/evaluations as
+`pytest-clean-20260906.txt` and `test-failure-classification-20260906.md`.
+
 ## Document demo acceptance — 2026-09-06
 
 The user limits this release to an internal demonstration, with no real document intake or signatures.

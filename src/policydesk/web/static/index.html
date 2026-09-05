@@ -1027,6 +1027,9 @@
   .doc-row .name { flex: 1 1 160px; min-width: 0; }
   .document-demo-help > summary { display: flex; align-items: center; gap: var(--s2); min-height: 44px; cursor: pointer; color: var(--accent); }
   .document-demo-help > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .document-demo-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+  .document-demo-actions button { flex: 1 1 130px; min-height: 44px; }
+  .document-demo-status { color: var(--ink-2); font-size: 13px; }
 
   /* ═══════════════ responsive ═══════════════ */
 
@@ -1440,12 +1443,22 @@
 <dialog id="docModal" aria-describedby="documentDemoNotice">
   <div class="modal-head">應簽署文件</div>
   <div class="modal-body">
-    <p id="documentDemoNotice">這是示範流程。請選「正確示範文件」或「錯誤示範文件」，使用伺服器提供的固定示範樣本，不會上傳文件內容。伺服器依示範規則檢查：正確樣本會記錄雙方角色的模擬簽署，錯誤樣本不會完成文件或改動既有進度。這不是模型驗證，也不是真實簽署。</p>
+    <p id="documentDemoNotice">這是示範流程，使用固定示範樣本，不會上傳文件內容。依示範規則記錄雙方角色的模擬簽署，不是模型驗證，也不是真實簽署。</p>
+    <div id="documentDemoActions" class="document-demo-actions" role="group" aria-label="一鍵文件示範">
+      <button id="documentDemomissing" data-document-demo="missing" aria-describedby="documentDemoNotice documentDemoStatus" disabled>一鍵缺漏測試</button>
+      <button id="documentDemowrong" data-document-demo="wrong" aria-describedby="documentDemoNotice documentDemoStatus" disabled>一鍵錯誤</button>
+      <button id="documentDemocomplete" class="primary" data-document-demo="complete" aria-describedby="documentDemoNotice documentDemoStatus" disabled>一鍵完整</button>
+    </div>
+    <p>缺漏測試會保留一份未完成文件；錯誤測試不改動進度；一鍵完整會補齊文件、記錄模擬核對並送交人工審核，核准或退件仍由專人決定。若後續步驟未完成，可再按一鍵完整接續處理，不會重新簽署已完成的文件。</p>
+    <p id="documentDemoStatus" class="document-demo-status" role="status" aria-live="polite">請先由櫃台交付文件。</p>
     <details class="document-demo-help">
       <summary aria-label="正式場景驗證說明"><span aria-hidden="true">！</span>正式場景驗證說明</summary>
       <p>正式場景規劃以地端模型檢查文件資料正確性；本展示使用固定樣本與示範規則，尚未執行地端模型驗證。資料檢查不等同身分或簽署效力認證。</p>
     </details>
-    <div id="modalDocs"></div>
+    <details class="document-demo-help">
+      <summary>逐份查看、下載與測試</summary>
+      <div id="modalDocs"></div>
+    </details>
   </div>
   <div class="modal-foot"><button id="closeModal">關閉</button></div>
 </dialog>
@@ -1459,6 +1472,7 @@ const STAGE_NAMES = Object.fromEntries(STAGES.concat([["approved","已核准"],[
 const DESK_TOKEN = "__DESK_TOKEN__";
 let caseId = null, customerWs = null, deskWs = null, pending = null, memberId = null, setupCard = null;
 let lastStage = null, lastSnapshot = "";
+let documentDemoAvailable = false, documentDemoRetry = false, documentDemoBusy = false;
 
 /** Openers for a visitor who does not yet know what to ask. Questions, like every chip. */
 const OPENERS = ["我想了解目前的保單保什麼", "想確認一年繳多少保費", "理賠要準備哪些文件？", "我想了解有沒有適合的方案"];
@@ -1627,6 +1641,8 @@ function bubble(kind, text) {
 
 /** A turn takes several seconds, so the wait is shown rather than left blank. */
 function waiting(on) {
+  documentDemoBusy = on;
+  updateDocumentDemoControls();
   if (!on) { pending?.remove(); pending = null; return; }
   pending = document.createElement("div");
   pending.className = "msg them pending";
@@ -1737,7 +1753,7 @@ function renderCase(c) {
   if (fresh) for (const id of ["docTable", "idTable", "trail"]) reveal($(id));
 
   $("decideBox").hidden = c.stage !== "review";
-  renderModalDocs(docs, unissued);
+  renderModalDocs(docs, unissued, c.stage);
   $("docsBtn").hidden = total === 0;
   markQueue();
 }
@@ -1789,7 +1805,25 @@ function renderPolicies(policies, c, fresh = false) {
   if (fresh) reveal($("policyTable"));
 }
 
-function renderModalDocs(docs, unissued = []) {
+function updateDocumentDemoControls() {
+  const disabled = !documentDemoAvailable || documentDemoBusy;
+  for (const mode of ["missing", "wrong", "complete"]) $("documentDemo" + mode).disabled = disabled;
+  $("documentDemocomplete").disabled = (!documentDemoAvailable && !documentDemoRetry) || documentDemoBusy;
+  for (const button of $("modalDocs").querySelectorAll("button.up")) button.disabled = disabled;
+  $("documentDemoActions").setAttribute("aria-busy", String(documentDemoBusy));
+  $("documentDemoStatus").textContent = documentDemoBusy
+    ? "示範處理中，請等候櫃台說明結果。"
+    : documentDemoAvailable
+      ? "選擇一種示範操作；結果與下一步會顯示在對話中。"
+      : documentDemoRetry
+        ? "文件已齊，可按一鍵完整接續模擬核對與送審；目前狀態請看櫃台說明。"
+        : "目前沒有可操作的待簽文件，請依櫃台說明繼續。";
+}
+
+function renderModalDocs(docs, unissued = [], stage = null) {
+  documentDemoAvailable = stage === "issued" && docs.some(d => !d.signed_at);
+  documentDemoRetry = ["signed", "verified"].includes(stage)
+    && docs.length > 0 && unissued.length === 0 && docs.every(d => d.signed_at);
   $("modalDocs").innerHTML = (docs.map(d => `
     <div class="doc-row">
       <span class="name">${esc(d.kind)}</span>
@@ -1801,6 +1835,7 @@ function renderModalDocs(docs, unissued = []) {
     </div>`).join("")
     + unissued.map(kind => `<div class="doc-row"><span class="name">${esc(kind)}</span>${PILLS.wait("尚未交付，請由專人補齊")}</div>`).join(""))
     || `<div class="empty">目前沒有待簽署文件。</div>`;
+  updateDocumentDemoControls();
 }
 
 function markQueue() {
@@ -2059,7 +2094,10 @@ function connectCustomer(name) {
         renderCitations(m.citations);
         if (m.faults?.length) bubble("sys", `引用查核未過：${m.faults.join("；")}`);
         break;
-      case "notice": waiting(false); bubble("sys", m.text); break;
+      case "notice":
+        if (!m.pending_reply) waiting(false);
+        bubble("sys", m.text);
+        break;
     }
   };
   customerWs.onclose = () => { waiting(false); bubble("sys", "連線已中斷"); };
@@ -2127,13 +2165,23 @@ $("chatInput").addEventListener("keydown", e => { if (e.key === "Enter") send();
 
 $("docsBtn").onclick = () => $("docModal").showModal();
 $("closeModal").onclick = () => $("docModal").close();
+$("documentDemoActions").addEventListener("click", (e) => {
+  const button = e.target.closest("button[data-document-demo]");
+  const available = documentDemoAvailable || (documentDemoRetry && button?.dataset.documentDemo === "complete");
+  if (!button || button.disabled || !available || documentDemoBusy || customerWs?.readyState !== 1) return;
+  waiting(true);
+  customerWs.send(JSON.stringify({ type: "document_demo", mode: button.dataset.documentDemo }));
+  $("docModal").close();
+});
 $("modalDocs").addEventListener("click", (e) => {
   const button = e.target.closest("button[data-doc]");
-  if (!button) return;
+  if (!button || button.disabled) return;
   const id = button.dataset.doc;
   if (button.classList.contains("dl")) {
     window.open(`/doc/${id}?token=${encodeURIComponent(DESK_TOKEN)}`, "_blank");
   } else {
+    if (!documentDemoAvailable || documentDemoBusy || customerWs?.readyState !== 1) return;
+    waiting(true);
     customerWs.send(JSON.stringify({ type: "upload", document_id: Number(id), sample: button.dataset.sample }));
   }
 });

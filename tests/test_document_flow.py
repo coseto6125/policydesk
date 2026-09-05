@@ -19,7 +19,6 @@ from conftest import connected_database
 from policydesk.agent import tools
 from policydesk.core import commands
 from policydesk.core import db as database_module
-from policydesk.core.db import TransactionSession
 from policydesk.core.models import Stage
 from policydesk.synthetic.person import generate
 from policydesk.synthetic.portfolio import enrol
@@ -119,6 +118,199 @@ async def _state(db: Database, case_id: int) -> dict:
             "SELECT verified, reason FROM identity_check WHERE case_id = $1::bigint ORDER BY check_id", [case_id],
         ),
     }
+
+
+async def test_demonstrate_documents_preserves_progress_and_only_completes_own_case(document_cases):
+    db, (case, other) = document_cases
+    other_before = await _state(db, other["case_id"])
+    first = case["documents"][0]
+    await commands.upload_document(db, case["case_id"], document_id=first["document_id"], sample="matching")
+    existing = (await _state(db, case["case_id"]))["documents"][0]
+
+    missing = await commands.demonstrate_documents(db, case["case_id"], mode="missing")
+    assert isinstance(missing, commands.Refusal)
+    assert len(missing.missing) == 1
+    partial = await _state(db, case["case_id"])
+    assert partial["case"]["stage"] == Stage.ISSUED.value
+    assert partial["documents"][0] == existing
+    assert sum(row["signed_at"] is None for row in partial["documents"]) == 1
+    assert sum(row["signed_at"] is not None for row in partial["documents"]) > 0
+
+    repeated = await commands.demonstrate_documents(db, case["case_id"], mode="missing")
+    assert isinstance(repeated, commands.Refusal)
+    assert repeated.missing == missing.missing
+    wrong = await commands.demonstrate_documents(db, case["case_id"], mode="wrong")
+    assert isinstance(wrong, commands.Refusal)
+    assert not wrong.missing
+    assert await _state(db, case["case_id"]) == partial
+
+    complete = await commands.demonstrate_documents(db, case["case_id"], mode="complete")
+    assert isinstance(complete, commands.Applied)
+    assert complete.stage is Stage.REVIEW
+    final = await _state(db, case["case_id"])
+    assert final["case"]["case_version"] == partial["case"]["case_version"] + 3
+    assert all(row["signed_at"] is not None for row in final["documents"])
+    assert len(final["identity_checks"]) == 1
+    assert final["identity_checks"][0]["verified"] is True
+    assert final["case"]["decided_by"] is None
+    assert final["case"]["decision_reason"] == partial["case"]["decision_reason"]
+    assert await db.fetch_val(
+        "SELECT bool_and(provider = 'mock') FROM authorization_grant WHERE case_id = $1::bigint AND stage = 'signed'",
+        [case["case_id"]],
+    )
+    assert await _state(db, other["case_id"]) == other_before
+
+
+@pytest.mark.parametrize("mode", [None, "", "unknown", [], {}, True, 1])
+async def test_demonstrate_documents_invalid_mode_writes_nothing(document_cases, mode):
+    db, (case, _) = document_cases
+    before = await _state(db, case["case_id"])
+    assert isinstance(await commands.demonstrate_documents(db, case["case_id"], mode=mode), commands.Refusal)
+    assert await _state(db, case["case_id"]) == before
+
+
+@pytest.mark.parametrize(("mode", "stage"), [
+    (mode, stage) for mode in ("missing", "wrong", "complete") for stage in Stage
+    if stage is not Stage.ISSUED
+    and not (mode == "complete" and stage in (Stage.SIGNED, Stage.VERIFIED, Stage.REVIEW))
+])
+async def test_demonstrate_documents_illegal_stage_writes_nothing(document_cases, mode, stage):
+    db, (case, _) = document_cases
+    await db.execute('UPDATE "case" SET stage = $2::text WHERE case_id = $1::bigint', [case["case_id"], stage.value])
+    before = await _state(db, case["case_id"])
+    assert isinstance(await commands.demonstrate_documents(db, case["case_id"], mode=mode), commands.Refusal)
+    assert await _state(db, case["case_id"]) == before
+
+
+@pytest.mark.parametrize("defect", ["unissued", "missing_version"])
+async def test_demonstrate_documents_incomplete_issue_refuses_before_any_write(document_cases, defect):
+    db, (case, _) = document_cases
+    last = case["documents"][-1]
+    if defect == "unissued":
+        await db.execute("DELETE FROM case_document WHERE document_id = $1::bigint", [last["document_id"]])
+    else:
+        await db.execute("UPDATE case_document SET sha = '' WHERE document_id = $1::bigint", [last["document_id"]])
+    before = await _state(db, case["case_id"])
+    result = await commands.demonstrate_documents(db, case["case_id"], mode="complete")
+    assert isinstance(result, commands.Refusal)
+    assert not result.missing
+    assert await _state(db, case["case_id"]) == before
+
+
+async def test_demonstrate_documents_concurrent_complete_records_one_set(document_cases):
+    db, (case, _) = document_cases
+    before = await _state(db, case["case_id"])
+    outcomes = await asyncio.gather(*(
+        commands.demonstrate_documents(db, case["case_id"], mode="complete") for _ in range(2)
+    ))
+    assert all(isinstance(outcome, commands.Applied) and outcome.stage is Stage.REVIEW for outcome in outcomes)
+    final = await _state(db, case["case_id"])
+    assert final["case"]["stage"] == Stage.REVIEW.value
+    assert final["case"]["case_version"] == before["case"]["case_version"] + 3
+    assert final["audit_events"] == before["audit_events"] + 3
+    assert len(final["identity_checks"]) == 1
+    assert len(final["grants"]) == len(case["documents"]) * len(commands.SIGNING_PARTIES)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.parametrize("mode", ["missing", "complete"])
+async def test_demonstrate_documents_later_document_failure_rolls_back_whole_batch(document_cases, monkeypatch, mode, cancel):
+    db, (case, _) = document_cases
+    before = await _state(db, case["case_id"])
+    original = commands._record_signatures
+    calls = 0
+
+    async def fail_after_second_document(*args, **kwargs):
+        nonlocal calls
+        result = await original(*args, **kwargs)
+        calls += 1
+        if calls == 2:
+            if cancel:
+                raise asyncio.CancelledError
+            raise RuntimeError("injected after second document")
+        return result
+
+    monkeypatch.setattr(commands, "_record_signatures", fail_after_second_document)
+    with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
+        await commands.demonstrate_documents(db, case["case_id"], mode=mode)
+    assert calls == 2
+    assert await _state(db, case["case_id"]) == before
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.parametrize("failed_stage", [Stage.VERIFIED, Stage.REVIEW])
+@pytest.mark.parametrize("single_file", [False, True])
+async def test_document_demo_later_step_failure_rolls_back_all_records(document_cases, monkeypatch, cancel, failed_stage, single_file):
+    db, (case, _) = document_cases
+    if single_file:
+        for document in case["documents"][:-1]:
+            await commands.upload_document(db, case["case_id"], document_id=document["document_id"], sample="matching")
+    before = await _state(db, case["case_id"])
+    original = commands._bump
+
+    async def fail_after_step(session, case_id, stage, *args):
+        result = await original(session, case_id, stage, *args)
+        if stage is failed_stage:
+            if cancel:
+                raise asyncio.CancelledError
+            raise RuntimeError("injected after demo step")
+        return result
+
+    monkeypatch.setattr(commands, "_bump", fail_after_step)
+    operation = (
+        commands.upload_document(
+            db, case["case_id"], document_id=case["documents"][-1]["document_id"], sample="matching", advance_demo=True,
+        ) if single_file else commands.demonstrate_documents(db, case["case_id"], mode="complete")
+    )
+    with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
+        await operation
+    assert await _state(db, case["case_id"]) == before
+
+
+@pytest.mark.parametrize("failed_step", ["verification", "submission"])
+async def test_document_demo_refused_step_preserves_actual_progress_and_retries(document_cases, monkeypatch, failed_step):
+    db, (case, _) = document_cases
+    if failed_step == "verification":
+        monkeypatch.setattr(commands, "verify_demo_identity", lambda national_id: SimpleNamespace(verified=False, reason="fixture rejection"))
+    else:
+        await db.execute('UPDATE "case" SET adviser_licence = $2::text WHERE case_id = $1::bigint', [case["case_id"], ""])
+    refused = await commands.demonstrate_documents(db, case["case_id"], mode="complete")
+    assert isinstance(refused, commands.Refusal)
+    partial = await _state(db, case["case_id"])
+    assert partial["case"]["stage"] == (Stage.SIGNED.value if failed_step == "verification" else Stage.VERIFIED.value)
+    assert all(document["signed_at"] is not None for document in partial["documents"])
+    assert len(partial["identity_checks"]) == 1
+    assert partial["identity_checks"][0]["verified"] is (failed_step == "submission")
+    if failed_step == "verification":
+        monkeypatch.undo()
+    else:
+        await db.execute('UPDATE "case" SET adviser_licence = $2::text WHERE case_id = $1::bigint', [case["case_id"], "fixture licence"])
+    completed = await commands.demonstrate_documents(db, case["case_id"], mode="complete")
+    assert isinstance(completed, commands.Applied)
+    assert completed.stage is Stage.REVIEW
+    final = await _state(db, case["case_id"])
+    assert final["documents"] == partial["documents"]
+    assert final["grants"] == partial["grants"]
+    assert len(final["identity_checks"]) == (2 if failed_step == "verification" else 1)
+    repeated = await commands.demonstrate_documents(db, case["case_id"], mode="complete")
+    assert repeated == completed
+    assert await _state(db, case["case_id"]) == final
+
+
+async def test_upload_document_final_sample_auto_advance_reaches_review(document_cases):
+    db, (case, other) = document_cases
+    other_before = await _state(db, other["case_id"])
+    for index, document in enumerate(case["documents"], 1):
+        outcome = await commands.upload_document(
+            db, case["case_id"], document_id=document["document_id"], sample="matching", advance_demo=True,
+        )
+        if index < len(case["documents"]):
+            assert isinstance(outcome, commands.Refusal)
+            assert len(outcome.missing) == len(case["documents"]) - index
+            assert (await _state(db, case["case_id"]))["identity_checks"] == []
+    assert isinstance(outcome, commands.Applied)
+    assert outcome.stage is Stage.REVIEW
+    assert await _state(db, other["case_id"]) == other_before
 
 
 async def _sign_all(db: Database, case: dict) -> commands.Applied:
@@ -398,7 +590,10 @@ async def test_customer_socket_upload_illegal_stage_reports_refusal_without_writ
     assert before, "the upload must follow actual identity confirmation"
     assert await _state(db, case["case_id"]) == before, "a refused upload changed document metadata or signatures"
     assert any(frame["type"] == "notice" and frame["level"] == "warn" and frame["text"] for frame in frames)
-    guidance.assert_awaited_once()  # Confirmation guides; the refused upload does not.
+    assert guidance.await_count == 2
+    assert guidance.call_args.kwargs["document_event"] is True
+    assert guidance.call_args.kwargs["case_id"] == case["case_id"]
+    assert guidance.call_args.kwargs["text"]
 
 
 async def test_pending_signatures_progress_uses_actual_current_documents(document_cases):
@@ -424,7 +619,7 @@ async def test_pending_signatures_progress_uses_actual_current_documents(documen
     assert current["missing"] == ()
 
 
-async def test_document_demo_requires_explicit_verification_and_submission(document_cases):
+async def test_document_commands_require_each_guard_when_auto_advance_is_not_requested(document_cases):
     """Progress queries cannot advance a case; commands must satisfy each state gate."""
     db, (case, other) = document_cases
     other_before = await _state(db, other["case_id"])
@@ -572,7 +767,7 @@ async def test_issue_documents_concurrent_requests_issue_only_one_set(document_c
 async def test_upload_document_second_role_failure_rolls_back_filename_and_first_role(document_cases, monkeypatch, cancel):
     db, (case, _) = document_cases
     before = await _state(db, case["case_id"])
-    original = TransactionSession.execute_many
+    original = database_module.TransactionSession.execute_many
 
     async def fail_after_first_role(session, sql, rows):
         await original(session, sql, rows[:1])
@@ -580,7 +775,7 @@ async def test_upload_document_second_role_failure_rolls_back_filename_and_first
             raise asyncio.CancelledError
         raise RuntimeError("injected between roles")
 
-    monkeypatch.setattr(TransactionSession, "execute_many", fail_after_first_role)
+    monkeypatch.setattr(database_module.TransactionSession, "execute_many", fail_after_first_role)
     with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
         await commands.upload_document(
             db, case["case_id"], document_id=case["documents"][0]["document_id"], filename="signed.pdf",

@@ -605,35 +605,47 @@ async def customer_socket(request: Request, ws: Websocket) -> None:
                         # attempts cannot overwrite it — they never reach this branch.
                         pending_question = text
 
-                case "upload" | "verify" if case_id is not None and not confirmed:
+                case "upload" | "verify" | "document_demo" if case_id is not None and not confirmed:
                     await ws.send(json.encode({
                         "type": "notice", "text": IDENTITY_LOCKED_REPLY if locked else "請先完成身分核對。", "level": "warn",
                     }).decode())
+
+                case "document_demo" if case_id is not None and confirmed:
+                    outcome = await cmd.demonstrate_documents(db, case_id, mode=message.get("mode"))
+                    refusal = isinstance(outcome, cmd.Refusal)
+                    if refusal:
+                        await ws.send(json.encode({
+                            "type": "notice", "text": "；".join((outcome.reason, *outcome.missing)),
+                            "level": "info" if outcome.missing else "warn",
+                            "pending_reply": True,
+                        }).decode())
+                    await _push_case(db, ws, request.app, case_id, confirmed=True)
+                    await _answer(
+                        request, ws, db, case_id=case_id,
+                        text="；".join((outcome.reason, *outcome.missing)) if refusal else "",
+                        confirmed=True, floor=floor, document_event=True,
+                    )
 
                 case "upload" if case_id is not None and confirmed:
                     document_id = int(message.get("document_id") or 0)
                     sample = message.get("sample")
                     if sample is not None:
-                        outcome = await cmd.upload_document(db, case_id, document_id=document_id, sample=sample)
+                        outcome = await cmd.upload_document(db, case_id, document_id=document_id, sample=sample, advance_demo=True)
                     else:
                         filename = (message.get("filename") or "").strip()
-                        outcome = await cmd.upload_document(db, case_id, document_id=document_id, filename=filename)
+                        outcome = await cmd.upload_document(db, case_id, document_id=document_id, filename=filename, advance_demo=True)
                     if isinstance(outcome, cmd.Refusal):
                         await ws.send(json.encode({
                             "type": "notice",
-                            "text": f"尚有 {len(outcome.missing)} 份文件未完成模擬簽署" if outcome.missing else outcome.reason,
+                            "text": "；".join((outcome.reason, *outcome.missing)),
                             "level": "info" if outcome.missing else "warn",
+                            "pending_reply": True,
                         }).decode())
-                        if not outcome.missing:
-                            if sample == "mismatched":
-                                await _answer(
-                                    request, ws, db, case_id=case_id, text=outcome.reason,
-                                    confirmed=True, floor=floor, document_event=True,
-                                )
-                            continue
                     await _push_case(db, ws, request.app, case_id, confirmed=confirmed)
                     await _answer(
-                        request, ws, db, case_id=case_id, text="", confirmed=True,
+                        request, ws, db, case_id=case_id,
+                        text="；".join((outcome.reason, *outcome.missing)) if isinstance(outcome, cmd.Refusal) else "",
+                        confirmed=True,
                         floor=floor, document_event=True,
                     )
 
