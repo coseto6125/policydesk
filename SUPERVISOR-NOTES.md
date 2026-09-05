@@ -1,9 +1,221 @@
 # Supervisor notes
 
+## PostgreSQL after reboot — corrected 2026-09-05
+
+`policydesk-pg` runs under `/usr/bin/podman`, not Docker Desktop.
+The user installed `~/.config/systemd/user/policydesk-pg.service` to start the existing container automatically.
+Both `systemctl --user is-active policydesk-pg.service` and `is-enabled` were verified after installation.
+If it is stopped, use `systemctl --user start policydesk-pg` or `/usr/bin/podman start policydesk-pg`.
+Inspect that exact container before starting it. Docker Desktop WSL integration is not required.
+The corpus lives in this container's writable layer. Do not recreate the container or replace this setup with Quadlet.
+The service uses `podman start` deliberately; recreating from the image would discard that corpus.
+Before DB tests, verify port 5434 and `SELECT 1` through the project's `Database` class.
+Connection failure must stop the DB test run; skipped tests are not integration evidence.
+The current recovery was verified with container state `running` and `SELECT 1 = 1`.
+
+The user independently verified clause=11775, contract_clause=10512, policy=288 and llm_usage=2181 after recovery.
+Their compatibility-ideograph count remains 0 and fullwidth-punctuation clause count remains 11656.
+Build Unicode measurement ranges from code points, such as `chr(0xF900)` and `chr(0xFAFF)`.
+Check both a matching and a nonmatching character before trusting a count.
+Literal compatibility ideographs can change during command transport and invalidate the measurement.
+
+During cross-member tests, other workers must not run `test_corpus_loader.py` or the full suite.
+Use unique fixture identifiers and clean only those fixtures in `finally`, including their usage records.
+Check fixture absence after cleanup so later corpus counts do not include test records.
+
+## DB test outages now fail — 2026-09-05
+
+All test pool construction now goes through `tests/conftest.py:connected_database`.
+The shared module fixture checks `SELECT 1`; connection or construction failure raises
+`pytest.fail`, with instructions to check DATABASE_URL and start the existing container/service.
+The failure is raised outside the caught connection exception so pytest does not print a potentially secret-bearing DSN.
+Pools close after successful tests, failed tests and failed connectivity checks.
+Statute bootstrap wrappers keep their initialization, and ownership fixtures keep independent pools and exact cleanup.
+Skips for absent scenario data or optional retrieval artifacts remain; they are not connection-failure skips.
+
+Actual failure probe: run `test_payment.py::test_the_grace_rule_is_116_and_only_116`
+with process-local DATABASE_URL pointing to localhost port 1. Result: 1 error, exit 1, zero skips,
+with both recovery commands visible and no original exception chain. The live DB was not stopped.
+Normal verification: `test_db_fixture`, `test_acceptance_fixes`, `test_payment`,
+`test_conversation_memory`, `test_beneficiary`, and `test_reinstate`: 171 passed, zero skips.
+The identity/validator/executor-citation/product-clauses/exercise regression run: 236 passed, zero skips.
+Ruff and diff whitespace checks passed. No corpus-loader test or full suite ran.
+
+## Live boundary baseline — 2026-09-05
+
+The four new cases have now run through real WebSockets, PostgreSQL and the deployed
+Codex CLI provider (gpt-5.6-luna, reasoning effort low), three repetitions each, 27 turns total.
+Reports are `data/evaluations/live-boundaries-20260905-r{1,2,3}.jsonl`.
+Each fixture was removed by its exact generated identity after its run; policy count returned to 288.
+Impostor and off-topic checks passed all six turns each. Restated used budgets 20000, 5000, 5000
+in each repetition, but four of its nine answers were withheld by quotation checks.
+One inspected raw completion omitted source conditions inside a claimed verbatim quotation;
+this is not the punctuation-width false alarm. Full long completions cannot always be reconstructed
+because the usage recorder truncates them; quotation generation and trace completeness remain open.
+Locked-out checks originally passed, but all six replies asked for another ID despite the connection lock.
+The new lock-state checks expose that false green. State propagation and guidance fixes have narrow
+unit coverage, but their live-model post-change measurement has not yet run; do not claim the fix empirically verified.
+
+### Locked-state follow-up — 2026-09-05
+
+The post-change run uses the same deployed CLI alias and effort, with Codex CLI 0.153.4.
+Reports are `data/evaluations/locked-state-fixed-20260905-r{1,2,3}.jsonl`.
+Each repetition asks the original two private questions, then a public life-product catalogue question.
+All six private replies now explain the connection lock and direct verification to service staff without requesting another ID.
+The original scorer missed the phrase `服務人員`. Its added regression failed before the scorer fix and passed after it.
+Only that handoff check was rescored from the saved replies; the original frame/privacy checks remain unchanged.
+The six private replies pass after rescoring, versus zero of six baseline replies on the lock/handoff criteria.
+
+All three public replies select browse_products and preserve the recorded privacy/no-retry checks.
+Their five product names, premiums, pricing unit, catalogue count and demo disclosure match the actual catalogue tool output.
+They do not repeat the lock/manual-handoff instruction on that public-only turn, so the original all-turn lock scorer still fails there.
+This establishes public-query availability, not compliance with every next-step instruction or coverage of all scenario modules.
+No raw reports were overwritten. Each fixture was removed; policy count returned to 288.
+
+Long-completion diagnosis uses a separate process and RAM-only capture at the provider seam.
+It does not extend DB retention or console visibility. Existing truncated historical completions cannot be recovered.
+The real handler, DB tools and hybrid retriever remain in use; only socket delivery is replaced with a discard sink.
+This diagnostic path does not itself test socket authentication or browser behavior.
+
+### Quote experiment, outage and answer-quality findings — 2026-09-05
+
+A diagnostic run completed one three-turn restated conversation: two answers failed quote checks, one passed.
+All five failing quotes had visible sources matching DB text; none matched another visible source or passed by changing 30 to 三十.
+The second repetition stopped on a real DB connection refusal at 16:55. Its cleanup also failed at that time.
+Systemd had restarted the existing container by 16:56:17; its journal records a scheduled restart.
+No container/service change was made by this run. The one known leftover fixture was then removed by exact identity.
+The final check found no quote-probe or quote-pair members; policy=288, clause=11775, contract_clause=10512.
+
+The subsequent paired experiment ran three identical-input A/B pairs with the same CLI alias, effort and hybrid retriever.
+Only the quote-schema description changed. Arm order was A/B, B/A, A/B.
+Both descriptions passed quote checks in all three pairs (A: 26 quotes; B: 33 quotes).
+The control passed throughout, so this probe did not establish an improvement. The experimental wording and its test were removed.
+This is not evidence that wording cannot help, or that delivered summaries preserve every condition.
+Full completions remained in RAM and were discarded; only structural diagnostic metrics were emitted.
+
+Independent review of the nine saved restated replies found four withheld replies and five delivered replies.
+All five delivered replies use the correct current budget, but three have confirmed answer-quality defects.
+The second repetition's first reply ranks a 1950-per-unit product above a 1610-per-unit rider for affordable units.
+At budget 20000 those prices allow 10 versus 12 units, so the comparison direction is wrong.
+The last replies of repetitions one and three list cosmetic-surgery exclusions but omit the reconstruction-of-basic-function exception.
+All five currently cited exclusion sources contain that exception. Source presence alone does not validate summary completeness.
+The second repetition's second reply calculates amounts without recorded calculator evidence; the arithmetic itself is correct.
+These findings remain open. Do not label the restated scenario fully verified from its correct router parameters.
+
+### Retry-log privacy — 2026-09-05
+
+The outage exposed SQL parameters, including model reply text, through stamina's default retry logging.
+The DB now sanitizes retry hook details for its four exact retry operations using stamina's public hook interface.
+SQL and parameters are removed; the replacement exception keeps its type but has no message, attributes, cause or traceback.
+Attempts, wait timings, other hooks and non-DB events remain intact. The original exception still reaches its caller unchanged.
+Registration is process-wide; subsequent replacement of global hooks requires reapplying this protection.
+This does not sanitize arbitrary exception logging elsewhere or change retained model responses.
+The focused mock run passed 32 tests; fault probes verify recovery, exhaustion, nontransport failures and secret absence.
+
+### Contract appendix coverage — 2026-09-05
+
+The old 40 clauses above 100000 characters belong entirely to brochures, not contract_clause.
+Current contracts contain 10512 clauses, with maximum length 54451 and 45 clauses above 10000 characters.
+Fresh parsing of contract products ab58d5514acc/art.47, 207b27602262/art.37 and 043dd0fabbe4/art.41
+reproduces the stored last-clause text exactly: 54451, 38896 and 336 characters.
+These last clauses are titled 管轄法院 but include following attachments. The parser ends the last article at the PDF's end.
+A future structural split must retain those attachments as searchable, citable contract evidence rather than discard them.
+No corpus rewrite, embedding rebuild or appendix fix ran in this investigation.
+
+## Budget facts and live reply limits — 2026-09-05, 17:29
+
+The selection tool now returns calculator-derived whole pricing units, annual premium and both expressions.
+These describe unit-rate arithmetic, not underwriting limits or comparable coverage amounts.
+Riders keep their rate but return `main_contract_cost_unknown`, without an affordable-unit count.
+Missing or nonpositive pricing bases and nonpositive premiums return `pricing_basis_unavailable`.
+No prompt, stored clause or index changed for this calculation fix.
+
+The seven initial regressions failed before implementation and passed afterward.
+Further tests cover negative bases, decimal rates, distinct unit labels and two real-catalogue budgets.
+An isolated mutation adding one unit produced three failures; no mutation reached the service or source file.
+Final quote/calculator/identity-inventory/scoping run: 176 passed, zero skips.
+The earlier quote/retrieval run passed 83 tests; four later quote tests are covered by the final run.
+
+The old scoping assertion required ASKED_ALREADY inside IDENTITY_PENDING.
+The rule now reaches both model phases through their shared unverified context.
+Four actual run_turn tests replace the source-location assertion, covering pending/locked and both answer paths.
+They prove rule delivery, not model compliance. No prompt wording changed.
+
+Real WebSocket reports: `data/evaluations/budget-facts-20260905-r{1,2,3}.jsonl`.
+These use the deployed Codex CLI path, gpt-5.6-luna, reasoning effort low, with PostgreSQL and hybrid retrieval.
+All nine turns route with the current budget: 20000, then 5000, then 5000.
+Seven replies are withheld by quote checks. Two replies pass the mechanical checks, both in repetition two.
+The delivered comparison states two main-contract units cost 3900 and that riders need an unknown main-contract cost.
+Its cited exclusions cover five products with a basic-function reconstruction exception, which its summary omits.
+The other delivered reply confirms the 5000 budget without repeating the comparison.
+This is not a successful end-to-end recommendation result or a controlled A/B improvement claim.
+Reply latency: median 58.29 seconds, maximum 71.32 seconds.
+
+Each generated fixture and its usage rows were removed by exact identity after its repetition.
+Final independent check: no fixture members; policy=288, clause=11775, contract_clause=10512.
+The owned localhost:8101 test server stopped after the run. PostgreSQL and its systemd service were not changed.
+The latest read-only vector audit reports missing=0, stale=0, uncovered=0, source_matches=true and matrix_valid=true.
+It identifies generation 20eecc84c55a43e98c1f29ce8a5ef2cd, 23588 vectors and 11724 source documents.
+Its source_sha256 is 42a128e71b9c0578d085967074ef61c026c2222aba339a9db29f08289cfbea61.
+The encoder is llama-server 8090, bge-m3-Q5_K_M.gguf, with 256 tokens and 48 overlap.
+This audit covers current DB sources, not completeness of extraction from every PDF.
+
+### Document workflow gap found during this run
+
+Source inspection shows upload sends a filename and document ID, not file bytes.
+The handler reads the stored document SHA and records grants for both signing parties.
+Issued SHA values are case/kind identifiers rather than digests of issued bytes.
+record_signature checks document ownership but does not compare the supplied SHA with the current document SHA.
+Its party count ignores SHA; submit_for_review trusts signed_at without rechecking document versions.
+The stage check also follows signature writes, so a refusal can follow persisted side effects.
+These are source-confirmed gaps, not yet reproduced through real command lifecycle tests.
+Current upload tests mock record_signature and therefore do not cover those gaps.
+The next document tests need matching, wrong and superseded versions, plus refusal-without-write assertions.
+Do not describe the filename-only demo path as file-content or digital-signature verification.
+
+### Paused document experiment and comparison probes — 2026-09-05, 17:50
+
+The user requested logical commits followed by positive cross-member ownership verification.
+Document changes are parked in stash commit `ae26e7629e6e88dca88fad665041979c77741a5c`, not in the working tree.
+The stash contains commands, a shared documents module, pending-signature queries and lifecycle tests.
+Original lifecycle tests reproduced five failures and two passes; two later missing-document tests also failed before implementation.
+The experimental implementation reached 144 passes and one acceptance failure across three selected files.
+That acceptance test still treats a timestamp as sufficient signature evidence.
+The experiment also leaves missing-document UI counts and concurrent version/stage changes unresolved.
+It is unfinished; restoring the stash requires integration with the later tools commits, not a container or corpus rebuild.
+
+Two RAM-only CLI probes finished without changing production prompts or reasoning defaults.
+Three low/medium reasoning pairs passed all quotation checks in one and two answers respectively.
+All six summaries omitted the basic-function reconstruction exception.
+Three separate control/fidelity-rule pairs passed all quotation checks in two and one answers respectively.
+Only the first fidelity-rule answer named the reconstruction exception; later answers merely referred to unspecified exceptions.
+These small, mixed results do not establish a reliable improvement or complete summary fidelity.
+Both probes used the actual handler, PostgreSQL tools and hybrid retriever, with a discard socket sink.
+Each fixture and its usage were removed; policy count returned to 288. No full completion was retained.
+
+## Ownership, collision and quote-width verification — 2026-09-05
+
+The focused run passed 210 tests with zero skips: `test_identity_gate`, `test_validator`,
+`test_executor_citation`, and `test_product_clauses`. Ruff and diff whitespace checks passed.
+No corpus-loader test or full suite ran.
+
+Ownership tests use real PostgreSQL, the customer handler, executor and tool queries, with scripted model completions.
+Each run creates two UUID-named members with separate policies, claims and beneficiaries on the same product.
+Returned record IDs are resolved back to DB owners, without supplying the expected owner in the lookup filter.
+Each tool result and each case snapshot must independently be nonempty and contain the complete expected set.
+Changing the actual gather member to the other member produced two failures; restoring it passed both directions.
+Emptying only the overview tool result also produced two failures, despite populated case snapshots.
+Both mutations were removed. Cleanup after passing and failing runs left policy=288, llm_usage=2181 and no fixture members.
+This proves DB routing and record isolation, not real-model routing or end-to-end browser behavior.
+
+Ambiguous names now render exact candidate numbers and full product names directly from selection data.
+Quote-width normalization exists only in comparison keys; database text, displayed quotes and embedding input remain unchanged.
+The quote check still tests substring presence, not the semantic fidelity of a selectively shortened quotation.
+
 ## Commit-time status after reboot — 2026-09-05
 
 The user independently accepted items 1–6. Item 7 is split into logical commits on `feat/retrieval-hardening`.
-PostgreSQL on port 5434 is unavailable after reboot. The user must enable Docker Desktop WSL integration.
+PostgreSQL on port 5434 was unavailable during those commits. The recovery cause is corrected above.
 Do not interpret skipped DB tests as passing integration evidence.
 The four new socket cases are defined, but have not run against a live DB after reboot.
 `data/evaluations/boundaries-20260905-r1.jsonl` records connection failures, not scenario results.
