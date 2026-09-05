@@ -26,7 +26,7 @@ from msgspec import json
 from pypdf import PdfReader
 
 from policydesk.bootloader import logger
-from policydesk.clauses.index import _tidy, _title_of, document_kind
+from policydesk.clauses.index import UNRESOLVED_PRODUCT_NAME, _tidy, _title_of, document_kind
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -314,8 +314,10 @@ async def refresh_product_names(corpus: Path, db: Database, *, apply: bool = Fal
     """
     Correct names from printed cover titles without rewriting clauses, IDs or policy cover.
 
-    An unresolved or multi-product document retains its stripped existing label and
-    appears in the report. Metadata, a filename and a referenced product are not title evidence.
+    An unresolved or multi-product document gets an explicit unknown-name label.
+    The report retains its previous name for review; keeping that name in the product
+    row would keep presenting rejected headings as verified names. Metadata, filenames
+    and mere product references are not evidence; explicit self-definitions are.
     Only the operator's ingest path calls this; it is not a model-callable tool.
     """
     rows = await db.fetch("SELECT product_id, doc_sha, name, document_kind, source_url FROM product ORDER BY product_id")
@@ -331,7 +333,7 @@ async def refresh_product_names(corpus: Path, db: Database, *, apply: bool = Fal
                     "product_id": row["product_id"], "name": row["name"].strip(),
                     "document_kind": row["document_kind"], "source_url": row["source_url"],
                 })
-            name = title or row["name"].strip()
+            name = title or UNRESOLVED_PRODUCT_NAME
             if name != row["name"]:
                 changes.append({**row, "new_name": name})
         return changes, unresolved

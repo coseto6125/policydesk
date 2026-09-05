@@ -118,6 +118,7 @@ def cn_to_int(text: str) -> int:
     return (_CN_DIGITS.get(head, 1) if head else 1) * 10 + (_CN_DIGITS.get(tail, 0) if tail else 0)
 
 
+UNRESOLVED_PRODUCT_NAME = "商品名稱待核對"
 _TITLE_PREFIX = "國泰人壽"
 _TITLE_ENDINGS = ("保險", "壽險", "附約", "附加條款", "批註條款")
 _TITLE_MAX_LINES = 4
@@ -149,8 +150,9 @@ def _title_of(first_page: str) -> str:
     """
     Select a printed product title, never the first readable line or PDF metadata.
 
-    Require the insurer prefix and a complete insurance-title ending. Adjacent wrapped
-    lines and parenthesized qualifiers retain their printed punctuation. A page with
+    Require the insurer prefix and a complete insurance-title ending. A disclosure's
+    explicit "本公司『…』(以下簡稱本商品)" also identifies its own product, not a reference.
+    Adjacent wrapped lines and parenthesized qualifiers retain their printed punctuation. A page with
     multiple main products is unresolved, even if one occurs first. Endorsement titles
     do not displace a unique main title. No product evidence returns an empty string;
     callers must retain that uncertainty rather than invent a product for a vendor list.
@@ -162,6 +164,16 @@ def _title_of(first_page: str) -> str:
     lines = [_tidy(raw).strip().lstrip("•●■ ") for raw in cover.splitlines()]
     candidates: dict[str, str] = {}
     for start, line in enumerate(lines):
+        if line.startswith("本公司『"):
+            definition = "".join(lines[start : start + _TITLE_MAX_LINES]).removeprefix("本公司『")
+            subject, delimiter, rest = definition.partition("』")
+            base = _title_base(subject)
+            if (delimiter and rest.lstrip().startswith(("(以下簡稱本商品)", "（以下簡稱本商品）"))
+                    and base and base.startswith(_TITLE_PREFIX) and base.endswith(_TITLE_ENDINGS)
+                    and len(base.removeprefix(_TITLE_PREFIX)) >= 4
+                    and len(subject) <= _TITLE_MAX_CHARACTERS
+                    and not any(char in subject for char in "、，。；：,:;!?！？�")):
+                candidates[subject] = base
         base = _title_base(line)
         if base and base.endswith("結構型商品") and "計價" in base:
             candidates[line] = base
@@ -345,7 +357,7 @@ def build_index(pdf_path: Path) -> ClauseIndex:
     full = "\n".join(pages)
 
     doc_id = blake2b(pdf_path.read_bytes(), digest_size=8).hexdigest()
-    title = _title_of(pages[0]) or pdf_path.stem
+    title = _title_of(pages[0]) or UNRESOLVED_PRODUCT_NAME
 
     # Article numbers run 1, 2, 3… once. A match that does not advance the count is a
     # line that merely opens with a cross-reference, or a heading repeated in a running

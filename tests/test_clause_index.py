@@ -335,6 +335,49 @@ def test_title_of_second_product_without_repeated_insurer_is_unresolved():
     assert _title_of("國泰人壽安家一年期保險費豁免附約\n安護一年期保險費豁免附約") == ""
 
 
+@pytest.mark.parametrize("definition", ["(以下簡稱本商品)", "（以下簡稱本商品）"])
+def test_title_of_disclosure_names_its_own_product_not_the_document_heading(definition):
+    from policydesk.clauses.index import _title_of
+
+    title = "國泰人壽泰享富貴投資鏈結型保險"
+    page = "國泰人壽保險股份有限公司-基金通路報酬揭露聲明書\n"
+    assert _title_of(page + f"本公司『{title}』{definition}，提供連結之基金。") == title
+
+
+def test_title_of_wrapped_self_definition_preserves_product_qualifier():
+    from policydesk.clauses.index import _title_of
+
+    assert _title_of("本公司『國泰人壽安心終身\n保險（甲型）』(以下簡稱本商品)，提供服務。") == (
+        "國泰人壽安心終身保險（甲型）"
+    )
+
+
+@pytest.mark.parametrize("page", [
+    "本公司『國泰人壽安心終身保險』(以下簡稱其他商品)，僅供比較。",
+    "投保範例：本公司『國泰人壽安心終身保險』(以下簡稱本商品)。",
+    "本公司『合作廠商資料及查閱方式』(以下簡稱本商品)。",
+    "本公司『國泰人壽甲種終身保險』(以下簡稱本商品)。\n"
+    "本公司『國泰人壽乙種終身保險』(以下簡稱本商品)。",
+])
+def test_title_of_reference_or_conflicting_self_definitions_is_unresolved(page):
+    from policydesk.clauses.index import _title_of
+
+    assert _title_of(page) == ""
+
+
+def test_build_index_unresolved_title_is_explicit_not_a_filename(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from policydesk.clauses import index as parser
+
+    monkeypatch.setattr(parser, "PdfReader", lambda _: SimpleNamespace(
+        pages=[SimpleNamespace(extract_text=lambda: "合作廠商資料及查閱方式")],
+    ))
+    pdf = tmp_path / "wrong-product-name.pdf"
+    pdf.write_bytes(b"fixture")
+    assert build_index(pdf).title == "商品名稱待核對"
+
+
 def test_title_of_wrapped_benefit_enumeration_is_not_a_second_product():
     from policydesk.clauses.index import _title_of
 
@@ -382,6 +425,9 @@ def test_title_of_slogan_is_not_joined_to_next_line_as_product():
     ("8b9740dc6bc1", ""),
     ("c0cb926dd8a3", ""),
     ("b91c3821e306", "國泰人壽自由配一年定期初次罹患癌症健康保險附約（外溢型）"),
+    ("16152d032eb1", "國泰人壽鑫飛揚變額年金保險"),
+    ("3108edad1fc2", "國泰人壽泰享富貴投資鏈結型保險"),
+    ("3a75b8a48821", ""),
 ])
 def test_title_of_local_pdf_matches_printed_source(prefix, expected):
     from pypdf import PdfReader

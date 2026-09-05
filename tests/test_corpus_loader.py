@@ -78,19 +78,64 @@ async def test_refresh_product_names_printed_title_updates_only_unchanged_source
     pool.execute_many.assert_not_awaited()
 
 
-async def test_refresh_product_names_unresolved_is_reported_not_guessed(tmp_path, monkeypatch):
+@pytest.mark.parametrize("old_name", [
+    "合作廠商資料及查閱方式", "碳標字第R2316510002號", "健康促進保費折減",
+    "國泰人壽保險股份有限公司-基金通路報酬揭露聲明書",
+    "國泰人壽保險股份有限公司-基金及全權委託投資業務事業代為",
+])
+async def test_refresh_product_names_unresolved_is_reported_not_guessed(tmp_path, monkeypatch, old_name):
     from policydesk.ingest import to_postgres
 
-    page = SimpleNamespace(extract_text=lambda: "合作廠商資料及查閱方式\n公司地址及電話")
+    page = SimpleNamespace(extract_text=lambda: old_name + "\n公司地址及電話")
     monkeypatch.setattr(to_postgres, "PdfReader", lambda path: SimpleNamespace(pages=[page], metadata={"/Title": "不可信商品名"}))
-    row = {"product_id": "p", "doc_sha": "sha", "name": "合作廠商資料及查閱方式",
+    row = {"product_id": "p", "doc_sha": "sha", "name": old_name,
            "document_kind": "unknown", "source_url": "fixture"}
     pool = AsyncMock()
     pool.fetch.return_value = [row]
     report = await to_postgres.refresh_product_names(tmp_path, pool)
     assert report["updated"] == 0
     assert report["unresolved"] == [{key: row[key] for key in ("product_id", "name", "document_kind", "source_url")}]
+    assert report["changes"] == [{**row, "new_name": "商品名稱待核對"}]
     pool.transaction.assert_not_called()
+
+
+async def test_refresh_product_names_unresolved_marker_is_idempotent(tmp_path, monkeypatch):
+    from policydesk.ingest import to_postgres
+
+    monkeypatch.setattr(to_postgres, "PdfReader", lambda _: SimpleNamespace(pages=[]))
+    pool = AsyncMock()
+    pool.fetch.return_value = [{"product_id": "p", "doc_sha": "sha", "name": "商品名稱待核對",
+                                "document_kind": "unknown", "source_url": "fixture"}]
+    report = await to_postgres.refresh_product_names(tmp_path, pool, apply=True)
+    assert report["changes"] == []
+    assert report["updated"] == 0
+    assert len(report["unresolved"]) == 1
+    pool.transaction.assert_not_called()
+
+
+async def test_refresh_product_names_same_product_different_sources_keeps_both_records(tmp_path, monkeypatch):
+    from policydesk.ingest import to_postgres
+
+    title = "國泰人壽安心終身保險"
+    page = SimpleNamespace(extract_text=lambda: f"本公司『{title}』(以下簡稱本商品)。")
+    monkeypatch.setattr(to_postgres, "PdfReader", lambda _: SimpleNamespace(pages=[page]))
+    rows = [{"product_id": key, "doc_sha": key, "name": "基金通路報酬揭露聲明書",
+             "document_kind": "unknown", "source_url": key} for key in ("source-a", "source-b")]
+    pool = AsyncMock()
+    pool.fetch.return_value = rows
+    session = AsyncMock()
+    session.fetch.return_value = [{"product_id": row["product_id"]} for row in rows]
+    pool.transaction = MagicMock()
+    pool.transaction.return_value.__aenter__.return_value = session
+    report = await to_postgres.refresh_product_names(tmp_path, pool, apply=True)
+    assert report["inspected"] == report["updated"] == 2
+    assert report["unresolved"] == []
+    assert [row["product_id"] for row in report["changes"]] == ["source-a", "source-b"]
+    sql, parameters = session.fetch.call_args.args
+    assert parameters[-1] == [title, title]
+    assert "UPDATE product p SET name" in sql
+    pool.execute.assert_not_awaited()
+    pool.execute_many.assert_not_awaited()
 
 
 async def test_build_catalog_health_sum_insured_does_not_invent_daily_benefit():
