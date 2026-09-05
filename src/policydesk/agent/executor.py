@@ -192,6 +192,11 @@ async def _record(db: Database, turn: Turn, phase: Phase, completion: Completion
         completion: What came back.
         scenario: Which scenario was active.
 
+    The response column carries the tool calls as well as the text. A routing call
+    returns no text at all now — `tool_choice` is `any`, so the whole answer is the call
+    — and a row holding `{"text": ""}` reads in the trace tab as a model that said
+    nothing, when what it did was choose.
+
     """
     await db.execute(
         """INSERT INTO llm_usage (case_id, turn_id, phase, scenario, provider, model,
@@ -203,7 +208,9 @@ async def _record(db: Database, turn: Turn, phase: Phase, completion: Completion
             turn.case_id, turn.turn_id, phase.value, scenario, completion.provider, completion.model,
             completion.prompt_tokens, completion.completion_tokens, completion.cached_tokens,
             completion.total_tokens, cost(completion), completion.latency_ms,
-            {"scenario": scenario, **(completion.request or {})}, {"text": completion.text[:2000]},
+            {"scenario": scenario, **(completion.request or {})},
+            {"text": completion.text[:2000],
+             "tool_calls": [call.get("name", "") for call in completion.tool_calls]},
         ],
     )
 

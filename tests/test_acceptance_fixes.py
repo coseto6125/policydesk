@@ -1144,3 +1144,23 @@ def test_out_of_scope_states_no_figure_and_quotes_nothing():
     assert scenario.tools == (), "no tool, so the identity gate has nothing to withhold"
     assert "{" not in scenario.template, "an unfilled placeholder renders braces to the customer"
     assert not re.search(r"\d+\s*(天|日|元|萬|%|％)", scenario.template)
+
+
+async def test_a_routing_row_records_the_tool_it_chose():
+    """
+    A routing call returns no text — the whole answer is the tool call — so a row
+    holding only `{"text": ""}` reads in the trace tab as a model that said nothing.
+    """
+    from unittest.mock import AsyncMock
+
+    from policydesk.agent.executor import Turn, _record
+    from policydesk.llm.provider import Completion, Phase
+
+    db = AsyncMock()
+    completion = Completion(text="", provider="stub", model="stub",
+                            tool_calls=[{"name": "out_of_scope", "arguments": "{}"}])
+    await _record(db, Turn(case_id=1, member_id=1), Phase.ROUTE, completion, None)
+
+    written = db.execute.call_args.args[1][-1]
+    assert written["tool_calls"] == ["out_of_scope"]
+    assert written["text"] == ""
