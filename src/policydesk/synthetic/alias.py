@@ -40,12 +40,19 @@ def mint(taken: object = frozenset()) -> str:
             or the caller passed something that reports every name as taken.
 
     """
+    # Redraw first, number second. The tail used to be reached on the first collision,
+    # because the numbering loop sat inside the drawing loop and returned from it — so
+    # the 64 redraws never happened and one taken pair was enough to put 淡洲2 on the
+    # gate. 24 by 24 is 576 pairs, so a redraw almost always finds a clean one.
+    name = ""
     for _ in range(64):
         name = f"{secrets.choice(_FIRST)}{secrets.choice(_SECOND)}"
         if name not in taken:
             return name
-        for tail in range(2, MAX_TAIL):
-            if (numbered := f"{name}{tail}") not in taken:
-                return numbered
+    # Every draw collided. Number the last one rather than fail: a crowded name space is
+    # still a working desk, and the caller asked for a name, not for an explanation.
+    for tail in range(2, MAX_TAIL):
+        if (numbered := f"{name}{tail}") not in taken:
+            return numbered
     msg = "no alias available"
     raise RuntimeError(msg)

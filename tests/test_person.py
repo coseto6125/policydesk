@@ -107,3 +107,32 @@ def test_address_str_omits_the_levels_it_does_not_have():
 def _fields(person) -> dict:
     """Copy a frozen Person's fields so a test can vary one of them."""
     return {f: getattr(person, f) for f in person.__struct_fields__}
+
+
+def test_a_taken_alias_is_redrawn_before_it_is_numbered():
+    """
+    One collision put 淡洲2 on the demo's own name gate.
+
+    The numbering loop sat inside the drawing loop and returned from it, so the 64
+    redraws never happened: the first taken pair went straight to a tail. 24 by 24 is
+    576 pairs, and the module says the tail is what the crowded case gets, not the
+    common one.
+    """
+    from policydesk.synthetic.alias import mint
+
+    first = mint()
+    assert not first[-1].isdigit(), "an empty name space has no reason to number anything"
+
+    for _ in range(40):
+        assert not mint({first})[-1].isdigit(), "one taken pair is a redraw, not a tail"
+
+
+def test_a_full_name_space_numbers_rather_than_fails():
+    """A crowded desk still hands out a name. The caller asked for one, not a reason."""
+    from policydesk.synthetic.alias import _FIRST, _SECOND, mint
+
+    every_pair = {f"{a}{b}" for a in _FIRST for b in _SECOND}
+    numbered = mint(every_pair)
+
+    assert numbered[:2] in every_pair
+    assert numbered[2:] == "2"
