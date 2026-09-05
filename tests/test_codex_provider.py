@@ -6,16 +6,57 @@ the model about tools it cannot be handed as schemas, and what comes back out of
 event stream. The subprocess itself is exercised by running the desk.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from policydesk.llm.provider import (
     CodexCliProvider,
+    OpenAIProvider,
+    Phase,
     ProviderError,
     _read_events,
     _split_envelope,
     _tool_brief,
     build_provider,
 )
+
+
+@pytest.mark.parametrize(("phase", "temperature"), [
+    (Phase.ROUTE, 0.1),
+    (Phase.SCENARIO_TOOLS, 0.1),
+    (Phase.ANSWER, 0.3),
+    (Phase.VALIDATE, 0.1),
+    (Phase.REPAIR, 0.1),
+    (Phase.FACTS, 0.1),
+])
+async def test_complete_http_phase_sets_sampling_temperature(monkeypatch, phase, temperature):
+    provider = OpenAIProvider(api_key="test-key")
+    post = AsyncMock(return_value={"output": []})
+    monkeypatch.setattr(provider, "_post", post)
+    await provider.complete(instructions="rules", user_input="question", phase=phase)
+    assert post.call_args.args[0]["temperature"] == temperature
+    assert temperature >= 0.1
+
+
+async def test_complete_http_without_phase_preserves_provider_default(monkeypatch):
+    provider = OpenAIProvider(api_key="test-key")
+    post = AsyncMock(return_value={"output": []})
+    monkeypatch.setattr(provider, "_post", post)
+    await provider.complete(instructions="rules", user_input="question")
+    assert "temperature" not in post.call_args.args[0]
+
+
+async def test_complete_cli_phase_preserves_existing_invocation(monkeypatch):
+    provider = CodexCliProvider()
+    run = AsyncMock(return_value=(
+        '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n'
+        '{"type":"turn.completed","usage":{}}'
+    ))
+    monkeypatch.setattr(provider, "_run", run)
+    result = await provider.complete(instructions="rules", user_input="question", phase=Phase.ROUTE)
+    assert result.text == "ok"
+    assert run.call_args.args == ("rules\n\n# 本回合\nquestion", None, provider._model)
 
 
 def test_tool_brief_names_every_tool_and_its_parameters():
