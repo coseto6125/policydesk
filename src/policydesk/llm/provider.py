@@ -24,8 +24,8 @@ import os
 import shutil
 import tempfile
 import time
-from hashlib import sha256
 from enum import StrEnum
+from hashlib import sha256
 from typing import Any, Protocol
 
 import aiohttp
