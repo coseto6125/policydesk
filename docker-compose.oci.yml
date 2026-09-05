@@ -44,8 +44,14 @@ services:
       OPENAI_API_KEY: ""
 
     volumes:
-      # The token file, read-only. Synced from the workstation; the desk never writes it.
-      - ${ANTHROPIC_TOKEN_FILE:?path to a copy of ~/.claude/.credentials.json}:/run/secrets/anthropic-token.json:ro
+      # The directory, read-only, not the file inside it. A bind mount of a file binds an
+      # inode, and the sync writes a temporary file and renames it — a new inode — so the
+      # container kept reading the copy that was there when it started. The host held a
+      # current token, the sync logged success every half hour, and every customer turn
+      # came back 櫃台的語言服務目前無回應 once the mounted copy was revoked. Mounting the
+      # directory makes a replacement visible without a restart, which is the whole point
+      # of syncing a credential that rotates.
+      - ${ANTHROPIC_TOKEN_DIR:?directory holding a copy of ~/.claude/.credentials.json as anthropic-token.json}:/run/secrets:ro
       # The prebuilt vector index. Rebuilding 15,824 passages on the host would spend
       # Workers AI quota to reproduce bytes the workstation already has.
       - ./data/vectors:/app/data/vectors:ro
