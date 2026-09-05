@@ -39,6 +39,7 @@ from policydesk.agent.scenario import CATALOGUE
 from policydesk.agent.tools import insured_amount
 from policydesk.bootloader import logger
 from policydesk.synthetic.person import insurance_age
+from policydesk.web.auth import DESK_TOKEN
 from policydesk.web.params import int_arg
 
 if TYPE_CHECKING:
@@ -89,12 +90,7 @@ async def _require_desk_token(request: Request):
     a request with no token, from a scanner or a stale bookmark, gets 403 rather than a
     national ID.
 
-    The import is deferred because `server` imports this blueprint at module scope: the
-    same import at the top of this file would run while `server` is still half-executed
-    and `DESK_TOKEN` is not yet bound, which is an ImportError rather than a cycle
-    warning.
     """
-    from policydesk.web.server import DESK_TOKEN
 
     if request.args.get("token", "") != DESK_TOKEN:
         logger.warning("console_read_rejected", path=request.path, peer=str(request.ip))
