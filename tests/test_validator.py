@@ -226,3 +226,23 @@ async def test_validate_does_not_pass_a_claim_on_a_fabricated_citation():
 
     assert checked.verdict.passed, "the model said yes"
     assert not checked.trustworthy, "but the citation does not resolve, so the caller must not act on it"
+
+
+def test_a_page_footer_inside_a_clause_does_not_break_a_correct_quote():
+    """
+    The PDFs carry a running footer, and it survives into `verbatim` mid-sentence:
+    …係按前款約定方式計算。第2頁，共5頁(二)自第三十一日起…
+
+    A model quoting that clause writes the sentence, not the footer, so the quote and
+    the source stop being contiguous and a correct answer is withheld. 940 clauses in
+    the corpus carry one, and four of ten recording runs lost the same question to it.
+    """
+    from policydesk.validation.validator import _squash
+
+    source = "本項給付係按前款約定方式計算。第2頁，共5頁(二)自第三十一日起，依日額給付。"
+    quote = "本項給付係按前款約定方式計算。(二)自第三十一日起，依日額給付。"
+
+    assert _squash(quote) in _squash(source)
+    assert "第2頁" not in _squash(source), "the footer is dropped, not merely tolerated"
+    # The column itself is untouched: a clause peek shows the reader the page they see.
+    assert "第2頁，共5頁" in source

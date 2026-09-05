@@ -20,6 +20,7 @@ are traceable" are not in conflict: the model decides, the store adjudicates whe
 the model was reading the same documents everyone else can read.
 """
 
+import re
 from copy import deepcopy
 from typing import Any
 
@@ -220,9 +221,20 @@ async def validate(
     )
 
 
+_PAGE_FOOTER = re.compile(r"第\d+頁.{0,3}共\d+頁")
+"""The running footer the PDFs carry, as it survives into a clause's own text.
+
+940 clauses in the corpus hold one, and it lands mid-sentence: art.6 of one contract
+reads …係按前款約定方式計算。第2頁，共5頁(二)自第三十一日起…. A model quoting that
+clause writes the sentence, not the footer, so the quote and the source stop being
+contiguous and a correct answer is withheld. Four of ten recording runs lost the same
+question that way.
+"""
+
+
 def _squash(text: str) -> str:
     """
-    Build a comparison-only key for whitespace and explicit punctuation width.
+    Build a comparison-only key for whitespace, punctuation width and page furniture.
 
     Source and displayed text remain unchanged. Only the listed punctuation folds;
     letters, digits and other compatibility characters retain their original codepoints.
@@ -232,10 +244,17 @@ def _squash(text: str) -> str:
         text: Any text.
 
     Returns:
-        A new comparison string with whitespace removed and punctuation width folded.
+        A new comparison string with whitespace removed, punctuation width folded and
+        the PDF page footer dropped.
+
+    The footer is dropped here rather than in the loader because this is the only place
+    it is wrong. It belongs in `verbatim`: that column is what the contract page says,
+    and a clause peek shows the reader the page they would see. It is only when the
+    column is compared against a quotation that the footer is noise, and both sides pass
+    through here.
 
     """
-    return "".join(text.translate(_WIDTH_PUNCTUATION).split())
+    return _PAGE_FOOTER.sub("", "".join(text.translate(_WIDTH_PUNCTUATION).split()))
 
 
 VALIDATE_PHASE = Phase.VALIDATE
