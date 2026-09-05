@@ -187,6 +187,7 @@ CLAIM_STATUS = Scenario(
         "不要憑空講任何關於他理賠案件的內容，也不要假裝已經查過。"
     ),
     tools=("member_claims", "complaint_channel"),
+    coverage_verdict=True,
     tools_module="policydesk.agent.scenarios.claim_status",
     # 我要申訴這個理賠結果 was here, and it is an intention rather than a question — a
     # mis-tap would have written a complaint the customer never made into the case record.

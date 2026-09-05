@@ -507,6 +507,11 @@ async def _gather(
         # a local database is a few milliseconds; against a networked one it is a full
         # round trip each, on the path a customer is waiting on.
         pending = {"_allowed_clauses": tools.clause_ids_for(db, product_ids)}
+    if scenario.coverage_verdict and product_ids:
+        # Whatever tools this scenario declares. The gap that named the flag was a
+        # scenario whose every tool was about documents, answering a question about
+        # cover, with no clause in the material that decides it.
+        pending["coverage_clauses"] = tools.coverage_clauses(db, product_ids)
     if "find_clause" in allowed:
         pending["find_clause"] = tools.find_clause(db, product_ids, params.get("topic", ""), index=index)
     if "find_multiplier" in allowed:
