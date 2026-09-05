@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The queue tests the merge result, not the branch. Five PRs were each green on a
+  # main that none of them contained: the first to land broke the next, and every
+  # remaining branch needed a rebase and a re-run. What lands here is what was tested.
+  merge_group:
 
 permissions:
   contents: read
@@ -21,6 +25,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The blast-radius step diffs against the merge base, which a shallow clone
+          # does not contain.
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -55,6 +63,20 @@ jobs:
         run: |
           uvx pyci-check@0.3.5 cycles src/
           uvx pyci-check@0.3.5 deadcode src/
+
+      # Also advisory, and for a different question: which symbols this diff changed, and
+      # who calls them. A caller count is context for the reviewer, never a gate — the
+      # resolver suppresses ambiguous bare calls, so the number is a lower bound and a
+      # threshold built on it would fail closed on the wrong diffs.
+      #
+      # It needs the merge base, so the checkout above fetches the full history.
+      - name: Blast radius (advisory)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          npx --yes egent-code-plexus@0.13.1 admin index --repo .
+          npx --yes egent-code-plexus@0.13.1 impact \
+            --baseline "origin/${{ github.base_ref }}" --repo . --format json
 
   test:
     name: "Test"
