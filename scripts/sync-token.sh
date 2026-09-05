@@ -17,8 +17,15 @@ set -euo pipefail
 # 路徑留成可覆寫，是為了能拿假憑證演練失敗分支而不動到真的那份。
 LOCAL_CREDS="${SYNC_LOCAL_CREDS:-$HOME/.claude/.credentials.json}"
 OCI_HOST="${SYNC_OCI_HOST:-enoract-168}"
+# 憑證住在部署目錄「外面」。放在裡面的時候，一次 `rsync -az --delete` 把它刪了——它
+# 不在 repo 裡，所以 --delete 認定它是多餘的。Docker 接著在同名位置建了一個空目錄
+# （bind mount 找不到來源就會這樣），容器讀不到，provider 靜靜退回 codex-cli，而
+# 唯一的線索是 `reason=no credentials`。
 # shellcheck disable=SC2088  # `~` 是要留給遠端 shell 展開的，不是本機路徑
-OCI_CREDS="~/policydesk/anthropic-token.json"
+OCI_CREDS="~/policydesk-secrets/anthropic-token.json"
+# 容器裡的 uid。Dockerfile 是 `useradd --uid 10001 desk`，程序不是 root，所以 600 的
+# 檔案它讀不到——本機的 600 是對的，掛進容器就不是。
+DESK_UID="${SYNC_DESK_UID:-10001}"
 SSH_KEY="$HOME/.ssh/oci_enoract"
 CLAUDE_BIN="${SYNC_CLAUDE_BIN:-$HOME/.local/bin/claude}"  # cron 的 PATH 沒有它
 THRESHOLD=$((60 * 60))  # token 剩不到 1 小時就該動作（OCI 要推、本機要刷新）
@@ -54,7 +61,7 @@ fi
 
 # 讀 OCI 那份的到期時間（讀不到 = 沒推過 = 一定要推）。
 oci_exp=$(ssh -i "$SSH_KEY" "$OCI_HOST" \
-  'f=$HOME/policydesk/anthropic-token.json; python3 -c "import json,sys;print(json.load(open(sys.argv[1]))[\"claudeAiOauth\"][\"expiresAt\"]//1000)" "$f" 2>/dev/null' \
+  'f=$HOME/policydesk-secrets/anthropic-token.json; python3 -c "import json,sys;print(json.load(open(sys.argv[1]))[\"claudeAiOauth\"][\"expiresAt\"]//1000)" "$f" 2>/dev/null' \
   2>/dev/null || echo 0)
 
 remaining=$(( oci_exp - now ))
@@ -71,6 +78,17 @@ if [ "$local_exp" -le "$oci_exp" ]; then
   exit 2
 fi
 
+ssh -i "$SSH_KEY" "$OCI_HOST" "mkdir -p ~/policydesk-secrets && chmod 700 ~/policydesk-secrets"
 rsync -az -e "ssh -i $SSH_KEY" "$LOCAL_CREDS" "$OCI_HOST:$OCI_CREDS"
-ssh -i "$SSH_KEY" "$OCI_HOST" "chmod 600 $OCI_CREDS"
-echo "[$(ts)] ✓ token 已同步（本機到期 $(date -d "@$local_exp" '+%H:%M')，原 OCI 剩 $((remaining/60)) 分鐘）"
+# 640 加容器的群組，不是 600。600 屬於 ubuntu，容器以 uid 10001 跑，讀不到。
+ssh -i "$SSH_KEY" "$OCI_HOST" "sudo chgrp $DESK_UID $OCI_CREDS && sudo chmod 640 $OCI_CREDS"
+
+# 從容器裡讀一次。權限對不對，只有容器說了算——`provider_ready provider=anthropic`
+# 只證明選型走到 Anthropic，不證明那個檔讀得到，而那正是上一次漏掉的一層：報了 ready，
+# 客戶那邊每一題都收到「櫃台的語言服務目前無回應」。
+if ! ssh -i "$SSH_KEY" "$OCI_HOST" \
+  'docker exec policydesk-desk-1 head -c 1 /run/secrets/anthropic-token.json' >/dev/null 2>&1; then
+  echo "[$(ts)] ✘ 推上去了，但容器讀不到 /run/secrets/anthropic-token.json"
+  exit 2
+fi
+echo "[$(ts)] ✓ token 已同步並經容器讀取驗證（本機到期 $(date -d "@$local_exp" '+%H:%M')，原 OCI 剩 $((remaining/60)) 分鐘）"
