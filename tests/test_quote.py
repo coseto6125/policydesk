@@ -59,6 +59,29 @@ sale_catalog(product_id, unit_premium, unit_label, data_origin, rate_unit_amount
 """
 
 
+@pytest.mark.parametrize("line", ["health", "accident", "life", "annuity", "investment"])
+async def test_demo_catalog_annual_premium_is_bounded_by_its_declared_cover_unit(line):
+    from policydesk.ingest.to_postgres import _UNITS, build_catalog
+
+    pool = AsyncMock()
+    pool.fetch.return_value = [
+        {"product_id": f"unit-check-{number}", "line": line, "attachment": "main", "clauses": 20}
+        for number in range(50)
+    ]
+    await build_catalog(pool)
+    entries = pool.execute_many.call_args.args[1]
+    assert entries
+    _, basis, low, high = _UNITS[line]
+    assert 0 < low <= high <= basis * Decimal("0.30")
+    for entry in entries:
+        assert entry[8] == "synthetic_demo"
+        assert entry[9] == basis
+        assert 0 < entry[4] <= basis * Decimal("0.30")
+        if line == "health":
+            assert entry[9] == 1000, "fix pricing, not the cover of existing policies"
+            assert "日額" not in entry[5], "health includes lump-sum products, not only daily benefits"
+
+
 async def test_standing_brief_mixed_units_keeps_cheapest_product_metadata(db):
     from datetime import date
 
@@ -183,7 +206,11 @@ async def test_suitable_products_decimal_rate_keeps_each_products_unit_basis():
 
 @pytest.mark.parametrize("budget", [20000, 5000])
 async def test_suitable_products_real_catalog_estimates_agree_with_stored_rates(db, budget):
-    rows = await tools.suitable_products(db, insurance_age=35, occupation_class=1, budget=budget, line="health")
+    # Cover both main and rider calculations without depending on the cheapest five's composition.
+    catalog_size = await db.fetch_val("SELECT count(*) FROM sale_catalog")
+    rows = await tools.suitable_products(
+        db, insurance_age=35, occupation_class=1, budget=budget, line="health", limit=catalog_size,
+    )
     assert rows
     stored = {row["product_id"]: row for row in await db.fetch(
         """SELECT product_id, unit_premium, rate_unit_amount, unit_label, requires_main, data_origin
