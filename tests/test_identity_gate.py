@@ -10,14 +10,16 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from msgspec import json
 
+from conftest import connected_database
 from policydesk.agent import executor, tools
 from policydesk.agent.scenario import CATALOGUE, IDENTITY_PENDING
 from policydesk.gov.identity import Sex, issue
-from policydesk.llm.provider import Completion
+from policydesk.llm.provider import Completion, Phase
 from policydesk.web import server
 from policydesk.web.server import _answer as answer_customer
 from policydesk.web.session import Registry
@@ -313,6 +315,191 @@ async def test_run_turn_locked_private_template_refers_to_staff_without_requesti
     assert "身分證字號" not in turn.reply
     assert provider.complete.await_count == 1
     db.fetch.assert_not_awaited()
+
+
+@pytest.fixture
+async def ownership_members():
+    """Create isolated records in the real DB; remove them even after an assertion fails."""
+    async with connected_database() as db:
+        member_ids, case_ids, policy_ids, claim_ids = [], [], [], []
+        members = []
+        nonce = uuid4().hex
+        try:
+            before = await db.fetch_val("SELECT count(*) FROM policy")
+            product_id = await db.fetch_val(
+                "SELECT product_id FROM product WHERE attachment = 'main' AND document_kind = 'contract' ORDER BY product_id LIMIT 1"
+            )
+            assert product_id is not None, "ownership integration requires an existing contract product"
+            for ordinal in range(2):
+                name = f"auth-{nonce}-{ordinal}"
+                national_id = issue(Sex.FEMALE, (int(nonce, 16) + ordinal) % 10_000_000, "Z")
+                assert not await db.fetch_val("SELECT EXISTS(SELECT 1 FROM member WHERE national_id = $1::text)", [national_id])
+                member_id = await db.fetch_val(
+                    """INSERT INTO member (display_name, national_id, sex, birth_date, occupation, occupation_class,
+                           address_city, address_district, address_rest, phone, email, marital_status, income_band,
+                           beneficiary_relation)
+                       VALUES ($1::text, $2::text, 'female', '1986-01-01', '內勤行政', 1,
+                               '測試', '測試', '測試', '0000000000', 'fixture@example.invalid', 'single', 'medium', 'legal_heir')
+                       RETURNING member_id""",
+                    [name, national_id],
+                )
+                member_ids.append(member_id)
+                case_id = (await server.cmd.open_case(db, member_id)).case_id
+                case_ids.append(case_id)
+                member = {"member_id": member_id, "case_id": case_id, "name": name, "national_id": national_id,
+                          "policy_ids": [], "claim_ids": [], "numbers": [], "beneficiaries": []}
+                members.append(member)
+                for contract in range(2):
+                    number = f"AUTH-{nonce}-{ordinal}-{contract}"
+                    policy_id = await db.fetch_val(
+                        """INSERT INTO policy (member_id, product_id, policy_number, sum_insured, effective_at)
+                           VALUES ($1::bigint, $2::text, $3::text, 1000, '2025-01-01') RETURNING policy_id""",
+                        [member_id, product_id, number],
+                    )
+                    policy_ids.append(policy_id)
+                    member["policy_ids"].append(policy_id)
+                    member["numbers"].append(number)
+                    beneficiary = f"受益人-{nonce}-{ordinal}-{contract}"
+                    member["beneficiaries"].append(beneficiary)
+                    await db.execute(
+                        """INSERT INTO policy_beneficiary (policy_id, display_name, relation, share, designated_at)
+                           VALUES ($1::bigint, $2::text, 'parent', 100, '2025-01-01')""",
+                        [policy_id, beneficiary],
+                    )
+                    claim_id = await db.fetch_val(
+                        """INSERT INTO claim (policy_id, kind, event_at, filed_at, stage)
+                           VALUES ($1::bigint, 'hospital', '2026-01-01', '2026-01-02', 'assessing') RETURNING claim_id""",
+                        [policy_id],
+                    )
+                    claim_ids.append(claim_id)
+                    member["claim_ids"].append(claim_id)
+            yield db, members
+        finally:
+            if member_ids:
+                # llm_usage uses SET NULL on case deletion, unlike the cascading fixture records.
+                await db.execute(
+                    'DELETE FROM llm_usage WHERE case_id IN (SELECT case_id FROM "case" WHERE member_id = ANY($1::bigint[]))',
+                    [member_ids],
+                )
+                await db.execute("DELETE FROM member WHERE member_id = ANY($1::bigint[])", [member_ids])
+                remaining = await db.fetch_val(
+                    """SELECT (SELECT count(*) FROM member WHERE member_id = ANY($1::bigint[]))
+                            + (SELECT count(*) FROM policy WHERE policy_id = ANY($2::bigint[]))
+                            + (SELECT count(*) FROM claim WHERE claim_id = ANY($3::bigint[]))
+                            + (SELECT count(*) FROM policy_beneficiary WHERE policy_id = ANY($2::bigint[]))
+                            + (SELECT count(*) FROM "case" WHERE case_id = ANY($4::bigint[]))
+                            + (SELECT count(*) FROM conversation_message WHERE case_id = ANY($4::bigint[]))
+                            + (SELECT count(*) FROM llm_usage WHERE case_id = ANY($4::bigint[]))""",
+                    [member_ids, policy_ids, claim_ids, case_ids],
+                )
+                assert remaining == 0, "ownership fixture records survived cleanup"
+                assert await db.fetch_val("SELECT count(*) FROM policy") == before
+
+
+@pytest.mark.parametrize("owner_index", [0, 1], ids=["member_a", "member_b"])
+async def test_customer_socket_verified_queries_return_only_owners_records(ownership_members, monkeypatch, owner_index):
+    """Verify real identity/SQL routing in both directions; only model and socket I/O are scripted."""
+    db, members = ownership_members
+    owner, other = members[owner_index], members[1 - owner_index]
+    scenarios = ("policy_overview", "claim_status", "beneficiary")
+    routes = iter(scenarios)
+    gathered = []
+
+    async def complete(*, phase, user_input, **kwargs):
+        if phase is Phase.ROUTE:
+            return Completion(text="", tool_calls=({"name": next(routes), "arguments": "{}"},),
+                              provider="scripted", model="ownership-test")
+        assert phase is Phase.ANSWER
+        # Echo real query values only after checking that they reached the model input.
+        facts = gathered[-1]
+        rows = next(facts[key] for key in ("member_claims", "current_beneficiary", "list_policies") if key in facts)
+        values = [row["policy_number"] for row in rows]
+        values.extend(person["name"] for row in rows for person in row.get("beneficiaries", []))
+        assert all(value in user_input for value in values)
+        return Completion(
+            text=json.encode({"reply": "查詢結果：" + "、".join(values), "citations": [], "calculations": [], "quoted_fields": []}).decode(),
+            provider="scripted", model="ownership-test",
+        )
+
+    provider = SimpleNamespace(complete=AsyncMock(side_effect=complete))
+    request = SimpleNamespace(app=SimpleNamespace(ctx=SimpleNamespace(
+        db=db, registry=Registry(), desk_sockets=set(), provider=provider, clauses=None,
+    )))
+    gather = executor._gather
+
+    async def capture_gather(*args, **kwargs):
+        facts = await gather(*args, **kwargs)
+        gathered.append(facts)
+        return facts
+
+    monkeypatch.setattr(executor, "_gather", capture_gather)
+    socket = _CustomerSocket([
+        {"type": "hello", "name": owner["name"]},
+        {"type": "say", "text": owner["national_id"]},
+        {"type": "say", "text": "請列出我的保單"},
+        {"type": "say", "text": "我的理賠進度如何"},
+        {"type": "say", "text": "各張保單的受益人是誰"},
+    ])
+    await server.customer_socket(request, socket)
+    assert any(frame["type"] == "confirmed" for frame in socket.sent)
+    assert len(gathered) == len(scenarios)
+    replies = [frame for frame in socket.sent if frame.get("scenario") in scenarios]
+    assert [frame["scenario"] for frame in replies] == list(scenarios)
+    assert all(not frame["faults"] for frame in replies)
+    assert all(frame["member_id"] == owner["member_id"] for frame in socket.sent if "member_id" in frame)
+
+    policy_groups = [facts["list_policies"] for facts in gathered if "list_policies" in facts]
+    assert len(policy_groups) == 2, "overview and beneficiary tools must each return policies"
+    cases = [frame for frame in socket.sent if frame["type"] == "case"]
+    assert len(cases) == len(scenarios) + 1
+    assert {frame["case_id"] for frame in cases} == {owner["case_id"]}
+    confirmations = await db.fetch(
+        """SELECT c.member_id FROM audit_event a JOIN "case" c USING (case_id)
+           WHERE a.case_id = $1::bigint AND a.action = 'identity_confirmed'""",
+        [owner["case_id"]],
+    )
+    assert confirmations == [{"member_id": owner["member_id"]}]
+    policy_groups.extend(frame["policies"] for frame in cases)
+    claims = gathered[1]["member_claims"]
+    beneficiaries = gathered[2]["current_beneficiary"]
+    for rows in (*policy_groups, beneficiaries):
+        assert rows, "an empty result does not prove ownership"
+        returned_ids = {row["policy_id"] for row in rows}
+        actual = await db.fetch("SELECT policy_id, member_id FROM policy WHERE policy_id = ANY($1::bigint[])", [list(returned_ids)])
+        assert len(actual) == len(returned_ids)
+        assert {row["member_id"] for row in actual} == {owner["member_id"]}, "returned policy belongs to another member"
+        assert returned_ids == set(owner["policy_ids"])
+    assert claims, "an empty claim result does not prove ownership"
+    actual_claims = await db.fetch(
+        "SELECT c.claim_id, p.member_id FROM claim c JOIN policy p USING (policy_id) WHERE c.claim_id = ANY($1::bigint[])",
+        [[row["claim_id"] for row in claims]],
+    )
+    assert len(actual_claims) == len(claims)
+    assert {row["member_id"] for row in actual_claims} == {owner["member_id"]}, "returned claim belongs to another member"
+    assert {row["claim_id"] for row in claims} == set(owner["claim_ids"])
+    assert {person["name"] for row in beneficiaries for person in row["beneficiaries"]} == set(owner["beneficiaries"])
+    actual_beneficiaries = await db.fetch(
+        """SELECT pb.policy_id, p.member_id, pb.display_name, pb.relation, pb.share
+           FROM policy_beneficiary pb JOIN policy p USING (policy_id)
+           WHERE pb.policy_id = ANY($1::bigint[])""",
+        [[row["policy_id"] for row in beneficiaries]],
+    )
+    assert actual_beneficiaries
+    assert {row["member_id"] for row in actual_beneficiaries} == {owner["member_id"]}
+    assert {
+        (row["policy_id"], person["name"], person["relation"], person["share"])
+        for row in beneficiaries for person in row["beneficiaries"]
+    } == {
+        (row["policy_id"], row["display_name"], row["relation"], row["share"])
+        for row in actual_beneficiaries
+    }
+    for rows in (*policy_groups, claims, beneficiaries):
+        assert {row["policy_number"] for row in rows} == set(owner["numbers"])
+    for frame in replies:
+        assert all(number in frame["text"] for number in owner["numbers"]), "reply omitted the owner's query results"
+    material = str(gathered) + json.encode(socket.sent).decode()
+    material += "".join(call.kwargs["user_input"] for call in provider.complete.call_args_list)
+    assert not any(secret in material for secret in (*other["numbers"], *other["beneficiaries"], other["national_id"]))
 
 
 @pytest.mark.parametrize(
