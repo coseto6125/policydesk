@@ -288,3 +288,28 @@ async def test_run_turn_lookup_scope_instruction_is_only_sent_to_router(monkeypa
     assert not turn.awaiting_identity
 
 
+async def test_run_turn_stable_sections_precede_variable_prompt_sections(monkeypatch):
+    from policydesk.agent import executor
+    from policydesk.agent.scenario import BY_NAME, ROUTER_INSTRUCTIONS, WRITING
+    from policydesk.llm.provider import Completion
+
+    monkeypatch.setattr(executor, "_gather", AsyncMock(return_value={"_allowed_clauses": frozenset()}))
+    monkeypatch.setattr(executor.memory, "recent", AsyncMock(return_value=[]))
+    monkeypatch.setattr(executor.memory, "transcript", lambda messages: "TRANSCRIPT_MARKER\n")
+    monkeypatch.setattr(executor.memory, "card", AsyncMock(return_value="PROFILE_MARKER\n"))
+    monkeypatch.setattr(executor.tools, "standing_brief", AsyncMock(return_value={"known": "KNOWN_MARKER"}))
+    monkeypatch.setattr(executor.statute, "unresolved", AsyncMock(return_value=[]))
+    provider = AsyncMock()
+    provider.complete.side_effect = [
+        Completion(text="", tool_calls=({"name": "product_clauses", "arguments": '{"product":"x","topic":"保障"}'},), provider="test"),
+        Completion(text='{"reply":"資料不足。","citations":[],"calculations":[],"quoted_fields":[]}', provider="test"),
+    ]
+    db = AsyncMock()
+    db.fetch_val.return_value = "inquiry"
+    await executor.run_turn(provider, db, case_id=1, member_id=1, text="商品保障", confirmed=True, locale="zh-TW")
+    route, answer = [call.kwargs for call in provider.complete.call_args_list]
+    for call in (route, answer):
+        text = call["user_input"]
+        assert text.index("KNOWN_MARKER") < text.index("TRANSCRIPT_MARKER") < text.index("PROFILE_MARKER")
+    instructions = answer["instructions"]
+    assert instructions.index(ROUTER_INSTRUCTIONS) < instructions.index(WRITING) < instructions.index(BY_NAME["product_clauses"].injection)
