@@ -78,7 +78,11 @@ if [ "$local_exp" -le "$oci_exp" ]; then
   exit 2
 fi
 
-ssh -i "$SSH_KEY" "$OCI_HOST" "mkdir -p ~/policydesk-secrets && chmod 700 ~/policydesk-secrets"
+ssh -i "$SSH_KEY" "$OCI_HOST" "mkdir -p ~/policydesk-secrets && chmod 750 ~/policydesk-secrets && sudo chgrp $DESK_UID ~/policydesk-secrets"
+# 容器掛的是那個「目錄」，不是這個檔案，所以換檔即時可見。掛檔案的時候換不動：bind
+# mount 綁 inode，rsync 寫暫存檔再 rename 換的就是 inode，容器會一直讀啟動當下那份。
+# 症狀是主機上的 token 是新的、這支腳本每半小時印一次 ✓，而客戶端每題都收到
+# 「櫃台的語言服務目前無回應」——因為容器手上那份已經被撤銷了。
 rsync -az -e "ssh -i $SSH_KEY" "$LOCAL_CREDS" "$OCI_HOST:$OCI_CREDS"
 # 640 加容器的群組，不是 600。600 屬於 ubuntu，容器以 uid 10001 跑，讀不到。
 ssh -i "$SSH_KEY" "$OCI_HOST" "sudo chgrp $DESK_UID $OCI_CREDS && sudo chmod 640 $OCI_CREDS"
