@@ -488,3 +488,17 @@ process.stdout.write(namedClauses(input.text, input.cited));
     )
     assert done.returncode == 0, done.stderr
     assert done.stdout == f"依 {expected}，疾病的等待期自契約生效日起算。"
+def test_the_page_is_never_reused_from_a_browser_cache():
+    """
+    The page carries the whole client and changes on every deploy.
+
+    Served without a validator it was reused: a recording run against a freshly
+    restarted server ran the previous build's script, so a fix present in the served
+    bytes read as absent on screen.
+    """
+    from pathlib import Path
+
+    source = Path("src/policydesk/web/server.py").read_text()
+    handler = source[source.index('@app.get("/")\nasync def index('):]
+    handler = handler[:handler.index("\n@app.")]
+    assert '"Cache-Control": "no-store, must-revalidate"' in handler
