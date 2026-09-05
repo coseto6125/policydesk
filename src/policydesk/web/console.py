@@ -191,7 +191,7 @@ async def inbox(request: Request):
 
 async def cited(db: Database, member_id: int, clause_ids: Iterable[str]) -> list[dict[str, Any]]:
     """
-    Resolve clause ids to contracts the customer actually holds.
+    Resolve qualified tool evidence, with a held-policy fallback for older messages.
 
     Args:
         db: The database.
@@ -209,17 +209,23 @@ async def cited(db: Database, member_id: int, clause_ids: Iterable[str]) -> list
     wanted = list(clause_ids)
     if not wanted:
         return []
+    qualified = [key for key in wanted if "|" in key]
+    legacy = [key for key in wanted if "|" not in key]
+    # Qualified keys come only from the turn's permitted tools or its saved transcript;
+    # this helper is not exposed as a customer-supplied citation lookup endpoint.
     rows = await db.fetch(
         """SELECT DISTINCT c.product_id, c.clause_id, c.heading, c.page, p.name AS product_name
            FROM contract_clause c
            JOIN product p USING (product_id)
-           JOIN policy po ON po.product_id = c.product_id
-           WHERE po.member_id = $1::bigint AND c.clause_id = ANY($2::text[])
+           WHERE (c.product_id || '|' || c.clause_id) = ANY($2::text[])
+              OR (c.clause_id = ANY($3::text[]) AND EXISTS (
+                  SELECT 1 FROM policy po WHERE po.product_id = c.product_id AND po.member_id = $1::bigint
+              ))
            ORDER BY c.clause_id""",
-        [member_id, wanted],
+        [member_id, qualified, legacy],
     )
     order = {clause_id: position for position, clause_id in enumerate(wanted)}
-    rows.sort(key=lambda r: order.get(r["clause_id"], len(order)))
+    rows.sort(key=lambda r: order.get(f"{r['product_id']}|{r['clause_id']}", order.get(r["clause_id"], len(order))))
     return rows
 
 
@@ -272,6 +278,7 @@ async def transcript(request: Request):
     by_clause: dict[str, list[dict[str, Any]]] = {}
     for hit in hits:
         by_clause.setdefault(hit["clause_id"], []).append(hit)
+        by_clause.setdefault(f"{hit['product_id']}|{hit['clause_id']}", []).append(hit)
     for row in rows:
         row["citations"] = [hit for cid in (row["citations"] or ()) for hit in by_clause.get(cid, ())]
     # The scenario names what the turn read. Tools run inside the scenario are not LLM

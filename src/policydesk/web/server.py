@@ -688,10 +688,15 @@ async def _answer(
     )
     # The clause ids go in with the reply, so the console's transcript can show a
     # caseworker what the answer stood on after the socket that carried it is gone.
+    citation_keys = [
+        f"{product}|{clause}"
+        for product, clause in turn.cited_sources
+        if not turn.faults
+    ]
     await db.execute(
         """INSERT INTO conversation_message (case_id, speaker, text, turn_id, citations)
            VALUES ($1::bigint,'agent',$2::text,$3::text,$4::text[])""",
-        [case_id, turn.reply, turn.turn_id, list(turn.citations)],
+        [case_id, turn.reply, turn.turn_id, citation_keys],
     )
     await ws.send(json.encode({
         "type": "reply",
@@ -699,7 +704,7 @@ async def _answer(
         "scenario": turn.scenario,
         "params": turn.params,
         "quick": list(await i18n.translate(db, spoken, turn.quick_replies)),
-        "citations": _jsonable(await cited(db, member_id, turn.citations)),
+        "citations": _jsonable(await cited(db, member_id, citation_keys)),
         "faults": list(turn.faults),
     }).decode())
     await _push_case(db, ws, request.app, case_id)
@@ -824,8 +829,13 @@ async def clause_page(request: Request, product_id: str, clause_id: str):
         """SELECT c.heading, c.verbatim, c.page, c.kind, p.name AS product_name, p.doc_sha
            FROM contract_clause c JOIN product p USING (product_id)
            WHERE c.product_id = $1::text AND c.clause_id = $2::text
-             AND EXISTS (SELECT 1 FROM policy po
-                         WHERE po.product_id = c.product_id AND po.member_id = $3::bigint)""",
+             AND (EXISTS (SELECT 1 FROM policy po
+                          WHERE po.product_id = c.product_id AND po.member_id = $3::bigint)
+                  OR EXISTS (
+                      SELECT 1 FROM conversation_message cm JOIN "case" ca USING (case_id)
+                      WHERE ca.member_id = $3::bigint AND cm.speaker = 'agent'
+                        AND (c.product_id || '|' || c.clause_id) = ANY(cm.citations)
+                  ))""",
         [product_id, clause_id, viewer],
     )
     if row is None:

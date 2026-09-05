@@ -96,6 +96,23 @@ POLICY_OVERVIEW = Scenario(
     transitions=("explain_cover", "recommend", "claim_checklist"),
 )
 
+POLICY_CHOICE = Param(
+    name="policy",
+    description=(
+        "只在客戶限定特定保單時填保單號碼或商品名稱；指定描述不明時保留原描述供核對。"
+        "明確追問同一張時沿用已選保單；改問整體保障或要求全部時填「全部」。"
+        "疾病、事故、保障主題不是保單指定。"
+    ),
+    when_unsaid="未限定特定保單或不確定哪張適用時填空字串，工具會查名下所有保單，不需要先請客戶選一張。",
+)
+
+POLICY_CLARIFICATION = """你正在確認客戶要查詢哪張既有保單，尚未查詢任何契約條款。
+policy_scope.candidates 來自已核對身分的客戶名下保單。
+status 為 ambiguous 時，列出候選商品名稱與保單號碼，請客戶選擇。
+status 為 not_found 時，說明指定描述未能匹配名下保單，列出現有候選供核對；不代表客戶沒有保單。
+這一回合只確認查詢對象，不說明保障、不推測給付、不代選商品。"""
+
+
 EXPLAIN_COVER = Scenario(
     name="explain_cover",
     display_name="查詢保障內容",
@@ -113,6 +130,7 @@ EXPLAIN_COVER = Scenario(
     ),
     tools=("find_clause", "list_policies"),
     params=(
+        POLICY_CHOICE,
         Param(
             name="topic",
             description="保戶想了解的保障主題",
@@ -260,6 +278,7 @@ CLAIM_CHECKLIST = Scenario(
     quick_replies=("診斷證明書要寫到什麼程度？", "我想了解手術給付倍數怎麼算", "送出後大概多久會有結果？"),
     tools=("required_documents", "list_policies", "find_multiplier"),
     params=(
+        POLICY_CHOICE,
         Param(name="event", description="事故或就醫情形", example="住院四天接受手術"),
         Param(name="event_date", description="事故或就醫日期", example="2026-08-01"),
     ),
@@ -315,6 +334,7 @@ from policydesk.agent.scenarios.cooling_off import COOLING_OFF
 from policydesk.agent.scenarios.disclosure import DISCLOSURE
 from policydesk.agent.scenarios.occupation import OCCUPATION
 from policydesk.agent.scenarios.payment import PAYMENT
+from policydesk.agent.scenarios.product_clauses import PRODUCT_CLAUSES
 from policydesk.agent.scenarios.quote import QUOTE
 from policydesk.agent.scenarios.reinstate import REINSTATE
 from policydesk.agent.scenarios.review import REVIEW
@@ -323,6 +343,7 @@ from policydesk.agent.scenarios.soothe import SOOTHE
 CATALOGUE: tuple[Scenario, ...] = (
     POLICY_OVERVIEW,
     EXPLAIN_COVER,
+    PRODUCT_CLAUSES,
     BROWSE_PRODUCTS,
     RECOMMEND,
     ISSUE_DOCUMENTS,
@@ -358,6 +379,18 @@ The carrier sentence says 查詢或說明, not 查得到, and the line after it 
 職業變更通知 explain a rule and a set of documents, and a sentence that offers to look
 them up reads as an offer to do them — 本櫃台可以協助您辦理受益人變更 is a promise this
 counter cannot keep, and the next turn can only take it back."""
+
+
+LOOKUP_SCOPE = """**Preserve the subject and lookup scope across follow-ups.** Resolve an omitted product
+from the conversation. Asking another question about a previously identified public product
+continues a public product lookup; it does not establish that the customer owns that policy.
+Call product_clauses for that product's contractual terms, including a follow-up that names
+only a condition or refers to the same product. Pass the known product name even when its
+version is ambiguous; the lookup returns candidates rather than choosing a version for them.
+Call personal-policy scenarios when the customer asks to inspect their own holdings or
+individual contract data. The scenario's gate enforces authentication, not the routing choice.
+
+"""
 
 
 ROUTER_INSTRUCTIONS = f"""\

@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import etoon
-from msgspec import DecodeError, json
+from msgspec import DecodeError, Struct, json, structs
 
 from policydesk.agent import i18n, memory, statute, tools
 from policydesk.agent import locale as lang
@@ -36,7 +36,9 @@ from policydesk.agent.scenario import (
     ASKED_ALREADY,
     BY_NAME,
     CATALOGUE,
+    LOOKUP_SCOPE,
     OPENERS,
+    POLICY_CLARIFICATION,
     PUBLIC_OPENERS,
     ROUTER_INSTRUCTIONS,
     WRITING,
@@ -47,7 +49,7 @@ from policydesk.agent.scenario import (
 from policydesk.bootloader import logger
 from policydesk.llm.pricing import cost
 from policydesk.llm.provider import Completion, Phase, Provider, ProviderError
-from policydesk.skills.calculator import TOOL_SCHEMA, CalculationError, calculate
+from policydesk.skills.calculator import CalculationError, calculate
 from policydesk.validation.validator import Verdict, recheck
 
 if TYPE_CHECKING:
@@ -70,6 +72,26 @@ is for.
 _CITATION = re.compile(r"\b(?:art\.\d{1,3}(?:\.carve\d)?|waiting)\b")
 
 
+
+
+class _Answer(Struct, forbid_unknown_fields=True):
+    reply: str
+    citations: list[str]
+    calculations: list[str]
+
+
+def _answer_schema(sources: tuple[tuple[str, str], ...], *, calculator: bool = False) -> dict[str, Any]:
+    schema = json.schema(_Answer)["$defs"]["_Answer"]
+    citations = schema["properties"]["citations"]
+    if sources:
+        citations["items"]["enum"] = [f"{product}|{clause}" for product, clause in sources]
+    else:
+        citations["maxItems"] = 0
+    if not calculator:
+        schema["properties"]["calculations"]["maxItems"] = 0
+    return schema
+
+
 class Turn:
     """One exchange, and everything it touched."""
 
@@ -80,6 +102,8 @@ class Turn:
         self.reply = ""
         self.scenario: str | None = None
         self.citations: tuple[str, ...] = ()
+        self.clause_sources: tuple[tuple[str, str], ...] = ()
+        self.cited_sources: tuple[tuple[str, str], ...] = ()
         self.faults: tuple[str, ...] = ()
         self.procedure_hint: str = ""
         """What the customer called the procedure, used to look up its multiplier."""
@@ -204,7 +228,7 @@ async def _route(
         # customer at `run_turn`'s `scenario is None` branch. It is also the path where the
         # model has the most freedom to write a long unstructured paragraph, since no
         # scenario injection is shaping it.
-        instructions=f"{ROUTER_INSTRUCTIONS}\n\n{WRITING}\n\n{i18n.hint(turn.locale)}",
+        instructions=f"{LOOKUP_SCOPE}{ROUTER_INSTRUCTIONS}\n\n{WRITING}\n\n{i18n.hint(turn.locale)}",
         user_input=f"{past}# This message\n{text}",
         tools=[tool_schema(s) for s in reachable(stage)],
     )
@@ -273,6 +297,33 @@ def _as_budget(raw: str) -> int | None:
         return None
 
 
+def _clause_rows(value: Any) -> dict[tuple[str, str], dict[str, Any]]:
+    """Collect returned clause rows, excluding private metadata."""
+    found: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def visit(item: Any) -> None:
+        if isinstance(item, dict):
+            product, clause = item.get("product_id"), item.get("clause_id")
+            if isinstance(product, str) and isinstance(clause, str):
+                found[product, clause] = item
+            for key, child in item.items():
+                if not key.startswith("_"):
+                    visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return found
+
+
+def _clause_sources(value: Any) -> tuple[tuple[str, str], ...]:
+    """Preserve the document identities returned by permitted database tools."""
+    return tuple(_clause_rows(value))
+
+
+
+
 async def _gather(
     db: Database,
     scenario: Scenario,
@@ -324,7 +375,9 @@ async def _gather(
         # Empty rather than absent. A scenario module citing contract clauses returns its
         # own allow-list; one citing statute carries the 〔保險法 第64條第2項〕 syntax,
         # which the `art.NN` checker never sees, so it has nothing here to allow.
-        facts.setdefault("_allowed_clauses", frozenset())
+        facts["_allowed_clauses"] = facts.get("_allowed_clauses", frozenset()) | frozenset(
+            clause for _, clause in _clause_sources(facts)
+        )
         return facts
     # Per tool, exactly as the `tools_module` branch does it. Asking the question per
     # scenario let a scenario whose declared tools are all public — `browse_products`,
@@ -358,6 +411,19 @@ async def _gather(
     else:
         # list_policies first, because everything else needs its product_ids.
         policies = await tools.list_policies(db, turn.member_id, today=today)
+        if any(param.name == "policy" for param in scenario.params):
+            scope = tools._select_policies(policies, params.get("policy", ""))
+            if scope["status"] in {"ambiguous", "not_found"}:
+                return {
+                    "_allowed_clauses": frozenset(),
+                    "policy_scope": {
+                        "status": scope["status"],
+                        "reference": params.get("policy", ""),
+                        "candidates": [{key: row[key] for key in ("policy_number", "product_name")}
+                                       for row in scope["policies"]],
+                    },
+                }
+            policies = scope["policies"]
         product_ids = [p["product_id"] for p in policies]
         facts["list_policies"] = policies
         # The rest depend on product_ids and member_id, not on each other, so they go out
@@ -380,7 +446,9 @@ async def _gather(
     if "benefit_headings" in allowed:
         pending["benefit_headings"] = tools.benefit_headings(db, product_ids)
     if "required_documents" in allowed:
-        pending["required_documents"] = tools.required_documents(db, product_ids)
+        pending["required_documents"] = tools.required_documents(
+            db, product_ids, index=index, topic=params.get("event", ""),
+        )
     if "billing_summary" in allowed:
         pending["billing_summary"] = tools.billing_summary(db, turn.member_id, today=today)
     if "coverage_summary" in allowed:
@@ -427,6 +495,8 @@ async def _gather(
                 occupation_class=member["occupation_class"],
                 budget=budget,
                 line=params.get("line", ""),
+                need=params.get("need", ""),
+                index=index,
             )
             if not facts["suitable_products"]:
                 # Nothing qualified, so find out what would. Six probes, each dropping
@@ -448,6 +518,9 @@ async def _gather(
                 "line": params.get("line", ""),
             }
 
+    facts["_allowed_clauses"] = facts.get("_allowed_clauses", frozenset()) | frozenset(
+        clause for _, clause in _clause_sources(facts)
+    )
     return facts
 
 
@@ -590,8 +663,9 @@ async def run_turn(
             "scenario tool. Those scenarios read public clauses and statutes and answer an "
             "unverified customer. A number of days or an amount from your own memory has nothing "
             "behind it that can be checked.\n"
-            "Once the customer asks about their own policies, premiums, sums insured, claims or "
-            "a plan to buy, identity comes first: ask for the national ID number then, and not before.\n"
+            "For a request about their own policies, premiums, sums insured, claims or a plan to buy, "
+            "call the matching scenario tool. Its gate withholds personal records until identity is "
+            "verified, and its reply asks for verification when needed.\n"
             "Every statement about their policies comes from the material.\n"
             + ASKED_ALREADY + "\n"
         )
@@ -627,7 +701,8 @@ async def run_turn(
         _withhold_promise(turn, case_id, None)
         return turn
 
-    if not confirmed and tools.reads_identity(scenario.tools):
+    scenario_owner = import_module(scenario.tools_module) if scenario.tools_module else None
+    if not confirmed and tools.reads_identity(scenario.tools, owner=scenario_owner):
         # The gate withholds the member queries, not the conversation. Refusing the whole
         # scenario made the desk answer 我想加保 with nothing but a demand for a number;
         # what it should do is say what exists and ask for the number to judge the fit.
@@ -669,7 +744,13 @@ async def run_turn(
     # states each row's field names once instead of once per row. Measured on a product
     # list here: 41% fewer characters for the same rows, on the prompt the customer is
     # waiting on.
-    material = etoon.dumps({k: _short(v) for k, v in facts.items()})
+    visible_facts = {k: _short(v) for k, v in facts.items()}
+    turn.clause_sources = _clause_sources(visible_facts)
+    material = etoon.dumps(visible_facts)
+    clarifying_policy = "policy_scope" in facts
+    instructions = POLICY_CLARIFICATION if clarifying_policy else (
+        f"{ROUTER_INSTRUCTIONS}\n\n{scenario.injection}\n\n{WRITING}"
+    )
     answering = time.perf_counter()
     try:
         # The calculator is offered only where the scenario asks for it. Offered
@@ -677,9 +758,9 @@ async def run_turn(
         # topic; a scenario that needs a figure the rows do not carry sets `calculator`.
         completion = await provider.complete(
             phase=Phase.ANSWER,
-            instructions=f"{ROUTER_INSTRUCTIONS}\n\n{scenario.injection}\n\n{WRITING}\n\n{i18n.hint(turn.locale)}",
+            instructions=f"{instructions}\n\n{i18n.hint(turn.locale)}",
             user_input=f"{past}# This message\n{text}\n\n# Tool results\n{material}",
-            tools=[TOOL_SCHEMA] if scenario.calculator else None,
+            schema=_answer_schema(turn.clause_sources, calculator=scenario.calculator),
         )
     except ProviderError as exc:
         latency = int((time.perf_counter() - answering) * 1000)
@@ -689,10 +770,28 @@ async def run_turn(
         return turn
 
     await _record(db, turn, Phase.ANSWER, completion, scenario.name)
+    try:
+        answer = json.decode(completion.text, type=_Answer)
+    except DecodeError:
+        turn.reply = WITHHELD
+        turn.faults = ("answer_format",)
+        return turn
+    if answer.calculations and not scenario.calculator:
+        turn.reply = WITHHELD
+        turn.faults = ("unoffered_calculator",)
+        return turn
+    completion = structs.replace(
+        completion, text=answer.reply,
+        tool_calls=tuple({"name": "calculate", "arguments": json.encode({"expression": expression}).decode()}
+                         for expression in answer.calculations),
+    )
     turn.computations = _run_calculations(completion)
 
-    if await _unverifiable(db, turn, completion.text, allowed):
+    if await _unverifiable(
+        db, turn, completion.text, allowed, sources=tuple(answer.citations),
+    ):
         return turn
+    turn.reply = completion.text
     if _withhold_promise(turn, case_id, scenario.name):
         return turn
     if not completion.text.strip():
@@ -701,7 +800,6 @@ async def run_turn(
         logger.warning("answer_empty", case_id=case_id, scenario=scenario.name)
         turn.reply = "本次查詢未能組出完整回覆，已保留紀錄並轉由專人與您聯繫。"
         return turn
-    turn.reply = completion.text
     return turn
 
 
@@ -868,7 +966,9 @@ def _withhold_promise(turn: Turn, case_id: int, scenario: str | None) -> bool:
     return True
 
 
-async def _unverifiable(db: Database, turn: Turn, text: str, allowed: frozenset[str]) -> bool:
+async def _unverifiable(
+    db: Database, turn: Turn, text: str, allowed: frozenset[str], *, sources: tuple[str, ...] | None = None,
+) -> bool:
     """
     Withhold a reply whose citations do not resolve.
 
@@ -877,27 +977,35 @@ async def _unverifiable(db: Database, turn: Turn, text: str, allowed: frozenset[
         turn: The turn, whose `citations`, `faults` and `reply` this sets.
         text: What the model wrote.
         allowed: The clause ids the tools actually returned for this member.
+        sources: Explicit product-and-clause keys from the answer. None is the router's
+            free-text path, which has no contract evidence and grants no document access.
 
     Returns:
         True when the reply was withheld, so the caller stops.
 
-    Two corpora, two syntaxes, one gate. Clause ids are read out of the text and checked
-    against what the tools returned; statute citations are read out in their own bracketed
-    form and checked against `statute_article`. Both are read OUT of the reply rather than
-    intersected with what is allowed — intersecting would only ever find ids that exist,
-    so it would pass every time and prove nothing. The failure being guarded against is a
-    number the model wrote and no document contains.
+    Contract access follows explicit keys selected from this turn's returned evidence.
+    A bare article number in prose cannot select every product sharing that number.
+    Prose tokens are checked additionally, so an undeclared article cannot slip through
+    beside an otherwise valid source list. Statutes retain their existing lookup.
 
     The unverifiable text is withheld, not annotated. Appending a caveat still puts the
     invented number in front of the customer, which is the opposite of the point.
 
     """
-    cited = tuple(dict.fromkeys(_CITATION.findall(text)))
+    source_faults: tuple[str, ...] = ()
+    selected: tuple[tuple[str, str], ...] = ()
+    if sources is not None:
+        available = {f"{product}|{clause}": (product, clause) for product, clause in turn.clause_sources}
+        source_faults = tuple(f"source:{key}" for key in dict.fromkeys(sources) if key not in available)
+        selected = tuple(available[key] for key in dict.fromkeys(sources) if key in available)
+        allowed = frozenset(clause for _, clause in selected)
+    cited = tuple(dict.fromkeys([*(_CITATION.findall(text)), *(clause for _, clause in selected)]))
     checked = recheck(Verdict(passed=True, reason="", cited_clauses=cited), subject={}, allowed_clauses=allowed)
     fabricated = await statute.unresolved(db, text)
     turn.citations = cited
-    turn.faults = checked.faults + tuple(f"{name}{doc_id}" for name, doc_id in fabricated)
-    if checked.trustworthy and not fabricated:
+    turn.faults = source_faults + checked.faults + tuple(f"{name}{doc_id}" for name, doc_id in fabricated)
+    if not turn.faults:
+        turn.cited_sources = selected
         return False
     logger.warning(
         "citation_unresolved", case_id=turn.case_id, faults=list(checked.faults), statute=list(fabricated)
