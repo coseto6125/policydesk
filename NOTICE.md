@@ -20,6 +20,7 @@
 
 若權利人認為本專案的引用逾越合理範圍，請透過下列任一方式通知，將立即移除：
 
+- 電子郵件：<enorenor@gmail.com>
 - 維護者 GitHub 個人頁：<https://github.com/coseto6125>
 - GitHub 內容移除申訴：<https://github.com/contact/dmca>
 
