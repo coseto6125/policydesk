@@ -5,6 +5,8 @@
 
 它報出的每一個金額都帶著出處。沒有出處的數字進不了畫面，因為型別擋著。
 
+> 2026/09 黑客松的 demo 專案，賽事結束因此不再維護。
+
 ---
 
 ## 跑起來
@@ -228,3 +230,12 @@ uv run python -c "import asyncio; from pathlib import Path; from policydesk.inge
 目錄建置會將產生的費率、計價基數與資格標記為 `synthetic_demo`；這些不是正式費率表，
 也不能用來判定契約的保險金額屬於日額或投保計畫。未標記來源的資料保留為 `unknown`，
 缺少數值計價基數時不產生保費試算。
+
+---
+
+## 授權與版權
+
+程式碼採 MIT 授權，見 [LICENSE](LICENSE)。
+
+保險商品與條款素材、法規條文、合成資料的來源與使用條件寫在 [NOTICE.md](NOTICE.md)。
+這些內容不隨 MIT 授權轉授，再散布前請先讀它。
